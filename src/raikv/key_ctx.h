@@ -1,0 +1,426 @@
+#ifndef __rai__raikv__key_ctx_h__
+#define __rai__raikv__key_ctx_h__
+
+#ifndef __rai__raikv__key_hash_h__
+#include <raikv/key_hash.h>
+#endif
+
+/* also include stdint.h, string.h */
+#ifdef __cplusplus
+extern "C" {
+#endif
+/* returned from KeyCtx find/acquire operations */
+typedef enum kv_key_status_e {
+  KEY_OK            = 0,  /* generic ok, key exists */
+  KEY_IS_NEW        = 1,  /* key does not exist, newly acquired */
+  KEY_WAITING       = 2,  /* waiting for external event */
+  KEY_NOT_FOUND     = 3,  /* not found status */
+  KEY_BUSY          = 4,  /* spin lock timeout or try lock timeouts */
+  KEY_ALLOC_FAILED  = 5,  /* allocate key or data failed */
+  KEY_HT_FULL       = 6,  /* looked at all ht entries */
+  KEY_MUTATED       = 7,  /* another thread updated entry, repeat find */
+  KEY_WRITE_ILLEGAL = 8,  /* no exclusive lock for write */
+  KEY_NO_VALUE      = 9,  /* key has no value attached */
+  KEY_SEG_FULL      = 10, /* no space in allocation segments */
+  KEY_TOO_BIG       = 11, /* key + value + alignment is too big (> seg_size) */
+  KEY_SEG_VALUE     = 12, /* value doesn't fit in immmediate data */
+  KEY_TOMBSTONE     = 13, /* key not valid, was dropped */
+  KEY_PART_ONLY     = 14  /* no key attached, hashes only */
+} kv_key_status_t;
+
+typedef void *(*kv_alloc_func_t)( void *closure,  size_t item_size );
+typedef void (*kv_free_func_t)( void *closure,  void *item );
+/* KeyCtx::big_alloc */
+extern void *kv_key_ctx_big_alloc( void *closure,  size_t item_size );
+extern void kv_key_ctx_big_free( void *closure,  void *item );
+
+typedef struct kv_key_frag_s {
+  uint16_t keylen;
+  union {
+    char buf[ 4 /* KEY_FRAG_SIZE-2 */]; /* sized to fit into HashEntry */
+    struct {
+      uint16_t b1, b2;
+    } x;
+  };
+} kv_key_frag_t;
+
+#ifdef __cplusplus
+} /* extern "C" */
+#endif
+
+#ifdef __cplusplus
+namespace rai {
+namespace kv {
+
+typedef enum kv_key_status_e KeyStatus;
+
+/* string versions of the above */
+const char *key_status_string( KeyStatus status );
+const char *key_status_description( KeyStatus status );
+
+/* high bit in hash that signifies entity is not present
+   (not in the main ht[] index, that doesn't have tombstones) */
+static const uint64_t ZOMBIE64 = (uint64_t) 0x80000000 << 32;
+
+static const size_t KEY_FRAG_SIZE = 6; /* must fit in HashEntry % 8 */
+
+/* KeyFragment is used everywhere internally, but externally KeyBufT<N>
+ * provides more key buffer space, since keylen=N could be large */
+struct KeyFragment : public kv_key_frag_s {
+
+  bool frag_equals( const KeyFragment &k ) const {
+    bool eq = true;
+    switch ( this->keylen ) {
+      /* this is likely */
+      default: eq &= this->keylen == k.keylen;
+               if ( eq ) { /* presuming keys are eq because hash is eq */
+                 uint16_t *p1 = (uint16_t *) (void *) this->buf;
+                 uint16_t *p2 = (uint16_t *) (void *) k.buf;
+                 uint16_t  j  = ( this->keylen / 2 ) - 1;
+                 eq &= ( *p1++ == *p2++ ); /* keylen at least 4 */
+                 do {
+                   eq &= ( *p1++ == *p2++ );
+                 } while ( --j > 0 );
+                 if ( ( this->keylen & 1 ) != 0 ) {
+                   eq &= ( this->buf[ this->keylen - 1 ] ==
+                           k.buf[ this->keylen - 1 ] );
+                 }
+               }
+               break;
+      /* other cases */
+      case 3:  eq &= ( this->buf[ 2 ] == k.buf[ 2 ] );
+      case 2:  eq &= ( this->buf[ 1 ] == k.buf[ 1 ] );
+      case 1:  eq &= ( this->buf[ 0 ] == k.buf[ 0 ] );
+      case 0:  eq &= ( this->keylen == k.keylen );
+               break;
+    }
+    return eq;
+  }
+
+  uint64_t hash( kv_hash64_func_t func = kv_hash_cityhash64 ) {
+    uint64_t h = func( this->buf, this->keylen, 0 );
+    if ( (h &= ~ZOMBIE64) == 0) /* clear tombstone */
+      h = 1; /* zero is reserved for empty */
+    return h;
+  }
+
+  uint64_t hash128( kv_hash128_func_t func = kv_hash_citymur128 ) {
+    uint128_t h2 = func( this->buf, this->keylen, 0 );
+    uint64_t h = (uint64_t) ( h2 >> 64 ) | (uint64_t) h2;
+    if ( (h &= ~ZOMBIE64) == 0) /* clear tombstone */
+      h = 1; /* zero is reserved for empty */
+    return h;
+  }
+};
+
+struct HashEntry;
+struct HashTab;
+struct MsgHdr;
+struct MsgCtx;
+
+struct ValueGeom {
+  /* a pointer to the value stored with a key, segment max 1 << 16 */
+  uint32_t segment;
+  uint64_t size, offset; /* off/size max 1 << ( 24 + table alignment(def=6) ) */
+  uint64_t serial;
+  void zero( void ) { this->segment = 0; this->size =
+                      this->offset = this->serial = 0; }
+};
+
+struct CacheLine {
+  uint8_t line[ 64 ];
+} __attribute__((__aligned__(64)));
+
+struct KeyCtxAlloc {
+  CacheLine  * wrk;   /* stack / static mem */
+  size_t       off;
+  const size_t len;
+  void       * big;
+
+  void * operator new( size_t sz, void *ptr ) { return ptr; }
+  void operator delete( void *ptr ) { ::free( ptr ); }
+
+  KeyCtxAlloc( CacheLine *w,  size_t sz,
+               kv_alloc_func_t ba = kv_key_ctx_big_alloc,
+               kv_free_func_t bf = kv_key_ctx_big_free,  void *clos = 0 )
+    : wrk( w ), off( 0 ), len( sz ), big( 0 ),
+      big_alloc( ba ), big_free( bf ), closure( clos ) {
+    if ( clos == NULL )
+      clos = (void *) this;
+  }
+
+  /* fast allocate memory for copy during find(), fetch(), operations */
+  void *alloc( size_t sz ) {
+    CacheLine *cur = &this->wrk[ this->off / sizeof( CacheLine ) ];
+    sz = align<size_t>( sz, sizeof( CacheLine ) );
+    if ( (this->off += sz) > this->len ) {
+      /* alloc() will only be called 2 times */
+      return this->big = this->big_alloc( this->closure, sz );
+    }
+    return cur;
+  }
+  /* fast reset mem, called at start of find() */
+  void reset( void ) {
+    this->off = 0;
+    if ( this->big != NULL ) {
+      this->big_free( this->closure, this->big );
+      this->big = NULL;
+    }
+  }
+  /* large sizes are virtualized allocs for client buffer pools,
+   * virtual functions can add as much as 10ns to the fast path */
+  kv_alloc_func_t big_alloc; /* not using virtual since that requires libstd++*/
+  kv_free_func_t big_free;
+  void *closure;
+};
+
+/* a context to put and get hash entry values */
+/* Example:
+   KeyBuf kbuf( "hello world" );
+   KeyCtx kctx( ht, ctx_id, &kbuf );
+   KeyCtxAlloc8k wrk;
+   void *data;
+   uint64_t sz;
+   kctx.set_hash( kbuf.hash() );
+   if ( kctx.acquire() == KEY_OK ) {
+     if ( kctx.resize( &data, 80 ) == KEY_OK )
+       ::memset( data, 'x', 80 );
+     kctx.release();
+   }
+   if ( kctx.find( wrk ) == KEY_OK ) {
+     if ( kctx.value( &data, sz ) ) {
+       printf( "found data %.*s\n", (int) sz, data );
+     }
+   }
+*/
+enum KeyCtxFlags {
+  KEYCTX_IS_READ_ONLY  = 1, /* result of find(), etc.. no lock acq */
+  KEYCTX_IS_GC_ACQUIRE = 2, /* if GC is trying to acquire for moving */
+  KEYCTX_IS_HT_EVICT   = 4  /* if chains == max_chains, is eviction */
+};
+
+struct KeyCtx {
+  HashTab      & ht;      /* operates on this table */
+  KeyFragment  * kbuf;    /* key to lookup resolve */
+  const uint32_t ctx_id,  /* which thread owns this this context */
+                 hash_entry_size;
+  const uint64_t ht_size;
+  HashEntry    * entry;   /* the entry after lookup, may be empty entry if NF*/
+  MsgHdr       * msg;     /* the msg header indexed by geom */
+  ValueGeom      geom;    /* values decoded from HashEntry */
+  uint64_t       start,   /* key % ht_size */
+                 pos,     /* position of entry */
+                 key,     /* KeyBuf hash() */
+                 lock,    /* value stored in ht[], either zero or == key */
+                 drop_key,/* the dropped key that is being recycled */
+                 mcs_id,  /* id of lock queue for above ht lock */
+                 serial,  /* serial number of the hash ent & message */
+                 update_ns, /* absolute ns time when updated, 0 is unset */
+                 expire_ns; /* absolute ns time when expires, 0 is unset */
+  KeyCtxAlloc  * wrk;     /* temp work allocation */
+  uint16_t       chains,  /* number of chains used to find/acquire */
+                 max_chains, /* drop entries after accumulating max chains */
+                 drop_flags; /* flags from dropped recycle entry */
+  uint8_t        pad,
+                 flags;      /* KeyCtxFlags */
+
+  uint8_t test( uint8_t fl ) const { return ( this->flags & fl ); }
+  void set( uint8_t fl )           { this->flags |= fl; }
+  void clear( uint8_t fl )         { this->flags &= ~fl; }
+
+  KeyCtx( HashTab *t,  uint32_t id,  KeyFragment &b );
+  KeyCtx( HashTab *t,  uint32_t id,  KeyFragment *b = NULL );
+  ~KeyCtx() {}
+
+  /* placement new to deal with broken c++ new[], for example:
+   * KeyCtxBuf kctxbuf[ 8 ];
+   * KeyCtx * kctx = KeyCtx::new_array( ht, ctx_id, kctxbuf, 8 );
+   * or to use malloc() instead of stack:
+   * KeyCtx * kctx = KeyCtx::new_array( ht, ctx_id, NULL, 8 );
+   * if ( kctx == NULL ) fatal( "no memory" );
+   * delete kctx; // same as free( kctx )
+   */
+  static KeyCtx * new_array( HashTab *t,  uint32_t id,  void *b,  size_t bsz );
+
+  void * operator new( size_t sz, void *ptr ) { return ptr; }
+  void operator delete( void *ptr ) { ::free( ptr ); }
+
+  /* setup key, this does not hash the key, use set_hash() afterwards */
+  void set_key( KeyFragment &b ) { this->kbuf = &b; }
+  /* setup_hash() no key arg, usually done as: set_hash( this->kbuf->hash() ),
+   * this function is separate from the key because there may not be a key
+   * or the hash may be precomputed for high volume keys */
+  void set_hash( uint64_t k ) {
+    this->key   = k;
+    this->start = k % this->ht_size;
+  }
+  void set_key_hash( KeyFragment &b ) {
+    this->set_key( b );
+    this->set_hash( b.hash() );
+  }
+  /* used for find() operations where data is copied from ht to local buffers */
+  void init_work( KeyCtxAlloc *a ) {
+    this->wrk = a;
+    a->reset();
+  }
+  void next_serial( uint64_t serial_mask ) {
+    if ( this->lock == 0 ) /* new entry, init to key */
+      this->serial = this->key & serial_mask;
+    else
+      this->serial++;
+  }
+  /* copy on read hash entry using this->wrk->alloc() */
+  HashEntry *get_work_entry( void );
+  /* copy value using this->wrk->alloc() */
+  void *copy_data( void *data,  uint64_t sz );
+  /* copy current key to KeyFragment reference */
+  KeyStatus get_key( KeyFragment *&b );
+  /* compare hash entry to kbuf, true if kbuf == NULL, when hash is perfect */
+  bool equals( const HashEntry &el ) const;
+  /* use __builtin_prefetch() on hash element using this->start as a base */
+  void prefetch( uint64_t cnt = 2 ) const;
+  /* acquire lock for a key, if KEY_OK, set entry at &ht[ key % ht_size ] */
+  KeyStatus acquire( void );
+  /* try to acquire lock for a key without waiting */
+  KeyStatus try_acquire( void );
+  /* drop key after lock is acquired, deletes value data */
+  KeyStatus drop( void );
+  /* mark key dropped after lock is acquired, deletes value data */
+  KeyStatus tombstone( void );
+  /* if find locates key, returns KEY_OK, sets entry at &ht[ key % ht_size ] */
+  KeyStatus find( KeyCtxAlloc *a,  const uint64_t spin_wait = 0 );
+  KeyStatus find2( const uint64_t spin_wait = 0 ); /* if zero, spin forever */
+  /* get item at ht[ i ] */
+  KeyStatus fetch( KeyCtxAlloc *a,  const uint64_t i,
+                   const uint64_t spin_wait = 0 );
+  KeyStatus fetch2( const uint64_t i,  const uint64_t spin_wait = 0 );
+  /* value returns KEY_OK if has data and set ptrs to a reference, either
+   * immediate or segment ex: char *s; if ( kctx.get( &s, sz ) == KEY_OK )
+   * printf( "%s\n", s ); if find() is used, ptr will not reference data in the
+   * table, but copied data;  if acquire() is used, ptr will reference the shm
+   * table data */
+  KeyStatus value( void *ptr,  uint64_t &size );
+  /* copy update & expire timestamps into hash entry */
+  void update_stamps( void );
+  /* update the hash entry */
+  KeyStatus update_entry( void *res,  uint64_t size,  uint8_t alignment );
+  /* allocate memory for hash, releases data that may be allocated, alignment
+   * is a size -- sizeof( int64_t ) for example */
+  KeyStatus alloc( void *res,  uint64_t size,  uint8_t alignment = 8 );
+  /* copy value segment location to hash entry */
+  KeyStatus load( MsgCtx &msg_ctx );
+  /* resizes memory, could return already alloced memory if fits,
+   * does not copy data to newly allocated space (maybe it should) */
+  KeyStatus resize( void *res,  uint64_t size,  uint8_t alignment = 8 );
+  /* release the data used by entry */
+  KeyStatus release_data( void );
+  /* release the data used by dropped entry when chain == max_chains */
+  KeyStatus release_evict( void );
+  /* get update time, returns KEY_NOT_FOUND when no update time is attached */
+  KeyStatus get_update_time( uint64_t &update_time_ns );
+  /* get expire time, returns KEY_NOT_FOUND when no expire time is attached */
+  KeyStatus get_expire_time( uint64_t &expire_time_ns );
+  /* set msg field to the segment data */
+  enum AttachType { ATTACH_READ = 0, ATTACH_WRITE = 1 };
+  KeyStatus attach_msg( AttachType upd );
+  /* crc the message */
+  void seal_msg( void );
+  /* release the hash entry */
+  void release( void );
+};
+
+typedef uint64_t KeyCtxBuf[ sizeof( KeyCtx ) / sizeof( uint64_t ) ];
+
+} // namespace kv
+} // namespace rai
+#endif // __cplusplus
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+struct kv_hash_tab_s;
+struct kv_key_ctx_s;
+struct kv_msg_ctx_s;
+struct kv_key_alloc_s;
+struct kv_key_frag_s;
+
+typedef struct kv_hash_tab_s  kv_hash_tab_t;
+typedef struct kv_key_ctx_s   kv_key_ctx_t;
+typedef struct kv_msg_ctx_s   kv_msg_ctx_t;
+typedef struct kv_key_alloc_s kv_key_alloc_t;
+
+const char *kv_key_status_string( kv_key_status_t status );
+const char *kv_key_status_description( kv_key_status_t status );
+
+/* kv_key_alloc_t alloc = kc_create_ctx_alloc( 8 * 1024, NULL, NULL, NULL ); */
+kv_key_alloc_t *kv_create_ctx_alloc( size_t sz,  kv_alloc_func_t ba,
+                                     kv_free_func_t bf,  void *closure );
+void kv_release_ctx_alloc( kv_key_alloc_t *ctx_alloc );
+
+/* uint16_t buf[ 1024 ];
+ * void *in = (void *) buf, *out;
+ * kv_key_frag_t *frag[ 2 ];
+ * size_t sz = sizeof( buf );
+ * frag[ 0 ] = kv_make_key_frag( 128, sz, in, &out );
+ * in = out; sz = (uint8_t *) &buf[ sizeof( buf ) ] - (uint8_t *) out;
+ * frag[ 1 ] = kv_make_key_frag( 128, sz, in, &out );
+ * kv_set_key_frag_string( frag[ 0 ], "hello world", 11 );
+ * // not allocated, no free routine, unsafe stuff ahead */
+kv_key_frag_t *kv_make_key_frag( uint16_t sz,  size_t avail_in,
+                                 void *in,  void *out );
+size_t kv_get_key_frag_mem_size( kv_key_frag_t *frag );
+/* this does not check that sz fits in frag, there is no buf length to check */
+void kv_set_key_frag_bytes( kv_key_frag_t *frag,  const void *p,  uint16_t sz );
+/* this null terminates a key string */
+void kv_set_key_frag_string( kv_key_frag_t *frag,  const char *s, 
+                             uint16_t slen /* strlen(s) */ );
+uint64_t kv_hash_key_frag( kv_key_frag_t *frag );
+
+kv_key_ctx_t *kv_create_key_ctx( kv_hash_tab_t *ht,  uint32_t ctx_id );
+void kv_release_key_ctx( kv_key_ctx_t *kctx );
+
+void kv_set_key( kv_key_ctx_t *kctx,  kv_key_frag_t *kbuf );
+void kv_set_hash( kv_key_ctx_t *kctx,  uint64_t h );
+void kv_prefetch( kv_key_ctx_t *kctx,  uint64_t cnt );
+
+/* status = kv_acquire( kctx );
+ * if ( status == KEY_OK ) {
+ *   uint64_t * mem;
+ *   status = kv_alloc( kctx, &mem, sizeof( uint64_t ) * 2, sizeof( uint64_t ));
+ *   if ( status == KEY_OK ) {
+ *     mem[ 0 ] = 10001;
+ *     mem[ 1 ] = 10002;
+ *   }
+ * }
+ * kv_release( kctx );
+ */
+kv_key_status_t kv_acquire( kv_key_ctx_t *kctx );
+kv_key_status_t kv_try_acquire( kv_key_ctx_t *kctx );
+kv_key_status_t kv_drop( kv_key_ctx_t *kctx );
+kv_key_status_t kv_tombstone( kv_key_ctx_t *kctx );
+void kv_release( kv_key_ctx_t *kctx );
+
+kv_key_status_t kv_find( kv_key_ctx_t *kctx,  kv_key_alloc_t *a,
+                         const uint64_t spin_wait );
+kv_key_status_t kv_fetch( kv_key_ctx_t *kctx,  kv_key_alloc_t *a,
+                          const uint64_t pos,  const uint64_t spin_wait );
+kv_key_status_t kv_value( kv_key_ctx_t *kctx,  void *ptr,  uint64_t *size );
+
+kv_key_status_t kv_alloc( kv_key_ctx_t *kctx,  void *ptr,  uint64_t size,
+                          uint8_t alignment );
+kv_key_status_t kv_load( kv_key_ctx_t *kctx,  kv_msg_ctx_t *mctx );
+kv_key_status_t kv_resize( kv_key_ctx_t *kctx,  void *ptr,  uint64_t size,
+                           uint8_t alignment );
+kv_key_status_t kv_release_data( kv_key_ctx_t *kctx );
+
+void kv_set_update_time( kv_key_ctx_t *kctx,  uint64_t update_time_ns );
+void kv_set_expire_time( kv_key_ctx_t *kctx,  uint64_t expire_time_ns );
+kv_key_status_t kv_get_update_time( kv_key_ctx_t *kctx,
+                                    uint64_t *update_time_ns );
+kv_key_status_t kv_get_expire_time( kv_key_ctx_t *kctx,
+                                    uint64_t *expire_time_ns );
+#ifdef __cplusplus
+} /* extern "C" */
+#endif
+
+#endif
