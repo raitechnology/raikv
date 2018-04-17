@@ -1,6 +1,10 @@
 #ifndef __rai__raikv__key_ctx_h__
 #define __rai__raikv__key_ctx_h__
 
+#ifndef __rai__raikv__util_h__
+#include <raikv/util.h>
+#endif
+
 #ifndef __rai__raikv__key_hash_h__
 #include <raikv/key_hash.h>
 #endif
@@ -13,19 +17,20 @@ extern "C" {
 typedef enum kv_key_status_e {
   KEY_OK            = 0,  /* generic ok, key exists */
   KEY_IS_NEW        = 1,  /* key does not exist, newly acquired */
-  KEY_WAITING       = 2,  /* waiting for external event */
-  KEY_NOT_FOUND     = 3,  /* not found status */
-  KEY_BUSY          = 4,  /* spin lock timeout or try lock timeouts */
-  KEY_ALLOC_FAILED  = 5,  /* allocate key or data failed */
-  KEY_HT_FULL       = 6,  /* looked at all ht entries */
-  KEY_MUTATED       = 7,  /* another thread updated entry, repeat find */
-  KEY_WRITE_ILLEGAL = 8,  /* no exclusive lock for write */
-  KEY_NO_VALUE      = 9,  /* key has no value attached */
-  KEY_SEG_FULL      = 10, /* no space in allocation segments */
-  KEY_TOO_BIG       = 11, /* key + value + alignment is too big (> seg_size) */
-  KEY_SEG_VALUE     = 12, /* value doesn't fit in immmediate data */
-  KEY_TOMBSTONE     = 13, /* key not valid, was dropped */
-  KEY_PART_ONLY     = 14  /* no key attached, hashes only */
+  KEY_NOT_FOUND     = 2,  /* not found status */
+  KEY_BUSY          = 3,  /* spin lock timeout or try lock timeouts */
+  KEY_ALLOC_FAILED  = 4,  /* allocate key or data failed */
+  KEY_HT_FULL       = 5,  /* no more ht entries */
+  KEY_MUTATED       = 6,  /* another thread updated entry, repeat find */
+  KEY_WRITE_ILLEGAL = 7,  /* no exclusive lock for write */
+  KEY_NO_VALUE      = 8,  /* key has no value attached */
+  KEY_SEG_FULL      = 9, /* no space in allocation segments */
+  KEY_TOO_BIG       = 10, /* key + value + alignment is too big (> seg_size) */
+  KEY_SEG_VALUE     = 11, /* value doesn't fit in immmediate data */
+  KEY_TOMBSTONE     = 12, /* key not valid, was dropped */
+  KEY_PART_ONLY     = 13, /* no key attached, hashes only */
+  KEY_MAX_CHAINS    = 14, /* nothing found before entry count hit max chains */
+  KEY_PATH_SEARCH   = 15  /* need a path search to acquire cuckoo entry */
 } kv_key_status_t;
 
 typedef void *(*kv_alloc_func_t)( void *closure,  size_t item_size );
@@ -41,7 +46,7 @@ typedef struct kv_key_frag_s {
     struct {
       uint16_t b1, b2;
     } x;
-  };
+  } u;
 } kv_key_frag_t;
 
 #ifdef __cplusplus
@@ -60,7 +65,9 @@ const char *key_status_description( KeyStatus status );
 
 /* high bit in hash that signifies entity is not present
    (not in the main ht[] index, that doesn't have tombstones) */
-static const uint64_t ZOMBIE64 = (uint64_t) 0x80000000 << 32;
+static const uint64_t ZOMBIE64     = (uint64_t) 0x80000000 << 32,
+                      /*EMPTY_HASH   = 0, -- unused hash for empty */
+                      DROPPED_HASH = 1; /* unused hash for drops */
 
 static const size_t KEY_FRAG_SIZE = 6; /* must fit in HashEntry % 8 */
 
@@ -69,41 +76,34 @@ static const size_t KEY_FRAG_SIZE = 6; /* must fit in HashEntry % 8 */
 struct KeyFragment : public kv_key_frag_s {
 
   bool frag_equals( const KeyFragment &k ) const {
-    bool eq = true;
-    switch ( this->keylen ) {
-      /* this is likely */
-      default: eq &= this->keylen == k.keylen;
-               if ( eq ) { /* presuming keys are eq because hash is eq */
-                 uint16_t *p1 = (uint16_t *) (void *) this->buf;
-                 uint16_t *p2 = (uint16_t *) (void *) k.buf;
-                 uint16_t  j  = ( this->keylen / 2 ) - 1;
-                 eq &= ( *p1++ == *p2++ ); /* keylen at least 4 */
-                 do {
-                   eq &= ( *p1++ == *p2++ );
-                 } while ( --j > 0 );
-                 if ( ( this->keylen & 1 ) != 0 ) {
-                   eq &= ( this->buf[ this->keylen - 1 ] ==
-                           k.buf[ this->keylen - 1 ] );
-                 }
-               }
-               break;
-      /* other cases */
-      case 3:  eq &= ( this->buf[ 2 ] == k.buf[ 2 ] );
-      case 2:  eq &= ( this->buf[ 1 ] == k.buf[ 1 ] );
-      case 1:  eq &= ( this->buf[ 0 ] == k.buf[ 0 ] );
-      case 0:  eq &= ( this->keylen == k.keylen );
-               break;
+    const uint32_t  j = this->keylen;
+    bool           eq = ( j == k.keylen );
+    if ( eq ) {
+      const uint8_t *p1 = (const uint8_t *) this->u.buf;
+      const uint8_t *p2 = (const uint8_t *) k.u.buf;
+      uint32_t i = 0;
+      while ( i + 4 <= j ) {
+        /* presuming keys are eq since hash is eq */
+        eq &= *(const uint32_t *) &p1[ i ] == *(const uint32_t *) &p2[ i ];
+        i += 4;
+      }
+      if ( ( j & 2 ) != 0 ) {
+        eq &= *(const uint16_t *) &p1[ i ] == *(const uint16_t *) &p2[ i ];
+        i += 2;
+      }
+      if ( ( j & 1 ) != 0 )
+        eq &= ( p1[ i ] == p2[ i ] );
     }
     return eq;
   }
-
-  uint64_t hash( kv_hash64_func_t func = kv_hash_cityhash64 ) {
-    uint64_t h = func( this->buf, this->keylen, 0 );
-    if ( (h &= ~ZOMBIE64) == 0) /* clear tombstone */
-      h = 1; /* zero is reserved for empty */
+  /* 63 bit hash */
+  uint64_t hash( uint64_t seed,  kv_hash64_func_t func = kv_hash_cityhash64 ) {
+    uint64_t h = func( this->u.buf, this->keylen, seed );
+    if ( (h &= ~ZOMBIE64) <= DROPPED_HASH) /* clear tombstone */
+      h = DROPPED_HASH + 1; /* zero & one are reserved for empty, dropped */
     return h;
   }
-
+#if 0
   uint64_t hash128( kv_hash128_func_t func = kv_hash_citymur128 ) {
     uint128_t h2 = func( this->buf, this->keylen, 0 );
     uint64_t h = (uint64_t) ( h2 >> 64 ) | (uint64_t) h2;
@@ -111,6 +111,7 @@ struct KeyFragment : public kv_key_frag_s {
       h = 1; /* zero is reserved for empty */
     return h;
   }
+#endif
 };
 
 struct HashEntry;
@@ -141,37 +142,42 @@ struct KeyCtxAlloc {
   void operator delete( void *ptr ) { ::free( ptr ); }
 
   KeyCtxAlloc( CacheLine *w,  size_t sz,
-               kv_alloc_func_t ba = kv_key_ctx_big_alloc,
-               kv_free_func_t bf = kv_key_ctx_big_free,  void *clos = 0 )
+               kv_alloc_func_t ba = 0/*kv_key_ctx_big_alloc*/,
+               kv_free_func_t bf = 0/*kv_key_ctx_big_free*/,  void *cl = 0 )
     : wrk( w ), off( 0 ), len( sz ), big( 0 ),
-      big_alloc( ba ), big_free( bf ), closure( clos ) {
-    if ( clos == NULL )
-      clos = (void *) this;
-  }
+      big_alloc( ba ), big_free( bf ), closure( cl ) {}
 
-  /* fast allocate memory for copy during find(), fetch(), operations */
+  /* fast allocate memory for copy operations in find() */
   void *alloc( size_t sz ) {
     CacheLine *cur = &this->wrk[ this->off / sizeof( CacheLine ) ];
     sz = align<size_t>( sz, sizeof( CacheLine ) );
-    if ( (this->off += sz) > this->len ) {
-      /* alloc() will only be called 2 times */
-      return this->big = this->big_alloc( this->closure, sz );
-    }
+    if ( (this->off += sz) > this->len )
+      return this->alloc_slow( sz );
     return cur;
   }
-  /* fast reset mem, called at start of find() */
+  void *alloc_slow( size_t sz ); /* call big_alloc() */
+  /* fast reset of allocs in last operation, called at start of find() */
   void reset( void ) {
     this->off = 0;
-    if ( this->big != NULL ) {
-      this->big_free( this->closure, this->big );
-      this->big = NULL;
-    }
+    if ( this->big != NULL )
+      this->release();
   }
+  void release( void ); /* call big_free() */
   /* large sizes are virtualized allocs for client buffer pools,
    * virtual functions can add as much as 10ns to the fast path */
   kv_alloc_func_t big_alloc; /* not using virtual since that requires libstd++*/
   kv_free_func_t big_free;
   void *closure;
+};
+
+template <uint32_t SPC>
+struct KeyCtxAllocT : public KeyCtxAlloc {
+  CacheLine spc[ SPC / sizeof( CacheLine ) ];
+
+  KeyCtxAllocT() : KeyCtxAlloc( this->spc, sizeof( this->spc ) ) {}
+  ~KeyCtxAllocT() {
+    this->reset();
+  }
 };
 
 /* a context to put and get hash entry values */
@@ -194,9 +200,10 @@ struct KeyCtxAlloc {
    }
 */
 enum KeyCtxFlags {
-  KEYCTX_IS_READ_ONLY  = 1, /* result of find(), etc.. no lock acq */
-  KEYCTX_IS_GC_ACQUIRE = 2, /* if GC is trying to acquire for moving */
-  KEYCTX_IS_HT_EVICT   = 4  /* if chains == max_chains, is eviction */
+  KEYCTX_IS_READ_ONLY      = 1, /* result of find(), etc.. no lock acq */
+  KEYCTX_IS_GC_ACQUIRE     = 2, /* if GC is trying to acquire for moving */
+  KEYCTX_IS_CUCKOO_ACQUIRE = 4, /* if Cuckoo relocate is trying to make space */
+  KEYCTX_IS_HT_EVICT       = 8  /* if chains == max_chains, is eviction */
 };
 
 struct KeyCtx {
@@ -205,28 +212,30 @@ struct KeyCtx {
   const uint32_t ctx_id,  /* which thread owns this this context */
                  hash_entry_size;
   const uint64_t ht_size;
-  HashEntry    * entry;   /* the entry after lookup, may be empty entry if NF*/
-  MsgHdr       * msg;     /* the msg header indexed by geom */
-  ValueGeom      geom;    /* values decoded from HashEntry */
-  uint64_t       start,   /* key % ht_size */
-                 pos,     /* position of entry */
+  const uint16_t cuckoo_buckets; /* how many cuckoo buckets */
+  const uint8_t  cuckoo_arity;   /* how many cuckoo hash functions */
+  uint8_t        inc;        /* which hash function: 0 -> cuckoo_arity */
+  uint16_t       drop_flags, /* flags from dropped recycle entry */
+                 flags;      /* KeyCtxFlags */
+  uint64_t       max_chains, /* drop entries after accumulating max chains */
+                 chains,     /* number of chains used to find/acquire */
+                 start,   /* key % ht_size */
                  key,     /* KeyBuf hash() */
+                 pos,     /* position of entry */
                  lock,    /* value stored in ht[], either zero or == key */
                  drop_key,/* the dropped key that is being recycled */
                  mcs_id,  /* id of lock queue for above ht lock */
                  serial,  /* serial number of the hash ent & message */
                  update_ns, /* absolute ns time when updated, 0 is unset */
                  expire_ns; /* absolute ns time when expires, 0 is unset */
+  HashEntry    * entry;   /* the entry after lookup, may be empty entry if NF*/
+  MsgHdr       * msg;     /* the msg header indexed by geom */
+  ValueGeom      geom;    /* values decoded from HashEntry */
   KeyCtxAlloc  * wrk;     /* temp work allocation */
-  uint16_t       chains,  /* number of chains used to find/acquire */
-                 max_chains, /* drop entries after accumulating max chains */
-                 drop_flags; /* flags from dropped recycle entry */
-  uint8_t        pad,
-                 flags;      /* KeyCtxFlags */
 
-  uint8_t test( uint8_t fl ) const { return ( this->flags & fl ); }
-  void set( uint8_t fl )           { this->flags |= fl; }
-  void clear( uint8_t fl )         { this->flags &= ~fl; }
+  uint16_t test( uint16_t fl ) const { return ( this->flags & fl ); }
+  void set( uint16_t fl )            { this->flags |= fl; }
+  void clear( uint16_t fl )          { this->flags &= ~fl; }
 
   KeyCtx( HashTab *t,  uint32_t id,  KeyFragment &b );
   KeyCtx( HashTab *t,  uint32_t id,  KeyFragment *b = NULL );
@@ -245,24 +254,23 @@ struct KeyCtx {
   void * operator new( size_t sz, void *ptr ) { return ptr; }
   void operator delete( void *ptr ) { ::free( ptr ); }
 
-  /* setup key, this does not hash the key, use set_hash() afterwards */
+  /* set key, this does not hash the key, use set_hash() afterwards */
   void set_key( KeyFragment &b ) { this->kbuf = &b; }
-  /* setup_hash() no key arg, usually done as: set_hash( this->kbuf->hash() ),
-   * this function is separate from the key because there may not be a key
-   * or the hash may be precomputed for high volume keys */
-  void set_hash( uint64_t k ) {
-    this->key   = k;
-    this->start = k % this->ht_size;
-  }
-  void set_key_hash( KeyFragment &b ) {
-    this->set_key( b );
-    this->set_hash( b.hash() );
-  }
+  /* set hash value, no key arg, usually done as:
+   * kctx.set_hash( kctx.kbuf->hash( ht.hdr.hash_key_seed ) ),
+   * this function is separate from the key because there may not be a key or
+   * the hash may be precomputed using vector functions or client resources */
+  void set_hash( uint64_t k );
+  /* set key and hash by using set_key() then b.hash() to compute hash value */
+  void set_key_hash( KeyFragment &b );
   /* used for find() operations where data is copied from ht to local buffers */
   void init_work( KeyCtxAlloc *a ) {
-    this->wrk = a;
-    a->reset();
+    if ( a != NULL ) {
+      this->wrk = a;
+      a->reset();
+    }
   }
+  /* if hash entry is new, initialize with new serial, otherwise increment */
   void next_serial( uint64_t serial_mask ) {
     if ( this->lock == 0 ) /* new entry, init to key */
       this->serial = this->key & serial_mask;
@@ -270,7 +278,9 @@ struct KeyCtx {
       this->serial++;
   }
   /* copy on read hash entry using this->wrk->alloc() */
-  HashEntry *get_work_entry( void );
+  HashEntry *get_work_entry( void ) {
+    return (HashEntry *) this->wrk->alloc( this->hash_entry_size );
+  }
   /* copy value using this->wrk->alloc() */
   void *copy_data( void *data,  uint64_t sz );
   /* copy current key to KeyFragment reference */
@@ -280,20 +290,86 @@ struct KeyCtx {
   /* use __builtin_prefetch() on hash element using this->start as a base */
   void prefetch( uint64_t cnt = 2 ) const;
   /* acquire lock for a key, if KEY_OK, set entry at &ht[ key % ht_size ] */
-  KeyStatus acquire( void );
+  KeyStatus acquire( KeyCtxAlloc *a ) {
+    this->init_work( a ); /* buffer used for copying hash entry & data */
+    this->init_acquire();
+    if ( this->cuckoo_buckets <= 1 )
+      return this->acquire_linear_probe( this->key, this->start );
+    return this->acquire_cuckoo( this->key, this->start );
+  }
   /* try to acquire lock for a key without waiting */
-  KeyStatus try_acquire( void );
+  KeyStatus try_acquire( KeyCtxAlloc *a ) {
+    this->init_work( a ); /* buffer used for copying hash entry & data */
+    this->init_acquire();
+    if ( this->cuckoo_buckets <= 1 )
+      return this->try_acquire_linear_probe( this->key, this->start );
+    return this->try_acquire_cuckoo( this->key, this->start );
+  }
+  void init_acquire( void ) {
+    this->drop_flags = 0; /* clear drop flags */
+    this->chains     = 0; /* count of chains */
+    this->drop_key   = 0;
+    this->update_ns  = 0; /* loaded on demand */
+    this->expire_ns  = 0;
+    this->msg        = NULL; 
+  }
+  /* acquire using linear probing  */
+  KeyStatus acquire_linear_probe( const uint64_t k,  const uint64_t start_pos );
+  /* acquire using cuckoo */
+  KeyStatus acquire_cuckoo( const uint64_t k,  const uint64_t start_pos );
+  /* acquire using linear probing  */
+  KeyStatus try_acquire_linear_probe( const uint64_t k,
+                                      const uint64_t start_pos );
+  /* acquire using cuckoo */
+  KeyStatus try_acquire_cuckoo( const uint64_t k,  const uint64_t start_pos );
+  /* templated for ht acquire search */
+  template <class Position, bool is_linear_probe>
+  KeyStatus acquire( const uint64_t k, const uint64_t start_pos,
+                     Position &next );
+  /* templated for ht try acquire search */
+  template <class Position>
+  KeyStatus try_acquire( const uint64_t k, const uint64_t start_pos,
+                         Position &next );
   /* drop key after lock is acquired, deletes value data */
   KeyStatus drop( void );
   /* mark key dropped after lock is acquired, deletes value data */
   KeyStatus tombstone( void );
+  /* start a new read only operation */
+  void init_find( void ) {
+    this->chains    = 0; /* count of chains */
+    this->update_ns = 0; /* loaded on demand */
+    this->expire_ns = 0;
+    this->msg       = NULL;
+    this->set( KEYCTX_IS_READ_ONLY );
+  }
   /* if find locates key, returns KEY_OK, sets entry at &ht[ key % ht_size ] */
-  KeyStatus find( KeyCtxAlloc *a,  const uint64_t spin_wait = 0 );
-  KeyStatus find2( const uint64_t spin_wait = 0 ); /* if zero, spin forever */
+  KeyStatus find( KeyCtxAlloc *a,  const uint64_t spin_wait = 0 ) {
+    this->init_work( a ); /* buffer used for copying hash entry & data */
+    this->init_find();
+    if ( this->cuckoo_buckets <= 1 )
+      return this->find_linear_probe( this->key, this->start, spin_wait );
+    return this->find_cuckoo( this->key, this->start, spin_wait );
+  }
+  /* templated for ht acquire search */
+  template <class Position> KeyStatus find( const uint64_t k,
+                                            const uint64_t start_pos,
+                                            const uint64_t spin_wait,
+                                            Position &next );
+  /* find in ht using linear probing */
+  KeyStatus find_linear_probe( const uint64_t k,  const uint64_t start_pos,
+                               const uint64_t spin_wait );
+  KeyStatus find_cuckoo( const uint64_t k,  const uint64_t start_pos,
+                         const uint64_t spin_wait );
   /* get item at ht[ i ] */
   KeyStatus fetch( KeyCtxAlloc *a,  const uint64_t i,
-                   const uint64_t spin_wait = 0 );
-  KeyStatus fetch2( const uint64_t i,  const uint64_t spin_wait = 0 );
+                   const uint64_t spin_wait = 0 ) {
+    this->init_work( a ); /* buffer used for copying hash entry & data */
+    this->init_find();
+    return this->fetch_position( i, spin_wait );
+  }
+  KeyStatus fetch_position( const uint64_t i,  const uint64_t spin_wait );
+  /* exclusive access to a position */
+  KeyStatus try_acquire_position( const uint64_t i );
   /* value returns KEY_OK if has data and set ptrs to a reference, either
    * immediate or segment ex: char *s; if ( kctx.get( &s, sz ) == KEY_OK )
    * printf( "%s\n", s ); if find() is used, ptr will not reference data in the
@@ -327,13 +403,21 @@ struct KeyCtx {
   void seal_msg( void );
   /* release the hash entry */
   void release( void );
+  /* get the position info for the current key */
+  void get_pos_info( uint64_t &natural_pos,  uint64_t &pos_offset );
+  /* distance between x and y, where y is a linear probe position after x */
+  static uint64_t calc_offset( uint64_t x,  uint64_t y,  uint64_t ht_size ) {
+    if ( y >= x )
+      return y - x;
+    return y + ht_size - x;
+  }
 };
 
 typedef uint64_t KeyCtxBuf[ sizeof( KeyCtx ) / sizeof( uint64_t ) ];
 
-} // namespace kv
-} // namespace rai
-#endif // __cplusplus
+} /* namespace kv */
+} /* namespace rai */
+#endif /* __cplusplus */
 
 #ifdef __cplusplus
 extern "C" {
@@ -374,7 +458,7 @@ void kv_set_key_frag_bytes( kv_key_frag_t *frag,  const void *p,  uint16_t sz );
 /* this null terminates a key string */
 void kv_set_key_frag_string( kv_key_frag_t *frag,  const char *s, 
                              uint16_t slen /* strlen(s) */ );
-uint64_t kv_hash_key_frag( kv_key_frag_t *frag );
+uint64_t kv_hash_key_frag( kv_hash_tab_t *ht,  kv_key_frag_t *frag );
 
 kv_key_ctx_t *kv_create_key_ctx( kv_hash_tab_t *ht,  uint32_t ctx_id );
 void kv_release_key_ctx( kv_key_ctx_t *kctx );
@@ -394,8 +478,8 @@ void kv_prefetch( kv_key_ctx_t *kctx,  uint64_t cnt );
  * }
  * kv_release( kctx );
  */
-kv_key_status_t kv_acquire( kv_key_ctx_t *kctx );
-kv_key_status_t kv_try_acquire( kv_key_ctx_t *kctx );
+kv_key_status_t kv_acquire( kv_key_ctx_t *kctx,  kv_key_alloc_t *a );
+kv_key_status_t kv_try_acquire( kv_key_ctx_t *kctx,  kv_key_alloc_t *a );
 kv_key_status_t kv_drop( kv_key_ctx_t *kctx );
 kv_key_status_t kv_tombstone( kv_key_ctx_t *kctx );
 void kv_release( kv_key_ctx_t *kctx );

@@ -28,13 +28,14 @@
 static inline uint64_t
 MurmurHash64A ( const void * key, int len, uint64_t seed )
 {
-  static const uint64_t m = 0xc6a4a7935bd1e995ULL;
+  static const uint64_t m = _U64( 0xc6a4a793, 0x5bd1e995 );
   static const int r = 47;
 
   uint64_t h = seed ^ ( len * m );
 
-  const uint64_t * data = (const uint64_t *) key;
-  const uint64_t * end = data + ( len / 8 );
+  const uint64_t * data  = (const uint64_t *) key;
+  const uint64_t * end   = data + ( len / 8 );
+  const uint8_t  * data2 = (const uint8_t *) end;
 
   while ( data != end ) {
     uint64_t k = *data++;
@@ -46,8 +47,6 @@ MurmurHash64A ( const void * key, int len, uint64_t seed )
     h ^= k;
     h *= m; 
   }
-
-  const uint8_t * data2 = (const uint8_t *) data;
 
   switch ( len & 7 ) {
     case 7: h ^= ((uint64_t) data2[ 6 ] ) << 48;
@@ -76,11 +75,11 @@ kv_hash_murmur64_a( const void *p, size_t sz, uint64_t seed )
 static inline uint64_t
 XXH_rotl64(uint64_t x, int r) { return ((x << r) | (x >> (64 - r))); }
 
-static const uint64_t PRIME64_1 = 11400714785074694791ULL;
-static const uint64_t PRIME64_2 = 14029467366897019727ULL;
-static const uint64_t PRIME64_3 =  1609587929392839161ULL;
-static const uint64_t PRIME64_4 =  9650029242287828579ULL;
-static const uint64_t PRIME64_5 =  2870177450012600261ULL;
+static const uint64_t PRIME64_1 = _U64( 0x9e3779b1, 0x85ebca87 );
+static const uint64_t PRIME64_2 = _U64( 0xc2b2ae3d, 0x27d4eb4f );
+static const uint64_t PRIME64_3 = _U64( 0x165667b1, 0x9e3779f9 );
+static const uint64_t PRIME64_4 = _U64( 0x85ebca77, 0xc2b2ae63 );
+static const uint64_t PRIME64_5 = _U64( 0x27d4eb2f, 0x165667c5 );
 
 static inline uint64_t
 XXH64_round(uint64_t acc, uint64_t input)
@@ -183,14 +182,14 @@ kv_hash_xxh64( const void *p, size_t sz, uint64_t seed )
 uint32_t
 kv_crc_c( const void *p,  size_t sz,  uint32_t seed )
 {
-#define crc32q( crc, x ) \
-  __asm__ __volatile__ ( "crc32q %1, %0" : "+r" (crc) : "m" (x) : )
-#define crc32l( crc, x ) \
-  __asm__ __volatile__ ( "crc32l %1, %0" : "+r" (crc) : "m" (x) : )
-#define crc32w( crc, x ) \
-  __asm__ __volatile__ ( "crc32w %1, %0" : "+r" (crc) : "m" (x) : )
-#define crc32b( crc, x ) \
-  __asm__ __volatile__ ( "crc32b %1, %0" : "+r" (crc) : "m" (x) : )
+#define CRC32q( CRC, X ) \
+  __asm__ __volatile__ ( "crc32q %1, %0" : "+r" (CRC) : "m" (X) )
+#define CRC32l( CRC, X ) \
+  __asm__ __volatile__ ( "crc32l %1, %0" : "+r" (CRC) : "m" (X) )
+#define CRC32w( CRC, X ) \
+  __asm__ __volatile__ ( "crc32w %1, %0" : "+r" (CRC) : "m" (X) )
+#define CRC32b( CRC, X ) \
+  __asm__ __volatile__ ( "crc32b %1, %0" : "+r" (CRC) : "m" (X) )
 
   register const uint8_t * s =   (uint8_t *) p;
   register const uint8_t * e = &((uint8_t *) p) [ sz ];
@@ -198,28 +197,28 @@ kv_crc_c( const void *p,  size_t sz,  uint32_t seed )
   register       uint32_t  hash32;
 
   while ( e >= &s[ sizeof( uint64_t ) ] ) {
-    crc32q( hash64, ((const uint64_t *) (const void *) s)[ 0 ] );
+    CRC32q( hash64, ((const uint64_t *) (const void *) s)[ 0 ] );
     s = &s[ 8 ];
   }
   hash32 = (uint32_t) hash64;
 
   switch ( e - s ) {
     case 7:
-      crc32b( hash32, s[ 0 ] ); s++;
+      CRC32b( hash32, s[ 0 ] ); s++;
     case 6:
-      crc32w( hash32, ((const uint16_t *) s)[ 0 ] ); s = &s[ 2 ];
+      CRC32w( hash32, ((const uint16_t *) s)[ 0 ] ); s = &s[ 2 ];
     case 4:
-      crc32l( hash32, ((const uint32_t *) s)[ 0 ] );
+      CRC32l( hash32, ((const uint32_t *) s)[ 0 ] );
       break;
     case 3:
-      crc32b( hash32, s[ 0 ] ); s++;
+      CRC32b( hash32, s[ 0 ] ); s++;
     case 2:
-      crc32w( hash32, ((const uint16_t *) s)[ 0 ] );
+      CRC32w( hash32, ((const uint16_t *) s)[ 0 ] );
       break;
     case 5:
-      crc32l( hash32, ((const uint32_t *) s)[ 0 ] ); s = &s[ 4 ];
+      CRC32l( hash32, ((const uint32_t *) s)[ 0 ] ); s = &s[ 4 ];
     case 1:
-      crc32b( hash32, s[ 0 ] );
+      CRC32b( hash32, s[ 0 ] );
       break;
     default:
     case 0:
@@ -245,11 +244,11 @@ static inline uint64_t ShiftMix64(const uint64_t val) {
 static inline uint64_t
 Hash128to64(const uint64_t hi, const uint64_t lo)
 {
-  // Murmur-inspired hashing.
-  const uint64_t kMul = 0x9ddfea08eb382d69ULL;
-  uint64_t a = (hi ^ lo) * kMul;
+  /* Murmur-inspired hashing. */
+  const uint64_t kMul = _U64( 0x9ddfea08, 0xeb382d69 );
+  uint64_t a = (hi ^ lo) * kMul, b;
   a ^= (a >> 47);
-  uint64_t b = (hi ^ a) * kMul;
+  b  = (hi ^ a) * kMul;
   b ^= (b >> 47);
   b *= kMul;
   return b;
@@ -258,19 +257,18 @@ Hash128to64(const uint64_t hi, const uint64_t lo)
 static inline uint64_t
 HashLen16(uint64_t u, uint64_t v, uint64_t mul)
 {
-  // Murmur-inspired hashing.
-  uint64_t a = (u ^ v) * mul;
+  uint64_t a = (u ^ v) * mul, b;
   a ^= (a >> 47);
-  uint64_t b = (v ^ a) * mul;
+  b  = (v ^ a) * mul;
   b ^= (b >> 47);
   b *= mul;
   return b;
 }
 
 /* primes between 2*63 and 2^64 */
-static const uint64_t k0 = 0xc3a5c85c97cb3127ULL;
-static const uint64_t k1 = 0xb492b66fbe98f273ULL;
-static const uint64_t k2 = 0x9ae16a3b2f90404fULL;
+static const uint64_t k0 = _U64( 0xc3a5c85c, 0x97cb3127 );
+static const uint64_t k1 = _U64( 0xb492b66f, 0xbe98f273 );
+static const uint64_t k2 = _U64( 0x9ae16a3b, 0x2f90404f );
 
 static inline uint64_t
 HashLen0to16(const char *s, size_t len)
@@ -311,6 +309,18 @@ HashLen17to32(const char *s, size_t len)
                    a + Rotate64(b + k2, 18) + c, mul);
 }
 
+#if __GNUC__ > 4 || ( __GNUC__ == 4 && __GNUC_MINOR__ > 3 )
+#define bswap64( X ) __builtin_bswap64( X )
+#else
+static inline uint64_t
+bswap64( uint64_t x )
+{
+#define BSWAP64( X )  __asm__ __volatile__ ( "bswapq %0" : "=r" (X) : "0" (X) );
+  BSWAP64( x );
+  return x;
+}
+#endif
+
 static inline uint64_t
 HashLen33to64(const char *s, size_t len)
 {
@@ -325,15 +335,15 @@ HashLen33to64(const char *s, size_t len)
   uint64_t h = Fetch64(s + len - 16) * mul;
   uint64_t u = Rotate64(a + g, 43) + (Rotate64(b, 30) + c) * 9;
   uint64_t v = ((a + g) ^ d) + f + 1;
-  uint64_t w = __builtin_bswap64((u + v) * mul) + h;
+  uint64_t w = bswap64((u + v) * mul) + h;
   uint64_t x = Rotate64(e + f, 42) + c;
-  uint64_t y = (__builtin_bswap64((v + w) * mul) + g) * mul;
+  uint64_t y = (bswap64((v + w) * mul) + g) * mul;
   uint64_t z = e + f + c;
-  a = __builtin_bswap64((x + z) * mul + y) + b;
+  a = bswap64((x + z) * mul + y) + b;
   b = ShiftMix64((z + a) * mul + d + h) * mul;
   return b + x;
 }
-
+#if 0
 /* A subroutine for CityHash128().  Returns a decent 128-bit hash for strings
    of any length representable in signed long.  Based on City and Murmur. */
 static inline uint128_t
@@ -344,11 +354,11 @@ CityMurmur(const char *s, size_t len, uint128_t seed)
   uint64_t c = 0;
   uint64_t d = 0;
   signed long l = len - 16;
-  if (l <= 0) {  // len <= 16
+  if (l <= 0) {
     a = ShiftMix64(a * k1) * k1;
     c = b * k1 + HashLen0to16(s, len);
     d = ShiftMix64(a + (len >= 8 ? Fetch64(s) : c));
-  } else {  // len > 16
+  } else {
     c = Hash128to64(Fetch64(s + len - 8) + k1, a);
     d = Hash128to64(b + len, c + Fetch64(s + len - 16));
     a += d;
@@ -373,7 +383,7 @@ kv_hash_citymur128( const void *p, size_t sz, uint128_t seed )
 {
   return CityMurmur( p, sz, seed );
 }
-
+#endif
 typedef struct {
   uint64_t first, second;
 } pair128_t;

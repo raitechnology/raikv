@@ -2,7 +2,7 @@
 #define __rai__raikv__shm_ht_h__
 
 /* also include stdint.h, string.h */
-#ifndef __rai__raikv__key_ctx_h__
+#ifndef __rai__raikv__atom_h__
 #include <raikv/atom.h>
 #endif
 
@@ -30,6 +30,8 @@ typedef struct kv_geom_s {
            max_value_size;   /* max size of an data entry */
   uint32_t hash_entry_size;  /* size of a hash entry, min 32b */
   float    hash_value_ratio; /* ratio of hash/data cells: hash = ratio * size */
+  uint16_t cuckoo_buckets;   /* how many buckets for each hash */
+  uint8_t  cuckoo_arity;     /* how many hash functions */
 } kv_geom_t;
 
 typedef enum kv_facility_e {
@@ -43,7 +45,7 @@ typedef enum kv_facility_e {
 /* used as error return for kv_attach_ctx() */
 #define KV_NO_CTX_ID        ((uint32_t) -1)
 /* hdr of map file */
-#define KV_HT_FILE_HDR_SIZE 256
+#define KV_HT_FILE_HDR_SIZE 1024
 /* how big each thread context is */
 #define KV_HT_THR_CTX_SIZE  1024
 /* file hdr + segment data */
@@ -65,31 +67,22 @@ namespace kv {
 static const size_t HT_FILE_HDR_SIZE      = KV_HT_FILE_HDR_SIZE,
                     /* sizeof( ThrCtx ) */
                     HT_THR_CTX_SIZE       = KV_HT_THR_CTX_SIZE,
-		    /* FileHdr(256b) + Segment[ 2044 ] each 64b */
+                    /* FileHdr( 1024b ) + Segment[ 2032 ] each 64b */
                     HT_HDR_SIZE           = KV_HT_HDR_SIZE,
-		    /* ThrCtx[ 128 ] each 1024b containing ThrMCSLock[ 56 ] */
+                    /* ThrCtx[ 128 ] each 1024b containing ThrMCSLock[ 56 ] */
                     HT_CTX_SIZE           = KV_HT_CTX_SIZE,
                     /* ThrCtx[] size */
                     MAX_CTX_ID            = HT_CTX_SIZE / HT_THR_CTX_SIZE,
                     /* FileHdr::name[] size */
-                    MAX_FILE_HDR_NAME_LEN =
-   64/*sig hdr*/ - ( 16/*sig*/ +
-                      4/*hash_value_ratio*/ +
-                      4/*critical_load*/ +
-                      4/*current_load*/ +
-                      4/*ht_load*/ +
-                      4/*value_load*/ +
-                      4/*load_percent + pad */ +
-                      4/*next_ctx*/ +
-                      4/*max_immed_value_size*/ +
-                      8/*max_segment_value_size*/ +
-                      8/*current_stamp*/ ) + 64 * 2; /* currently 128b */
+                    MAX_FILE_HDR_NAME_LEN = 64/*sig hdr*/ - 16/*sig*/;
 
 /* hdr size should be 256b */
 struct FileHdr {
-  /* first part are 192b, not referenced very much */
+             /* first 64b, not referenced very much */
   char       sig[ 16 ]; /* version info and mem type (a,f,g,h,p,q,r,v,w,x) */
   char       name[ MAX_FILE_HDR_NAME_LEN ];  /* name of this map file */
+
+             /* second 64b, updated infreq, load calculations and stamps */
   float      hash_value_ratio,       /* ratio of ht[] mem to values mem */
              critical_load,          /* current > critical, forced evictions */
              current_load,           /* max( ht load, value load ) */
@@ -97,26 +90,88 @@ struct FileHdr {
              value_load;             /* seg data used / seg size */
   uint8_t    load_percent;           /* current_load * 100 / critical_load */
   uint8_t    padb;      
+  uint16_t   padh;
   AtomUInt16 next_ctx;               /* next free ctx[] */
   AtomUInt16 ctx_used;               /* number of ctx used */
   uint32_t   max_immed_value_size;   /* sizeof value in entry, including key */
   uint64_t   max_segment_value_size, /* sizeof value in segment, inc key */
-             current_stamp;          /* cached current time, used for expire */
+             current_stamp,          /* cached current time, used for expire */
                                      /* time evictions, not high resolution */
-  /* next 64b useful read only data, referenced a lot */
-  uint64_t   create_stamp,   /* time created (nanosecs), base timestamp */
-             map_size,       /* map size from geom */
-             max_value_size, /* max value size from geom */
-             ht_size,        /* calculated size of ht[] */
-             seg_size,       /* size of segment[] */
-             seg_start,      /* offset of first segment */
-             padq;
-  uint32_t   hash_entry_size; /* size of each hash table entry */
-  uint16_t   nsegs,           /* count of segments */
-             seg_align_shift; /* 1 << 6 = 64, align size for vals in segment */
+             create_stamp,    /* time created (nanosecs), base timestamp */
+             map_size,        /* map size from geom */
 
+             /* third 64b useful read only data, referenced a lot */
+             max_value_size,  /* max value size from geom */
+             ht_size,         /* calculated size of ht[] */
+             hash_key_seed,   /* dynamic seed of hash, make DoS harder */
+             ht_mod_mask,     /* mask of bits used for mod */
+             ht_mod_fraction; /* fraction of mask used in ht */
+  uint32_t   seg_size_val,    /* size of segment[] ( val << seg_align_shift ) */
+             seg_start_val,   /* offset of first segment ( val << seg_align ) */
+             hash_entry_size; /* size of each hash table entry */
+  uint16_t   seg_align_shift, /* 1 << 6 = 64, align size for vals in segment */
+             nsegs,           /* count of segments */
+             log2_ht_size,    /* ht_size <= 1 << log2_ht_size */
+             cuckoo_buckets;  /* number of buckets per hash function */
+  uint8_t    ht_mod_shift,    /* mod calc: ( ( k & mask ) * frac ) >> shift */
+             cuckoo_arity;    /* number of hash functions used, <= 1 linear */
+  uint8_t    padb2[ 2 ];
+  /* spin locks */
+  static const uint64_t LOCKQ_SIZE =
+    ( KV_HT_FILE_HDR_SIZE - 64 * 3 ) / sizeof( uint64_t );
+  uint64_t   lockq[ LOCKQ_SIZE ];
+
+  /* value segment alignment and sizes (usually is 64 byte aligned) */
   uint64_t seg_align( void ) const {
     return (uint64_t) 1 << this->seg_align_shift;
+  }
+  uint64_t seg_size( void ) const {
+    return (uint64_t) this->seg_size_val << this->seg_align_shift;
+  }
+  uint64_t seg_start( void ) const {
+    return (uint64_t) this->seg_start_val << this->seg_align_shift;
+  }
+  /* fixed point mod() */
+  uint64_t ht_mod( const uint64_t k ) const {
+    return ( ( k & this->ht_mod_mask ) * this->ht_mod_fraction ) >>
+           this->ht_mod_shift;
+  }
+  /* spin locks using the lockq[] bits in the header, cacheline[ 13 ] at off 3 */
+  bool ht_spin_trylock( const uint64_t id ) {
+    volatile uint64_t &ptr = this->lockq[ ( id >> 6 ) % LOCKQ_SIZE ];
+    uint64_t set = (uint64_t) 1 << ( id & 63 ),
+             old_val, new_val;
+    if ( ( ptr & set ) == 0 ) {
+      old_val = ptr;
+      new_val = old_val | set;
+      return kv_sync_cmpxchg( &ptr, old_val, new_val );
+    }
+    return false;
+  }
+  void ht_spin_lock( const uint64_t id ) {
+    volatile uint64_t &ptr = this->lockq[ ( id >> 6 ) % LOCKQ_SIZE ];
+    uint64_t set = (uint64_t) 1 << ( id & 63 ),
+             old_val, new_val;
+    for (;;) {
+      while ( ( ptr & set ) != 0 )
+        kv_sync_pause();
+      old_val = ptr;
+      new_val = old_val | set;
+      if ( kv_sync_cmpxchg( &ptr, old_val, new_val ) )
+        return;
+    }
+  }
+  void ht_spin_unlock( const uint64_t id ) {
+    volatile uint64_t &ptr = this->lockq[ ( id >> 6 ) % LOCKQ_SIZE ];
+    uint64_t clr = ~((uint64_t) 1 << ( id & 63 )),
+             old_val, new_val;
+    for (;;) {
+      old_val = ptr;
+      new_val = old_val & clr;
+      if ( kv_sync_cmpxchg( &ptr, old_val, new_val ) )
+        return;
+      kv_sync_pause();
+    }
   }
 };
 
@@ -133,11 +188,11 @@ struct ThrCtxHdr {
                          ctx_thrid; /* thread id (syscall(SYS_gettid)) */
 
   HashCounters           stat;      /* stats for this thread context */
-  rand::xoroshiro128plus rand;      /* rand state initialized on creation */
+  rand::xoroshiro128plus rng;       /* rand state initialized on creation */
 
-  uint64_t               mcs_used,  /* bit mask of used locks (64 > MCS_CNT=56)*/
-                         seg_pref;  /* insert segment pref, bits from rand */
-  /* 16(int32) + 80(stat) + 16(rand) + 16(uint64) = 128 */
+  uint64_t               mcs_used,  /* bit mask of used locks (64 > MCS_CNT=53)*/
+                         seg_pref;  /* insert segment pref, bits from rng */
+  /* 16(int32) + 128(stat) + 16(rng) + 16(uint64) = 176 */
 };
 
 struct ThrCtxEntry : public ThrCtxHdr {
@@ -155,19 +210,25 @@ struct ThrCtxEntry : public ThrCtxHdr {
 };
 
 struct ThrCtx : public ThrCtxEntry { /* each thread needs one of these */
-  char pad[ HT_THR_CTX_SIZE - sizeof( ThrCtxEntry ) ]; /* 1024b align */
-
+#if __cplusplus > 201103L
+  /* 1024b align */
+  static_assert( HT_THR_CTX_SIZE == sizeof( ThrCtxEntry ), "ctx hdr size" );
+#endif
   /* convenience functions for stats */
-  void incr_read( uint64_t cnt = 1 )   { this->stat.rd      += cnt; }
-  void incr_write( uint64_t cnt = 1 )  { this->stat.wr      += cnt; }
-  void incr_spins( uint64_t cnt = 1 )  { this->stat.spins   += cnt; }
-  void incr_chains( uint64_t cnt = 1 ) { this->stat.chains  += cnt; }
-  void incr_add( uint64_t cnt = 1 )    { this->stat.add     += cnt; }
-  void incr_drop( uint64_t cnt = 1 )   { this->stat.drop    += cnt; }
-  void incr_htevict( uint64_t cnt = 1 ){ this->stat.htevict += cnt; }
-  void incr_afail( uint64_t cnt = 1 )  { this->stat.afail   += cnt; }
-  void incr_hit( uint64_t cnt = 1 )    { this->stat.hit     += cnt; }
-  void incr_miss( uint64_t cnt = 1 )   { this->stat.miss    += cnt; }
+  void incr_read( uint64_t cnt = 1 )    { this->stat.rd      += cnt; }
+  void incr_write( uint64_t cnt = 1 )   { this->stat.wr      += cnt; }
+  void incr_spins( uint64_t cnt = 1 )   { this->stat.spins   += cnt; }
+  void incr_chains( uint64_t cnt = 1 )  { this->stat.chains  += cnt; }
+  void incr_add( uint64_t cnt = 1 )     { this->stat.add     += cnt; }
+  void incr_drop( uint64_t cnt = 1 )    { this->stat.drop    += cnt; }
+  void incr_htevict( uint64_t cnt = 1 ) { this->stat.htevict += cnt; }
+  void incr_afail( uint64_t cnt = 1 )   { this->stat.afail   += cnt; }
+  void incr_hit( uint64_t cnt = 1 )     { this->stat.hit     += cnt; }
+  void incr_miss( uint64_t cnt = 1 )    { this->stat.miss    += cnt; }
+  void incr_cuckacq( uint64_t cnt = 1 ) { this->stat.cuckacq += cnt; }
+  void incr_cuckfet( uint64_t cnt = 1 ) { this->stat.cuckfet += cnt; }
+  void incr_cuckmov( uint64_t cnt = 1 ) { this->stat.cuckmov += cnt; }
+  void incr_cuckbiz( uint64_t cnt = 1 ) { this->stat.cuckbiz += cnt; }
 
   void get_ht_delta( HashDeltaCounters &stat ) const;
 
@@ -207,18 +268,24 @@ struct HashHdr : public FileHdr {
 
 struct HashTab {
   HashHdr hdr;
-  char    hdr_pad[ HT_HDR_SIZE - sizeof( HashHdr ) ];
-
+#if __cplusplus > 201103L
+  static_assert( HT_HDR_SIZE == sizeof( HashHdr ), "ht hdr size" );
+#endif
   ThrCtx ctx[ MAX_CTX_ID ];
-  char   ctx_pad[ HT_CTX_SIZE - sizeof( ThrCtx ) * MAX_CTX_ID ];
-
+#if __cplusplus > 201103L
+  static_assert( HT_CTX_SIZE == sizeof( ThrCtx ) * MAX_CTX_ID, "ht ctx size" );
+#endif
   /* tab size is this->hdr.ht_size * this->hdr.hash_entry_size,
      determined by total shm size */
 public:
-  HashEntry *get_entry( uint64_t i,  uint32_t hash_entry_size ) {
+  static HashEntry *get_entry( void *ht_base,  uint64_t i,
+                               uint32_t hash_entry_size ) {
     return (HashEntry *) (void *)
-      &((uint8_t *) (void *) this)[ HT_HDR_SIZE + HT_CTX_SIZE +
-                                    i * (uint64_t) hash_entry_size ];
+      &((uint8_t *) ht_base)[ i * (uint64_t) hash_entry_size ];
+  }
+  HashEntry *get_entry( uint64_t i,  uint32_t hash_entry_size ) {
+    return get_entry( &((uint8_t *) (void *) this)[ HT_HDR_SIZE + HT_CTX_SIZE ],
+                      i, hash_entry_size );
   }
   HashEntry *get_entry( uint64_t i ) {
     return this->get_entry( i, this->hdr.hash_entry_size );
@@ -264,21 +331,19 @@ public:
     return this->hdr.seg[ i ];
   }
   void *seg_data( uint32_t i,  uint64_t off ) {
-    //return &((uint8_t *) this)[ this->segment( i ).seg_off + off ];
-    return &((uint8_t *) this)[ this->hdr.seg_start + 
-                                (uint64_t) i * this->hdr.seg_size + off ];
+    /*return &((uint8_t *) this)[ this->segment( i ).seg_off + off ];*/
+    return &((uint8_t *) this)[ this->hdr.seg_start() + 
+                                (uint64_t) i * this->hdr.seg_size() + off ];
   }
 };
 
-} // namespace kv
-} // namespace rai
-#endif // __cplusplus
+} /* namespace kv */
+} /* namespace rai */
+#endif /* __cplusplus */
 
 #ifdef __cplusplus
 extern "C" {
 #endif
-struct kv_hash_tab_s;
-typedef struct kv_hash_tab_s kv_hash_tab_t;
 
 kv_hash_tab_t *kv_alloc_map( kv_geom_t *geom );
 kv_hash_tab_t *kv_create_map( const char *map_name,  uint8_t facility,

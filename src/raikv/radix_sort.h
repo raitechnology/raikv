@@ -10,8 +10,14 @@ typedef struct kv_ht_sort_s {
   void   * item;
 } kv_ht_sort_t;
 
+#ifndef __rai__raikv__key_ctx_h__
+struct kv_hash_tab_s;
+typedef struct kv_hash_tab_s  kv_hash_tab_t;
+#endif
+
 /* sort ar[] elems in hashtable order */
-void kv_ht_radix_sort( kv_ht_sort_t *ar,  uint32_t ar_size,  uint64_t ht_size );
+void kv_ht_radix_sort( kv_ht_sort_t *ar,  uint32_t ar_size,
+                       kv_hash_tab_t *ht );
 #ifdef __cplusplus
 } /* extern "C" */
 #endif
@@ -289,8 +295,8 @@ struct RadixSort {
   }
 };
 
-} // namespace kv
-} // namespace rai
-#endif // __cplusplus
+} /* namespace kv */
+} /* namespace rai */
+#endif /* __cplusplus */
 
 #endif

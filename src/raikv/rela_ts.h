@@ -105,7 +105,7 @@ struct RelativeStamp {
   void get( uint64_t base,  uint64_t clock,  uint64_t &exp,  uint64_t &upd );
 };
 
-} // kv
-} // rai
+} /* kv */
+} /* rai */
 #endif
 #endif

@@ -23,6 +23,35 @@ extern void print_map_geom( HashTab * map,  uint32_t ctx_id );
 static void print_stats( uint32_t c = ctx_id );
 static void get_key_string( KeyFragment &kb,  char *key );
 
+FILE *outfp = NULL;
+bool quiet;
+
+static int
+xprintf( FILE *out,  const char *format, ... )
+{
+  FILE *o1 = out,
+       *o2 = ( ( out == NULL && ! quiet ) ? stdout : NULL );
+  int sz = 0;
+#ifndef va_copy
+#define va_copy( dst, src ) memcpy( &( dst ), &( src ), sizeof( va_list ) )
+#endif
+  va_list args;
+  va_start( args, format );
+  if ( o1 != NULL ) {
+    va_list aq;
+    va_copy( aq, args );
+    sz = vfprintf( o1, format, aq );
+    va_end( aq );
+  }
+  if ( o2 != NULL ) {
+    va_list aq;
+    va_copy( aq, args );
+    sz = vfprintf( o2, format, aq );
+    va_end( aq );
+  }
+  return sz;
+}
+
 static void
 shm_attach( const char *mn )
 {
@@ -58,15 +87,17 @@ print_stats( uint32_t c )
           alive = 2;
       }
     }
-    printf( "ctx %u%c:  pid %u, read %lu, write %lu, spin %lu, chains %lu"
-            ", add %lu, drop %lu, htevict %lu, afail %lu, hit %lu, miss %lu\n",
+    xprintf( 0, "ctx %u%c:  pid %u, read %lu, write %lu, spin %lu, chains %lu, "
+            "add %lu, drop %lu, htevict %lu, afail %lu, hit %lu, miss %lu, "
+            "cuckacq %lu, cuckfet %lu, cuckmov %lu, cuckbiz %lu\n",
         c, ( c == ctx_id ? '*' :
              ( alive == 2 ? '+' : ( alive == 1 ? '?' : '/' ) ) ),
         pid, stat.rd, stat.wr, stat.spins, stat.chains, stat.add, stat.drop,
-        stat.htevict, stat.afail, stat.hit, stat.miss );
+        stat.htevict, stat.afail, stat.hit, stat.miss, stat.cuckacq,
+        stat.cuckfet, stat.cuckmov, stat.cuckbiz );
   }
   else {
-    printf( "No ctx_id\n" );
+    xprintf( 0, "No ctx_id\n" );
   }
 }
 
@@ -77,11 +108,11 @@ print_mem( uint32_t s )
     Segment &seg = map->segment( s );
     uint64_t x, y;
     seg.get_position( seg.ring.val, map->hdr.seg_align_shift, x, y );
-    printf( "seg(%u): off=%lu, next=%lu:%lu, msg_count=%lu, avail_size=%lu, "
-            "move_msgs=%lu, move_size=%lu, evict_msgs=%lu, evict_size=%lu\n",
-            s, seg.seg_off, x, y, seg.msg_count.val,
-            seg.avail_size.val, seg.move_msgs, seg.move_size,
-	    seg.evict_msgs, seg.evict_size );
+    xprintf( 0, "seg(%u): off=%lu, next=%lu:%lu, msg_count=%lu, "
+             "avail_size=%lu, move_msgs=%lu, move_size=%lu, evict_msgs=%lu, "
+             "evict_size=%lu\n", s, seg.seg_off, x, y, seg.msg_count.val,
+             seg.avail_size.val, seg.move_msgs, seg.move_size, seg.evict_msgs,
+             seg.evict_size );
   }
 }
 
@@ -92,7 +123,7 @@ print_seg( uint32_t s )
     uint64_t dead_size = 0;
     char key[ 8192 ];
     print_mem( s );
-    uint64_t off = 0;
+    uint64_t off = 0, seg_size = map->hdr.seg_size();
     for ( MsgHdr *msg = (MsgHdr *) map->seg_data( s, off ); ; ) {
       if ( msg->size == 0 )
         break;
@@ -101,29 +132,29 @@ print_seg( uint32_t s )
       }
       else {
         if ( dead_size > 0 ) {
-          printf( "[dead %lu] ", dead_size );
+          xprintf( 0, "[dead %lu] ", dead_size );
           dead_size = 0;
         }
         KeyFragment &kb = msg->key;
         get_key_string( kb, key );
-        printf( "[%s %lu] ", key, msg->size );
+        xprintf( 0, "[%s %lu] ", key, msg->size );
       }
       off += msg->size;
-      if ( off >= map->hdr.seg_size )
+      if ( off >= seg_size )
         break;
       msg = (MsgHdr *) map->seg_data( s, off );
     }
     if ( dead_size > 0 ) {
-      printf( "[dead %lu] ", dead_size );
+      xprintf( 0, "[dead %lu] ", dead_size );
     }
-    printf( "\n" );
+    xprintf( 0, "\n" );
   }
 }
 
 static void
 print_status( const char *cmd,  const char *key,  KeyStatus status )
 {
-  printf( "%s %s%s%s status=%s:%s\n", cmd,
+  xprintf( 0, "%s %s%s%s status=%s:%s\n", cmd,
           key[ 0 ] == 0 ? "" : "\"", key, key[ 0 ] == 0 ? "" : "\"",
           key_status_string( status ),
           key_status_description( status ) );
@@ -163,10 +194,10 @@ struct HexDump {
       this->line[ this->hex+1 ] = hex_chars[ b & 0xf ];
       this->hex += 3;
       if ( b >= ' ' && b <= 127 )
-	line[ this->ascii ] = b;
+        line[ this->ascii ] = b;
       this->ascii++;
       if ( ( ++this->boff & 0x3 ) == 0 )
-	this->hex++;
+        this->hex++;
     }
     return off;
   }
@@ -178,7 +209,7 @@ dump_hex( void *ptr,  uint64_t size )
   HexDump hex;
   for ( uint64_t off = 0; off < size; ) {
     off = hex.fill_line( ptr, off, size );
-    printf( "%s\n", hex.line );
+    xprintf( 0, "%s\n", hex.line );
     hex.flush_line();
   }
 }
@@ -194,14 +225,14 @@ dump_value( const char *key )
   KeyStatus status;
 
   kb.set_string( key );
-  kctx.set_hash( kb.hash() );
+  kctx.set_hash( kb.hash( map->hdr.hash_key_seed ) );
 
   if ( (status = kctx.find( &wrk )) == KEY_OK &&
        (status = kctx.value( &ptr, size )) == KEY_OK ) {
     dump_hex( ptr, size );
   }
   if ( status != KEY_OK ) {
-    printf( "value \"%s\" status=%s:%s\n", key,
+    xprintf( 0, "value \"%s\" status=%s:%s\n", key,
             key_status_string( status ),
             key_status_description( status ) );
   }
@@ -242,8 +273,8 @@ parse_key_value( KeyBuf &kb,  const char *key,  size_t len )
     for ( j = 2; j < len; j += 2 ) {
       if ( ! isxdigit( key[ j ] ) || ! isxdigit( key[ j + 1 ] ) )
         break;
-      kb.buf[ kb.keylen++ ] = (char) ( hexval( key[ j ] ) << 4 ) |
-                                       hexval( key[ j + 1 ] );
+      kb.u.buf[ kb.keylen++ ] = (char) ( hexval( key[ j ] ) << 4 ) |
+                                         hexval( key[ j + 1 ] );
     }
     return j == len;
   }
@@ -254,7 +285,7 @@ parse_key_value( KeyBuf &kb,  const char *key,  size_t len )
   }
   if ( j == len ) {
     kb.keylen = sizeof( val );
-    ::memcpy( kb.buf, &val, sizeof( val ) );
+    ::memcpy( kb.u.buf, &val, sizeof( val ) );
     return true;
   }
   return false;
@@ -267,12 +298,12 @@ parse_key_string( KeyBuf &kb,  const char *key )
   if ( ! parse_key_value( kb, key, len ) ) {
     if ( len > 1 && key[ 0 ] == '\"' && key[ len - 1 ] == '\"' ) {
       kb.keylen = len - 1;
-      ::memcpy( kb.buf, &key[ 1 ], len - 2 );
-      kb.buf[ kb.keylen ] = '\0';
+      ::memcpy( kb.u.buf, &key[ 1 ], len - 2 );
+      kb.u.buf[ kb.keylen ] = '\0';
     }
     else {
       kb.keylen = len + 1;
-      ::memcpy( kb.buf, key, kb.keylen );
+      ::memcpy( kb.u.buf, key, kb.keylen );
     }
   }
 }
@@ -282,20 +313,20 @@ get_key_string( KeyFragment &kb,  char *key )
 {
   uint32_t j;
   for ( j = 0; j < kb.keylen; j++ )
-    if ( (uint8_t) kb.buf[ j ] < ' ' )
+    if ( (uint8_t) kb.u.buf[ j ] < ' ' )
       break;
-  if ( j + 1 != kb.keylen || kb.buf[ j ] != '\0' ) {
+  if ( j + 1 != kb.keylen || kb.u.buf[ j ] != '\0' ) {
     if ( kb.keylen == 8 ) {
       uint64_t val;
-      ::memcpy( &val, kb.buf, 8 );
-      int_to_string<uint64_t>( val, key );
+      ::memcpy( &val, kb.u.buf, 8 );
+      uint64_to_string( val, key );
     }
     else {
       j = 0;
       key[ j++ ] = '0';
       key[ j++ ] = 'x';
       for ( uint16_t i = 0; i < kb.keylen; i++ ) {
-        uint8_t b = (uint8_t) kb.buf[ i ];
+        uint8_t b = (uint8_t) kb.u.buf[ i ];
         key[ j++ ] = HexDump::hex_chars[ b >> 4 ];
         key[ j++ ] = HexDump::hex_chars[ b & 0xf ];
       }
@@ -303,7 +334,7 @@ get_key_string( KeyFragment &kb,  char *key )
     }
   }
   else {
-    ::memcpy( key, kb.buf, kb.keylen );
+    ::memcpy( key, kb.u.buf, kb.keylen );
   }
 }
 
@@ -325,21 +356,21 @@ flags_string( uint16_t fl,  char *buf )
   if ( ( fl & FL_UPDATED ) != 0 )
     buf = copy_fl( buf, "-Upd" );
   if ( ( fl & FL_IMMEDIATE_VALUE ) != 0 )
-    buf = copy_fl( buf, "-Imm" );
+    buf = copy_fl( buf, "-Val" );
   if ( ( fl & FL_IMMEDIATE_KEY ) != 0 )
-    buf = copy_fl( buf, "-Ikey" );
+    buf = copy_fl( buf, "-Key" );
   if ( ( fl & FL_PART_KEY ) != 0 )
-    buf = copy_fl( buf, "-Pkey" );
+    buf = copy_fl( buf, "-Part" );
   if ( ( fl & FL_DROPPED ) != 0 )
     buf = copy_fl( buf, "-Drop" );
   if ( ( fl & FL_EXPIRE_STAMP ) != 0 )
     buf = copy_fl( buf, "-Exp" );
   if ( ( fl & FL_UPDATE_STAMP ) != 0 )
     buf = copy_fl( buf, "-Stmp" );
-  if ( ( fl & FL_CRC_KEY ) != 0 )
-    buf = copy_fl( buf, "-Crc" );
-  if ( ( fl & FL_CRC_VALUE ) != 0 )
-    buf = copy_fl( buf, "-Cval" );
+  if ( ( fl & FL_MOVED ) != 0 )
+    buf = copy_fl( buf, "-Mved" );
+  if ( ( fl & FL_BUSY ) != 0 )
+    buf = copy_fl( buf, "-Busy" );
   *buf = '\0';
   return s;
 }
@@ -356,8 +387,8 @@ match( const char *s,  const char *u, ... )
       if ( *t == '\0' || *v == '\0' ) {
         if ( *t == '\0' && *v == '\0' )
           b = true;
-	if ( *t == 's' && t[ 1 ] == '\0' )
-	  b = true;
+        if ( *t == 's' && t[ 1 ] == '\0' )
+          b = true;
         break;
       }
       if ( tolower( *t ) != tolower( *v ) )
@@ -455,15 +486,15 @@ sprintf_time( uint64_t ns,  char *buf,  size_t sz )
     }
     else {
       if ( nano >= 1000 * 1000 ) {
-	n = ::snprintf( buf+i, sz-i, "%ums ", nano / ( 1000 * 1000 ) );
-	nano %= 1000 * 1000; if ( (i += n) >= sz ) goto truncated;
+        n = ::snprintf( buf+i, sz-i, "%ums ", nano / ( 1000 * 1000 ) );
+        nano %= 1000 * 1000; if ( (i += n) >= sz ) goto truncated;
       }
       if ( nano >= 1000 ) {
-	n = ::snprintf( buf+i, sz-i, "%uus ", nano / 1000 );
-	nano %= 1000; if ( (i += n) >= sz ) goto truncated;
+        n = ::snprintf( buf+i, sz-i, "%uus ", nano / 1000 );
+        nano %= 1000; if ( (i += n) >= sz ) goto truncated;
       }
       if ( nano > 0 )
-	::snprintf( buf+i, sz-i, "%uns", nano );
+        ::snprintf( buf+i, sz-i, "%uns", nano );
     }
   }
   else {
@@ -529,21 +560,76 @@ print_key_data( KeyCtx &kctx,  const char *what,  uint64_t sz )
   sprintf_stamps( kctx, upd, exp );
   if ( kctx.msg != NULL ) {
     ValueGeom &geom = kctx.geom;
-    printf(
-      "[%lu] [h=%lx:ctr=%lu:sz=%lu%s%s] (%s seg=%u:sz=%lu:off=%lu:ctr=%lu) %s\n",
-            kctx.pos, kctx.key, kctx.serial -
-            ( kctx.key & ValueCtr::SERIAL_MASK ), sz, upd, exp,
+    xprintf( 0, "[%lu] [h=%lx:chn=%lu:cnt=%lu:inc=%u:sz=%lu%s%s] "
+            "(%s seg=%u:sz=%lu:off=%lu:cnt=%lu) %s\n",
+            kctx.pos, kctx.key, kctx.chains, kctx.serial -
+            ( kctx.key & ValueCtr::SERIAL_MASK ), kctx.inc, sz, upd, exp,
             flags_string( kctx.entry->flags, fl ),
             geom.segment, geom.size, geom.offset,
             geom.serial - ( kctx.key & ValueCtr::SERIAL_MASK ), what );
   }
   else {
-    printf( "[%lu] [h=%lx:ctr=%lu:sz=%lu%s%s] (%s) %s\n",
-            kctx.pos, kctx.key, kctx.serial -
-            ( kctx.key & ValueCtr::SERIAL_MASK ), sz, upd, exp,
+    xprintf( 0, "[%lu] [h=%lx:chn=%lu:cnt=%lu:inc=%u:sz=%lu%s%s] (%s) %s\n",
+            kctx.pos, kctx.key, kctx.chains, kctx.serial -
+            ( kctx.key & ValueCtr::SERIAL_MASK ), kctx.inc, sz, upd, exp,
             flags_string( kctx.entry->flags, fl ), what );
   }
   return KEY_OK;
+}
+
+static void
+print_rdtsc( uint64_t t1, uint64_t t2, uint64_t t3,
+             const char *s1,  const char *s2 )
+{
+  xprintf( 0, "%lu [%s] %lu [%s]\n", t2 - t1, s1, t3 - t2, s2 );
+}
+
+static void
+print_rdtsc( uint64_t t1, uint64_t t2, uint64_t t3, uint64_t t4,
+             const char *s1,  const char *s2,  const char *s3 )
+{
+  xprintf( 0, "%lu [%s] %lu [%s] %lu [%s]\n",
+           t2 - t1, s1, t3 - t2, s2, t4 - t3, s3 );
+}
+
+static void
+validate_ht( HashTab *map )
+{
+  KeyBuf        kb, kb2;
+  KeyFragment * kp;
+  KeyCtx        kctx( map, ctx_id, &kb ),
+                kctx2( map, ctx_id, &kb2 );
+  KeyCtxAlloc8k wrk, wrk2;
+  char          buf[ 1024 ];
+  KeyStatus     status;
+
+  for ( uint64_t pos = 0; pos < map->hdr.ht_size; pos++ ) {
+    status = kctx.fetch( &wrk, pos );
+    if ( status == KEY_OK ) {
+      status = kctx.get_key( kp );
+      if ( status == KEY_OK ) {
+        uint64_t natural_pos, pos_off = 0;
+        kctx.get_pos_info( natural_pos, pos_off );
+        kb2 = *kp;
+        if ( kctx.cuckoo_arity > 1 &&
+             pos_off / kctx.cuckoo_buckets != kctx.inc ) {
+          get_key_string( kb2, buf );
+          print_status( "find-buckets", buf, KEY_MAX_CHAINS );
+          xprintf( 0, "pos_off %lu natural_pos %lu\n", pos_off, natural_pos );
+          print_key_data( kctx, "", 0 );
+        }
+        kctx2.set_hash( kb2.hash( map->hdr.hash_key_seed ) );
+        if ( (status = kctx2.find( &wrk2 )) != KEY_OK ||
+             kctx2.pos != pos ) {
+          get_key_string( kb2, buf );
+          print_status( "find-position", buf, status );
+          xprintf( 0, "pos %lu != kctx.pos %lu\n", pos, kctx2.pos );
+          xprintf( 0, "pos_off %lu natural_pos %lu\n", pos_off, natural_pos );
+          print_key_data( kctx, "", 0 );
+        }
+      }
+    }
+  }
 }
 
 static void
@@ -563,23 +649,40 @@ cli( void )
   char          buf[ 16 * 1024 ], cmd[ 16 ], key[ 8192 ], *data;
   char          fl[ 32 ], upd[ 64 ], exp[ 64 ], xbuf[ 32 ], tmp = 0;
   void        * ptr;
+  FILE        * fp,
+              * infp = stdin;
   uint64_t      exp_ns;
-  uint64_t      sz, h;
+  uint64_t      sz, h, t1, t2, t3, t4;
   double        f;
   uint32_t      cnt, i, j, print_count;
   char          cmd_char, last_cmd = 0;
   KeyStatus     status;
+  bool          inquiet = false, do_validate = false;
 
   ::memset( cmd, 0, sizeof( cmd ) );
   ::memset( key, 0, sizeof( key ) );
   kld.zero();
 
-  printf( "> " ); fflush( stdout );
+  if ( ! quiet ) {
+    printf( "> " );
+    fflush( stdout );
+  }
   for (;;) {
     char *p, *q, *r;
-    if ( fgets( buf, sizeof( buf ), stdin ) == NULL )
-      break;
-
+    while ( fgets( buf, sizeof( buf ), infp ) == NULL ) {
+      if ( infp == stdin )
+        goto break_loop;
+      fclose( infp );
+      infp = stdin;
+      if ( quiet && ! inquiet ) {
+        printf( "> " );
+        fflush( stdout );
+      }
+      quiet = inquiet;
+    }
+    if ( infp != stdin && ! quiet ) {
+      fputs( buf, stdout );
+    }
     cmd[ 0 ] = '\0'; key[ 0 ] = '\0'; data = &tmp; sz = 0;
     exp_ns = 0;
     if ( eat_token( buf, p, cmd, sizeof( cmd ) ) ) {
@@ -607,7 +710,7 @@ cli( void )
     switch ( cmd_char ) {
       case 'c': /* contexts */
         for ( uint32_t c = 0; c < MAX_CTX_ID; c++ ) {
-          if ( map->ctx[ c ].ctx_pid != 0 )
+          if ( c == 0 || map->ctx[ c ].ctx_pid != 0 )
             print_stats( c );
         }
         break;
@@ -616,12 +719,12 @@ cli( void )
       case 'p': /* put */
       case 't': /* tombstone */
         parse_key_string( kb, key );
-        kctx.set_hash( kb.hash() );
+        kctx.set_hash( kb.hash( map->hdr.hash_key_seed ) );
 
-        if ( (status = kctx.acquire()) <= KEY_IS_NEW ) {
+        if ( (status = kctx.acquire( &wrk )) <= KEY_IS_NEW ) {
           kctx.expire_ns = exp_ns;
-          kctx.update_ns = current_realtime_ns();
-          map->hdr.current_stamp = kctx.update_ns;
+          /*kctx.update_ns = current_realtime_ns();*/
+          /*map->hdr.current_stamp = kctx.update_ns;*/
           if ( cmd_char == 'p' ) {
             if ( (status = kctx.resize( &ptr, sz + 1 )) == KEY_OK ) {
               ::memcpy( ptr, data, sz + 1 );
@@ -641,54 +744,79 @@ cli( void )
           }
         }
         last_cmd = 0;
+        if ( do_validate ) {
+          validate_ht( map );
+        }
         break;
 
       case 'h': /* hex */
       case 'i': /* int */
       case 'g': /* get */
+      case 'f': { /* fetch */
+        bool do_int = false, do_get = false;
+        char action = cmd_char;
         parse_key_string( kb, key );
-        kctx.set_hash( kb.hash() );
+        if ( cmd_char == 'f' )
+          action = cmd[ 1 ];
+        switch ( action ) {
+          case 'h': break;
+          case 'i': do_int = true; break;
+          default:
+          case 'g': do_get = true; break;
+        }
+        t1 = get_rdtscp();
+        kctx.set_hash( kb.hash( map->hdr.hash_key_seed ) );
+        t2 = get_rdtscp();
         cnt = 0;
         do {
-          if ( (status = kctx.find( &wrk )) == KEY_OK ) {
+          if ( cmd_char != 'f' )
+            status = kctx.find( &wrk );
+          else
+            status = kctx.fetch( &wrk, *(uint64_t *) kb.u.buf );
+          if ( status == KEY_OK ) {
+            t3 = get_rdtscp();
             if ( (status = kctx.value( &data, sz )) == KEY_OK ) {
+              t4 = get_rdtscp();
+              print_rdtsc( t1, t2, t3, t4, "hash", "find", "value" );
               bool not_printed = false;
               status = print_key_data( kctx, "get", sz );
-              if ( cmd_char == 'i' ) {
+              if ( do_int ) {
                 if ( sz == 8 )
-                  printf( "->%lu\n", *(uint64_t *) (void *) data );
+                  xprintf( 0, "->%lu\n", *(uint64_t *) (void *) data );
                 else if ( sz == 4 )
-                  printf( "->%u\n", *(uint32_t *) (void *) data );
+                  xprintf( 0, "->%u\n", *(uint32_t *) (void *) data );
                 else if ( sz == 2 )
-                  printf( "->%u\n", *(uint16_t *) (void *) data );
+                  xprintf( 0, "->%u\n", *(uint16_t *) (void *) data );
                 else if ( sz == 1 )
-                  printf( "->%u\n", *(uint8_t *) (void *) data );
+                  xprintf( 0, "->%u\n", *(uint8_t *) (void *) data );
                 else
                   not_printed = true;
               }
-              else if ( cmd_char == 'g' && sz < 16 * 1024 )
-                printf( "->\"%.*s\"\n", (int) sz, (char *) data );
+              else if ( do_get && sz < 16 * 1024 )
+                xprintf( 0, "->\"%.*s\"\n", (int) sz, (char *) data );
               else
                 not_printed = true;
               if ( not_printed ) {
-                printf( "->\n" );
+                xprintf( 0, "->\n" );
                 dump_hex( data, sz );
               }
             }
           }
           if ( status == KEY_NOT_FOUND ) {
-            printf( "[%lu] [h=%lx]: \n",
+            t3 = get_rdtscp();
+            print_rdtsc( t1, t2, t3, "hash", "find" );
+            xprintf( 0, "[%lu] [h=%lx]: \n",
                     kctx.pos, kctx.key );
             print_status( cmd, key, status );
             status = KEY_OK;
           }
         } while ( status == KEY_MUTATED && ++cnt < 100 );
         break;
-
+      }
       case 'j': /* jump */
       case 'k': /* keys */
         if ( kld.pos == map->hdr.ht_size ) {
-      case 'K':
+      case 'K': /* keys start at top */
           kld.zero();
         }
         if ( cmd_char == 'j' ) {
@@ -699,7 +827,7 @@ cli( void )
                 j = map->hdr.ht_size - 24;
               else if ( ::strcmp( key, "0" ) != 0 ) {
                 parse_key_string( kb, key );
-                j = ( kb.hash() % map->hdr.ht_size );
+                j = map->hdr.ht_mod( kb.hash( map->hdr.hash_key_seed ) );
               }
             }
             if ( j == 0 )
@@ -716,22 +844,14 @@ cli( void )
             status = kctx.get_key( kp );
             if ( status == KEY_OK || status == KEY_TOMBSTONE ||
                  status == KEY_PART_ONLY ) {
-              uint64_t natural_pos = kctx.key % map->hdr.ht_size;
-              if ( kctx.pos == natural_pos )
-                kld.hit[ 0 ]++;
+              uint64_t natural_pos, pos_off = 0;
+              kctx.get_pos_info( natural_pos, pos_off );
+              if ( pos_off < MAX_OFF )
+                kld.hit[ pos_off ]++;
               else {
-                uint64_t off;
-                if ( kctx.pos > natural_pos )
-                  off = kctx.pos - natural_pos;
-                else
-                  off = kctx.pos + ( map->hdr.ht_size - natural_pos );
-                if ( off < MAX_OFF )
-                  kld.hit[ off ]++;
-                else {
-                  kld.hit[ MAX_OFF ]++;
-                  if ( off > kld.max_hit )
-                    kld.max_hit = off;
-                }
+                kld.hit[ MAX_OFF ]++;
+                if ( pos_off > kld.max_hit )
+                  kld.max_hit = pos_off;
               }
               if ( kctx.entry->test( FL_DROPPED ) )
                 kld.drops++;
@@ -745,9 +865,11 @@ cli( void )
                   else
                     ::strcpy( key, key_status_string( status ) );
                   sprintf_stamps( kctx, upd, exp );
-                  printf( "[%lu] %s (%s seg=%u:sz=%lu:off=%lu%s%s)\n", kld.pos,
-                          key, flags_string( kctx.entry->flags, fl ),
-                          geom.segment, geom.size, geom.offset, upd, exp );
+                  xprintf( 0,
+                           "[%lu]+%u.%lu %s (%s seg=%u:sz=%lu:off=%lu%s%s)\n",
+                           kld.pos, kctx.inc, pos_off, key,
+                           flags_string( kctx.entry->flags, fl ),
+                           geom.segment, geom.size, geom.offset, upd, exp );
                   print_count++;
                 }
                 kld.seg_values++;
@@ -763,7 +885,8 @@ cli( void )
                   else
                     ::strcpy( key, key_status_string( status ) );
                   sprintf_stamps( kctx, upd, exp );
-                  printf( "[%lu] %s (%s %s%s)\n", kld.pos, key,
+                  xprintf( 0, "[%lu]+%u.%lu %s (%s %s%s)\n",
+                           kld.pos, kctx.inc, pos_off, key,
                           flags_string( kctx.entry->flags, fl ), upd, exp );
                   print_count++;
                 }
@@ -774,59 +897,68 @@ cli( void )
           }
           if ( kld.pos >= kld.jump && status > KEY_NOT_FOUND ) {
             xbuf[ 0 ] = '@';
-            int_to_string<uint64_t>( kld.pos, &xbuf[ 1 ] );
+            uint64_to_string( kld.pos, &xbuf[ 1 ] );
             print_status( "keys", xbuf, status );
             kld.err_count++;
             print_count++;
           }
           kld.pos++;
         }
-        printf( "%lu keys, (%lu segment, %lu immediate, %lu none, %lu drops)\n",
-                kld.key_count, kld.seg_values, kld.immed_values, kld.no_value,
-                kld.drops );
+        xprintf( 0, "%lu keys, (%lu segment, %lu immediate, %lu none, "
+                 "%lu drops)\n", kld.key_count, kld.seg_values,
+                 kld.immed_values, kld.no_value, kld.drops );
         if ( kld.err_count > 0 )
-          printf( "%lu errors\n", kld.err_count );
+          xprintf( 0, "%lu errors\n", kld.err_count );
         h = kld.hit[ 0 ];
         f = (double) h * 100.0 / (double) kld.key_count;
         j = 0;
-        printf( "0:%lu(%.1f)", h, f );
+        xprintf( 0, "0:%lu(%.1f)", h, f );
         for ( i = 1; i < MAX_OFF; i++ ) {
           if ( kld.hit[ i ] > 0 ) {
             j = i;
-            printf( ", %u:%lu", i, kld.hit[ i ] );
+            xprintf( 0, ", %u:%lu", i, kld.hit[ i ] );
             if ( f <= 99.9 ) {
               h += kld.hit[ i ];
               f = (double) h * 100.0 / (double) kld.key_count;
               if ( f <= 99.9 )
-                printf( "(%.1f)", f );
+                xprintf( 0, "(%.1f)", f );
             }
           }
         }
         if ( kld.hit[ i ] > 0 ) {
           j = i;
-          printf( ", >=%u:%lu", i, kld.hit[ i ] );
+          xprintf( 0, ", >=%u:%lu", i, kld.hit[ i ] );
           if ( f < 99.9 ) {
             h += kld.hit[ i ];
             f = (double) h * 100.0 / (double) kld.key_count;
             if ( f <= 99.9 )
-              printf( "(%.1f)", f );
+              xprintf( 0, "(%.1f)", f );
           }
         }
-        printf( " max=%lu\n", kld.max_hit == 0 ? j : kld.max_hit );
+        xprintf( 0, " max=%lu\n", kld.max_hit == 0 ? j : kld.max_hit );
         if ( kld.pos < map->hdr.ht_size ) {
-          printf( "pos %lu of %lu (more)\n",
+          xprintf( 0, "pos %lu of %lu (more)\n",
                   kld.pos, map->hdr.ht_size );
         }
         status = KEY_OK;
         break;
 
-      case 'm':
+      case 'm': /* mem */
         for ( uint32_t i = 0; i < map->hdr.nsegs; i++ )
           print_mem( i );
         break;
 
-      case 'x':
-        print_seg( atoi( key ) );
+      case 'r': /* read file */
+      case 'R':
+        fp = fopen( key, "r" );
+        if ( fp == NULL )
+          perror( key );
+        else {
+          infp    = fp;
+          inquiet = quiet;
+          if ( ! quiet )
+            quiet = ( cmd_char == 'R' );
+        }
         break;
 
       case 's': /* stats */
@@ -834,42 +966,59 @@ cli( void )
         print_stats();
         break;
 
-      case 'q':
+      case 'v': /* validate */
+        validate_ht( map );
+        do_validate = ! do_validate;
+        xprintf( 0, "do_validate = %s\n", do_validate ? "true" : "false" );
+        break;
+
+      case 'x': /* examine segment */
+        print_seg( atoi( key ) );
+        break;
+
+      case 'q': /* quit */
         goto break_loop;
 
       default:
-        printf( "put [+exp] key value  ; set key to value w/optional +expires\n"
-                "get key               ; print key value as string\n"
-                "hex key               ; print hex dump of key value\n"
-                "int key               ; print int value of key\n"
-                "drop key              ; drop key\n"
-                "tomb key              ; tombstone key\n"
-                "keys [pat]            ; list keys matching (K to start over)\n"
-                "jump position         ; jump to position and list keys\n"
-                "mem                   ; print segment offsets\n"
-                "xamin seg#            ; dump segment data\n"
-                "stats                 ; print stats\n"
-                "contexts              ; print stats for all contexts\n"
-                "quit                  ; bye\n" );
+        xprintf( 0,
+        "put [+exp] key value  ; set key to value w/optional +expires\n"
+        "get key               ; print key value as string\n"
+        "hex key               ; print hex dump of key value\n"
+        "int key               ; print int value of key (sz 2^N)\n"
+        "f{get,int,hex} pos    ; print int value of ht[ pos ]\n"
+        "drop key              ; drop key\n"
+        "tomb key              ; tombstone key\n"
+        "keys [pat]            ; list keys matching (K to start over)\n"
+        "jump position         ; jump to position and list keys\n"
+        "mem                   ; print segment offsets\n"
+        "validate              ; validate all keys are reachable\n"
+        "xamin seg#            ; dump segment data\n"
+        "stats                 ; print stats\n"
+        "contexts              ; print stats for all contexts\n"
+        "read file             ; read input from file (R to read quietly)\n"
+        "quit                  ; bye\n" );
         break;
     }
     if ( status != KEY_OK )
       print_status( cmd, key, status );
-    printf( "> " ); fflush( stdout );
+    if ( ! quiet ) {
+      printf( "> " );
+      fflush( stdout );
+    }
   }
 break_loop:;
-  printf( "bye\n" );
+  xprintf( 0, "bye\n" );
 }
 
 int
 main( int argc, char *argv[] )
 {
-  if ( argc < 2 ) {
+/*  if ( argc < 2 ) {
     fprintf( stderr, "%s map [key1 key2 ...]\n", argv[ 0 ] );
     return 1;
-  }
+  }*/
 
-  shm_attach( argv[ 1 ] );
+  shm_attach( argc < 2 ? "posix:shm.test" : argv[ 1 ] );
   if ( map == NULL )
     return 2;
 
@@ -883,4 +1032,3 @@ main( int argc, char *argv[] )
   shm_close();
   return 0;
 }
-

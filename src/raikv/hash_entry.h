@@ -20,18 +20,19 @@ namespace kv {
 
 /* flags attached to hash entry and msg value */
 enum KeyValueFlags {
-  FL_NO_ENTRY	     =   0x00, /* initialize */
-  FL_ALIGNMENT	     =   0x07, /* X=[0->7], data alignment: 1 << X */
-  FL_SEGMENT_VALUE   =   0x08, /* value is in segment */
-  FL_UPDATED         =   0x10, /* was updated recently, useful for persistence */
-  FL_IMMEDIATE_VALUE =   0x20, /* has immediate data, no segment data used */
-  FL_IMMEDIATE_KEY   =   0x40, /* full key is in hash entry */
-  FL_PART_KEY        =   0x80, /* part of key is in hash entry */
-  FL_DROPPED         =  0x100, /* dropped key + data */
-  FL_EXPIRE_STAMP    =  0x200, /* has expiration time stamp */
-  FL_UPDATE_STAMP    =  0x400, /* has update time stamp */
-  FL_CRC_KEY         =  0x800, /* key to big for hash entry, use crc */
-  FL_CRC_VALUE       = 0x1000, /* use crc to seal value */
+  FL_NO_ENTRY        =   0x00, /* initialize */
+  FL_ALIGNMENT       =   0x03, /* X=[0->3], data alignment: 2 << X, 2 -> 16 */
+#define FL_CUCKOO_SHIFT 2
+  FL_CUCKOO_INC      =   0x0f << FL_CUCKOO_SHIFT, /* X=[0->f], cuckoo hash num*/
+  FL_SEGMENT_VALUE   =   0x40, /* value is in segment */
+  FL_UPDATED         =   0x80, /* was updated recently, useful for persistence */
+  FL_IMMEDIATE_VALUE =  0x100, /* has immediate data, no segment data used */
+  FL_IMMEDIATE_KEY   =  0x200, /* full key is in hash entry */
+  FL_PART_KEY        =  0x400, /* part of key is in hash entry */
+  FL_DROPPED         =  0x800, /* dropped key + data */
+  FL_EXPIRE_STAMP    = 0x1000, /* has expiration time stamp */
+  FL_UPDATE_STAMP    = 0x2000, /* has update time stamp */
+  FL_MOVED           = 0x4000, /* cuckoo move */
   FL_BUSY            = 0x8000  /* msg is busy */
 };
 
@@ -101,7 +102,7 @@ struct HashEntry { /* min sizeof HashEntry is 40b: 16 key, 16 val ptr, 8 ctr */
 
   void copy_key( KeyFragment &kb ) {
     uint16_t       * k = (uint16_t *) (void *) &kb;
-    const uint16_t * e = (uint16_t *) (void *) &kb.buf[ kb.keylen ];
+    const uint16_t * e = (uint16_t *) (void *) &kb.u.buf[ kb.keylen ];
     uint16_t       * p = (uint16_t *) (void *) &this->key;
     /* copy all of key, 2b at a time, 1b overruns won't hurt */
     do {
@@ -132,6 +133,13 @@ struct HashEntry { /* min sizeof HashEntry is 40b: 16 key, 16 val ptr, 8 ctr */
   }
   bool check_seal( uint32_t hash_entry_size ) {
     return this->value_ctr( hash_entry_size ).seal == 1;
+  }
+  uint8_t cuckoo_inc( void ) const {
+    return this->test( FL_CUCKOO_INC ) >> FL_CUCKOO_SHIFT;
+  }
+  void set_cuckoo_inc( uint8_t inc ) {
+    this->clear( FL_CUCKOO_INC );
+    this->set( inc << FL_CUCKOO_SHIFT );
   }
   /* ptr after key, only valid when FL_IMMEDIATE_VALUE is set */
   uint8_t *immediate_value( void ) const {
@@ -184,8 +192,8 @@ struct HashEntry { /* min sizeof HashEntry is 40b: 16 key, 16 val ptr, 8 ctr */
   }
 };
 
-} // kv
-} // rai
+} /* kv */
+} /* rai */
 
 #endif
 #endif

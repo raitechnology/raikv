@@ -41,7 +41,7 @@ typedef volatile uint8_t  kv_atom_uint8_t;
 namespace rai {
 namespace kv {
 
-//#define TEST_ATOM_SPEED 1
+/*#define TEST_ATOM_SPEED 1*/
 template <class Int>
 struct Atom {
   volatile Int val;
@@ -188,8 +188,8 @@ struct MCSLock {
   }
 };
 
-} // namespace kv
-} // namespace rai
+} /* namespace kv */
+} /* namespace rai */
 #endif
 
 #endif

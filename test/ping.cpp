@@ -125,8 +125,8 @@ main( int argc, char *argv[] )
 
   KeyCtx pingctx( map, ctx_id, &pingkb ),
          pongctx( map, ctx_id, &pongkb );
-  pingctx.set_hash( pingkb.hash() );
-  pongctx.set_hash( pongkb.hash() );
+  pingctx.set_hash( pingkb.hash( map->hdr.hash_key_seed ) );
+  pongctx.set_hash( pongkb.hash( map->hdr.hash_key_seed ) );
 
   if ( pausesp != NULL && ::strcmp( pausesp, "pause" ) == 0 )
     use_pause = true;
@@ -148,12 +148,12 @@ main( int argc, char *argv[] )
     //init.ping_time = current_monotonic_time_ns();
     init.ping_time = get_rdtsc();
     init.serial    = 1;
-    if ( pingctx.acquire() <= KEY_IS_NEW ) {
+    if ( pingctx.acquire( &wrk ) <= KEY_IS_NEW ) {
       if ( pingctx.resize( &ptr, sizeof( PingRec ) ) == KEY_OK )
         *ptr = init;
       pingctx.release();
     }
-    if ( pongctx.acquire() <= KEY_IS_NEW ) {
+    if ( pongctx.acquire( &wrk ) <= KEY_IS_NEW ) {
       if ( pongctx.value( &ptr, size ) == KEY_OK ) {
         init = *ptr;
         init.serial++;
@@ -177,7 +177,7 @@ main( int argc, char *argv[] )
             count++;
           }
           KeyStatus status;
-          if ( (status = pongctx.acquire()) <= KEY_IS_NEW ) {
+          if ( (status = pongctx.acquire( &wrk )) <= KEY_IS_NEW ) {
             if ( (status = pongctx.value( &ptr, size )) == KEY_OK ) {
               init = *ptr;
               init.serial++;
@@ -229,7 +229,7 @@ main( int argc, char *argv[] )
     //init.ping_time = current_monotonic_time_ns();
     init.ping_time = get_rdtsc();
     init.serial    = 1;
-    if ( pongctx.acquire() <= KEY_IS_NEW ) {
+    if ( pongctx.acquire( &wrk ) <= KEY_IS_NEW ) {
       if ( pongctx.resize( &ptr, sizeof( PingRec ) ) == KEY_OK )
         *ptr = init;
       pongctx.release();
@@ -250,7 +250,7 @@ main( int argc, char *argv[] )
             count++;
           }
           KeyStatus status;
-          if ( (status = pingctx.acquire()) <= KEY_IS_NEW ) {
+          if ( (status = pingctx.acquire( &wrk )) <= KEY_IS_NEW ) {
             if ( (status = pingctx.value( &ptr, size )) == KEY_OK ) {
               init = *ptr;
               init.serial++;

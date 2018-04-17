@@ -9,26 +9,55 @@
 using namespace rai;
 using namespace kv;
 
-KeyCtx::KeyCtx( HashTab *t,  uint32_t id,  KeyFragment *b )
-      : ht( *t ), kbuf( b ), ctx_id( id ),
-        hash_entry_size( t->hdr.hash_entry_size ),
-        ht_size( t->hdr.ht_size )
+/* KeyFragment b is usually null */
+KeyCtx::KeyCtx( HashTab *t, uint32_t id, KeyFragment *b )
+  : ht( *t )
+  , kbuf( b )
+  , ctx_id( id )
+  , hash_entry_size( t->hdr.hash_entry_size )
+  , ht_size( t->hdr.ht_size )
+  , cuckoo_buckets( t->hdr.cuckoo_buckets )
+  , cuckoo_arity( t->hdr.cuckoo_arity )
+  , inc( 0 )
+  , drop_flags( 0 )
+  , flags( KEYCTX_IS_READ_ONLY )
+  , max_chains( t->hdr.ht_size )
 {
-  ::memset( &this->entry, 0, (uint8_t *) (void *) &(&this->flags)[ 1 ] -
-                             (uint8_t *) (void *) &this->entry );
-  this->max_chains = 6;
-  this->set( KEYCTX_IS_READ_ONLY );
+  ::memset( &this->chains, 0,
+            (uint8_t *) (void *) &( &this->wrk )[ 1 ] -
+              (uint8_t *) (void *) &this->chains );
 }
 
-KeyCtx::KeyCtx( HashTab *t,  uint32_t id,  KeyFragment &b )
-      : ht( *t ), kbuf( &b ), ctx_id( id ),
-        hash_entry_size( t->hdr.hash_entry_size ),
-        ht_size( t->hdr.ht_size )
+KeyCtx::KeyCtx( HashTab *t, uint32_t id, KeyFragment &b )
+  : ht( *t )
+  , kbuf( &b )
+  , ctx_id( id )
+  , hash_entry_size( t->hdr.hash_entry_size )
+  , ht_size( t->hdr.ht_size )
+  , cuckoo_buckets( t->hdr.cuckoo_buckets )
+  , cuckoo_arity( t->hdr.cuckoo_arity )
+  , inc( 0 )
+  , drop_flags( 0 )
+  , flags( KEYCTX_IS_READ_ONLY )
+  , max_chains( t->hdr.ht_size )
 {
-  ::memset( &this->entry, 0, (uint8_t *) (void *) &(&this->flags)[ 1 ] -
-                             (uint8_t *) (void *) &this->entry );
-  this->max_chains = 6;
-  this->set( KEYCTX_IS_READ_ONLY );
+  ::memset( &this->chains, 0,
+            (uint8_t *) (void *) &( &this->wrk )[ 1 ] -
+              (uint8_t *) (void *) &this->chains );
+}
+
+void
+KeyCtx::set_hash( uint64_t k )
+{
+  this->key   = k;
+  this->start = this->ht.hdr.ht_mod( k );
+}
+
+void
+KeyCtx::set_key_hash( KeyFragment &b )
+{
+  this->set_key( b );
+  this->set_hash( b.hash( this->ht.hdr.hash_key_seed ) );
 }
 
 KeyCtx *
@@ -48,375 +77,46 @@ KeyCtx::new_array( HashTab *t,  uint32_t id,  void *b,  size_t bsz )
   return (KeyCtx *) b;
 }
 
-/* linear hash resolve, walk entries, always keep one lock active
-   so that no other thread can pass by while this thread is on the
-   same chain */
-KeyStatus
-KeyCtx::acquire( void )
-{
-  ThrCtxOwner    closure( this->ht.ctx );
-  ThrCtx       & ctx     = this->ht.ctx[ this->ctx_id ];
-  const uint64_t k       = this->key;
-  HashEntry    * el,              /* current ht[] ptr */
-               * last,            /* last ht[] ptr */
-               * drop    = NULL;  /* drop ht[] ptr */
-  uint64_t       cur_mcs_id,      /* MCS lock queue for the current element */
-                 last_mcs_id,     /* MCS lock queue for the last element */
-                 drop_mcs_id = 0, /* MCS lock queue for the drop element */
-                 h,               /* hash val at the current element */
-                 last_h,          /* hash val at the last element */
-                 drop_h = 0,      /* hash val at the drop element */
-                 i      = this->start, /* probing starts */
-                 spin   = 0;      /* count of spinning */
-  uint8_t        ht_evict_flag = 0; /* if max chains caused a drop */
-
-  this->chains = 0; /* count of chains */
-  cur_mcs_id = ctx.next_mcs_lock();
-  el         = this->ht.get_entry( i, this->hash_entry_size );
-  h          = ctx.get_mcs_lock( cur_mcs_id ).acquire( el->hash, ZOMBIE64,
-                                                    cur_mcs_id, spin, closure );
-  /* acquire was successful, either empty or existing item was found */
-  if ( h == 0 || ( h == k && this->equals( *el ) ) ) {
-    if ( h != 0 && el->test( FL_DROPPED ) ) {
-  found_drop:;
-      this->drop_key   = h; /* track in case entry needs to restore tombstone */
-      this->drop_flags = el->flags;
-      el->flags        = FL_NO_ENTRY; /* clear the drop */
-      h                = 0; /* treat as a new entry */
-    }
-  found_match:;
-    if ( spin > 0 )
-      ctx.incr_spins( spin );
-    if ( ! this->test( KEYCTX_IS_GC_ACQUIRE ) )
-      ctx.incr_write();
-    this->pos       = i;
-    this->lock      = h;
-    this->mcs_id    = cur_mcs_id;
-    this->serial    = el->unseal( this->hash_entry_size );
-    this->update_ns = 0; /* loaded on demand */
-    this->expire_ns = 0;
-    this->entry     = el;
-    this->msg       = NULL;
-    this->clear( KEYCTX_IS_READ_ONLY | KEYCTX_IS_HT_EVICT );
-    this->set( ht_evict_flag );
-    return ( h == 0 ? KEY_IS_NEW : KEY_OK );
-  }
-  /* first element not equal, linear probe */
-  for ( this->chains = 1; ; this->chains++ ) {
-    if ( ++i == this->ht_size )
-      i = 0;
-    /* went around-the-world without finding an empty slot, shouldn't happen */
-    if ( i == this->start )
-      goto ht_full;
-    /* check for tombstoned entries or chains hits max_chains */
-    if ( el->test( FL_DROPPED ) ||
-         ( drop == NULL && this->chains == this->max_chains ) ) {
-      if ( drop != NULL ) {
-        /* if max_chains caused a drop and found an actual drop, use that */
-        if ( ht_evict_flag && el->test( FL_DROPPED ) ) {
-          ctx.get_mcs_lock( drop_mcs_id ).release( drop->hash, drop_h, ZOMBIE64,
-                                                   drop_mcs_id, spin, closure );
-          ctx.release_mcs_lock( drop_mcs_id );
-          drop = NULL;
-          ht_evict_flag = 0;
-        }
-      }
-      if ( drop == NULL ) {
-        drop_mcs_id    = cur_mcs_id;
-        drop           = el;
-        drop_h         = h;
-        /* must be max_chains */
-        ht_evict_flag  = el->test( FL_DROPPED ) ? 0 : KEYCTX_IS_HT_EVICT;
-
-        cur_mcs_id = ctx.next_mcs_lock();
-        el         = this->ht.get_entry( i, this->hash_entry_size );
-        h          = ctx.get_mcs_lock( cur_mcs_id ).acquire( el->hash, ZOMBIE64,
-                                                    cur_mcs_id, spin, closure );
-        /* if at the end of a chain, use the tombstone entry */
-        if ( h == 0 ) {
-        recycle_drop:;
-          ctx.get_mcs_lock( cur_mcs_id ).release( el->hash, h, ZOMBIE64,
-                                                  cur_mcs_id, spin, closure );
-          ctx.release_mcs_lock( cur_mcs_id );
-          ctx.incr_chains( this->chains );
-          cur_mcs_id = drop_mcs_id;
-          el         = drop;
-          h          = drop_h;
-          goto found_drop;
-        }
-        /* if found the key, release the tombstone */
-        if ( h == k && this->equals( *el ) ) {
-        release_drop:;
-          ctx.get_mcs_lock( drop_mcs_id ).release( drop->hash, drop_h, ZOMBIE64,
-                                                   drop_mcs_id, spin, closure );
-          ctx.release_mcs_lock( drop_mcs_id );
-          ctx.incr_chains( this->chains );
-          if ( el->test( FL_DROPPED ) )
-            goto found_drop;
-          goto found_match;
-        }
-        if ( ++i == this->ht_size )
-          i = 0;
-      }
-    }
-    /* keep one element locked by locking next and then releasing the current */
-    last_mcs_id = cur_mcs_id;
-    last        = el;
-    last_h      = h;
-
-    cur_mcs_id = ctx.next_mcs_lock();
-    el         = this->ht.get_entry( i, this->hash_entry_size );
-    h          = ctx.get_mcs_lock( cur_mcs_id ).acquire( el->hash, ZOMBIE64,
-                                                    cur_mcs_id, spin, closure );
-    ctx.get_mcs_lock( last_mcs_id ).release( last->hash, last_h, ZOMBIE64,
-                                             last_mcs_id, spin, closure );
-    ctx.release_mcs_lock( last_mcs_id );
-    /* check for match */
-    if ( h == 0 || ( h == k && this->equals( *el ) ) ) {
-      ctx.incr_chains( this->chains );
-      /* process the tomebstone entry */
-      if ( drop != NULL ) {
-        if ( h == 0 )
-          goto recycle_drop; /* no match */
-        goto release_drop; /* matched */
-      }
-      if ( h != 0 && el->test( FL_DROPPED ) )
-        goto found_drop;
-      /* return the match */
-      goto found_match;
-    }
-  }
-ht_full:;
-  if ( drop != NULL ) /* ht full, but have tombstones */
-    goto recycle_drop;
-  ctx.get_mcs_lock( cur_mcs_id ).release( el->hash, h, ZOMBIE64,
-                                          cur_mcs_id, spin, closure );
-  ctx.release_mcs_lock( cur_mcs_id );
-  ctx.incr_chains( this->chains );
-  return KEY_HT_FULL;
+namespace rai {
+namespace kv {
+struct AllocList {
+  AllocList * next;
+  void      * ptr;
+};
+}
 }
 
-/* similar to acquire() but bail if can't acquire without getting in line */
-KeyStatus
-KeyCtx::try_acquire( void )
+void *
+KeyCtxAlloc::alloc_slow( size_t sz )
 {
-  ThrCtxOwner    closure( this->ht.ctx );
-  ThrCtx       & ctx     = this->ht.ctx[ this->ctx_id ];
-  const uint64_t k       = this->key;
-  HashEntry    * el,          /* current ht[] ptr */
-               * last;        /* last ht[] ptr */
-  uint64_t       cur_mcs_id,  /* MCS lock queue for the current element */
-                 last_mcs_id, /* MCS lock queue for the last element */
-                 h,           /* hash val at the current element */
-                 last_h,      /* hash val at the last element */
-                 i      = this->start, /* where the ht linear probe starts */
-                 spin   = 0;  /* count of spinning */
-
-  this->chains = 0;  /* count of chains */
-  cur_mcs_id = ctx.next_mcs_lock();
-  el         = this->ht.get_entry( i, this->hash_entry_size );
-  h          = ctx.get_mcs_lock( cur_mcs_id ).try_acquire( el->hash, ZOMBIE64,
-                                                           cur_mcs_id, spin );
-  if ( (h & ZOMBIE64) != 0 ) {
-  key_is_busy:;
-    if ( spin > 0 )
-      ctx.incr_spins( spin );
-    ctx.release_mcs_lock( cur_mcs_id );
-    return KEY_BUSY;
+  /* alloc() overflow of static mem, need dynamic */
+  sz = align<size_t>( sz + sizeof( AllocList ), sizeof( CacheLine ) );
+  if ( this->big_alloc == NULL ) {
+    this->big_alloc = kv_key_ctx_big_alloc;
+    this->big_free  = kv_key_ctx_big_free;
   }
-  /* acquire was successful, either empty or existing item was found */
-  if ( h == 0 || ( h == k && this->equals( *el ) ) ) {
-  key_is_matched:;
-    if ( spin > 0 )
-      ctx.incr_spins( spin );
-    if ( ! this->test( KEYCTX_IS_GC_ACQUIRE ) )
-      ctx.incr_write();
-    this->pos       = i;
-    this->lock      = h;
-    this->mcs_id    = cur_mcs_id;
-    this->serial    = el->unseal( this->hash_entry_size );
-    this->update_ns = 0; /* loaded on demand */
-    this->expire_ns = 0;
-    this->entry     = el;
-    this->msg       = NULL;
-    this->clear( KEYCTX_IS_READ_ONLY | KEYCTX_IS_HT_EVICT );
-    return ( this->lock == 0 ? KEY_IS_NEW : KEY_OK );
-  }
-  /* first element not equal, linear probe */
-  for ( this->chains = 1; ; this->chains++ ) {
-    if ( ++i == this->ht_size )
-      i = 0;
-    /* went around-the-world without finding an empty slot, shouldn't happen */
-    if ( i == this->start )
-      break;
-    /* keep one element locked by locking next and then releasing the current */
-    last_mcs_id   = cur_mcs_id;
-    last          = el;
-    last_h        = h;
-
-    cur_mcs_id = ctx.next_mcs_lock();
-    el         = this->ht.get_entry( i, this->hash_entry_size );
-    h          = ctx.get_mcs_lock( cur_mcs_id ).try_acquire( el->hash, ZOMBIE64,
-                                                             cur_mcs_id, spin );
-    ctx.get_mcs_lock( last_mcs_id ).release( last->hash, last_h, ZOMBIE64,
-                                             last_mcs_id, spin, closure );
-    ctx.release_mcs_lock( last_mcs_id );
-    /* check for match */
-    if ( (h & ZOMBIE64) != 0 || h == 0 || ( h == k && this->equals( *el ) ) ) {
-      ctx.incr_chains( this->chains );
-      if ( (h & ZOMBIE64) != 0 )
-        goto key_is_busy;
-      goto key_is_matched;
-    }
-  }
-  ctx.get_mcs_lock( cur_mcs_id ).release( el->hash, h, ZOMBIE64,
-                                          cur_mcs_id, spin, closure );
-  ctx.release_mcs_lock( cur_mcs_id );
-  return KEY_HT_FULL;
+  if ( this->closure == NULL )
+    this->closure = this;
+  void *p = this->big_alloc( this->closure, sz );
+  if ( p == NULL )
+    return NULL;
+  /* tail of mem ptr maintains list of alloced items */
+  AllocList * x = (AllocList *) &((uint8_t *) p)[ sz - sizeof( AllocList ) ];
+  x->next   = (AllocList *) this->big; /* list of items to free */
+  x->ptr    = p;
+  this->big = (void *) x; 
+  return p;
 }
 
-/* remove slot from table and mark msg free
- * this must walk to the end of the chain and find the last element that could
- * replace the dropped entry and move it
- * if none found, then zero the dropped entry */
-KeyStatus
-KeyCtx::drop( void )
+void
+KeyCtxAlloc::release( void )
 {
-  KeyStatus status;
-  if ( (status = this->tombstone()) != KEY_OK )
-    return status;
-
-  ThrCtxOwner    closure( this->ht.ctx );
-  ThrCtx       & ctx       = ht.ctx[ this->ctx_id ];
-  const uint64_t half_size = this->ht_size / 2;
-  HashEntry    * el,
-               * base,
-               * save;
-  uint64_t       cur_mcs_id,
-                 h,
-                 j,
-                 base_mcs_id,
-                 save_mcs_id,
-                 tmp_mcs_id,
-                 save_h,
-                 save_pos,
-                 i    = this->pos,
-                 spin = 0;
-  /* start search at ht[ pos + 1 ] for replacements for ht[ pos ] */
-  if ( ++i == this->ht_size )
-    i = 0;
-continue_from_save:;
-  save        = NULL;
-  save_mcs_id = 0;
-  save_h      = 0;
-  save_pos    = 0;
-  cur_mcs_id = ctx.next_mcs_lock();
-  for (;;) {
-    el = this->ht.get_entry( i, this->hash_entry_size );
-    h  = ctx.get_mcs_lock( cur_mcs_id ).acquire( el->hash, ZOMBIE64,
-                                                 cur_mcs_id, spin, closure );
-    if ( h == 0 )
-      break;
-
-    j = h % this->ht_size;
-    /* test the chain for elements that could replace the dropped entry:
-         first condition, if j's natural position is before pos:
-
-           ht[0] j  <  ht[1] pos  <  ht[2] h
-
-           if ( j <= pos && pos - j < half_size )
-                0 <= 1   && 1   - 0 < half_size
-         second condition, if j's natural position wraps around zero:
-
-           ht[15] j  <  ht[0]  k   <   ht[1]  pos   <   ht[2]  h
-
-           if ( j  > pos && j   - pos > half_size )
-                15 > 1   && 15  - 1   > half_size
-       the condition that must be met for these to be true is a linear probe
-       chain length must be less than half_size elements
-    */
-    if ( ( j <= this->pos && this->pos - j < half_size ) ||
-         ( j >  this->pos && j - this->pos > half_size ) ) {
-      /* the new save position is closer to the end of the chain */
-      if ( save_h != 0 ) {
-        /* release old match, found a better one */
-        ctx.get_mcs_lock( save_mcs_id ).release( save->hash, 0, ZOMBIE64,
-                                                 save_mcs_id, spin, closure );
-        /* swap mcs_id */
-        tmp_mcs_id  = save_mcs_id;
-        save_mcs_id = cur_mcs_id;
-        cur_mcs_id  = tmp_mcs_id;
-      }
-      else { /* need a new lock, the current one remains locked */
-        save_mcs_id = cur_mcs_id;
-        cur_mcs_id  = ctx.next_mcs_lock();
-      }
-      save_h   = h;
-      save_pos = i;
-      save     = el;
-    }
-    else { /* the position does not fit as a replacement */
-      ctx.get_mcs_lock( cur_mcs_id ).release( el->hash, h, ZOMBIE64,
-                                              cur_mcs_id, spin, closure );
-    }
-    if ( ++i == this->ht_size )
-      i = 0;
+  AllocList * next;
+  for ( AllocList *x = (AllocList *) this->big; x != NULL; x = next ) {
+    next = x->next;
+    this->big_free( this->closure, x->ptr );
   }
-  /* end of chain, replace with save entry or zero it */
-  base        = this->entry;
-  base_mcs_id = this->mcs_id;
-  /* if a replacement was found, no need to lock out readers, no chng to data */
-  if ( save != NULL ) {
-    /* copy save -> entry */
-    ::memcpy( &((uint8_t *) (void *) base)[ sizeof( base->hash ) ],
-              &((uint8_t *) (void *) save)[ sizeof( base->hash ) ],
-              this->hash_entry_size - sizeof( base->hash ) );
-    /* clear save */
-    ::memset( &((uint8_t *) (void *) save)[ sizeof( base->hash ) ], 0,
-              this->hash_entry_size - sizeof( save->hash ) );
-  }
-  /* no replacement found */
-  else {
-    /* clear base */
-    ::memset( &((uint8_t *) (void *) base)[ sizeof( base->hash ) ], 0,
-              this->hash_entry_size - sizeof( base->hash ) );
-    save_h = 0;
-  }
-  /* release base entry, with new hash, if any */
-  ctx.get_mcs_lock( base_mcs_id ).release( base->hash, save_h, ZOMBIE64,
-                                           base_mcs_id, spin, closure );
-  ctx.release_mcs_lock( base_mcs_id );
-
-  /* end of chain is a zero, release that */
-  ctx.get_mcs_lock( cur_mcs_id ).release( el->hash, 0, ZOMBIE64,
-                                          cur_mcs_id, spin, closure );
-  ctx.release_mcs_lock( cur_mcs_id );
-
-  /* may need to continue search */
-  if ( save != NULL ) {
-    if ( (j = ( save_pos + 1 )) == this->ht_size )
-      j = 0;
-    /* test if replacement in save is at the end of the chain, which is in i */
-    if ( j != i ) {
-      /* save is the new base, still locked, continue replacement search */
-      this->lock   = 0;
-      this->pos    = save_pos;
-      this->entry  = save;
-      this->mcs_id = save_mcs_id;
-      i = j;
-      goto continue_from_save;
-    }
-    /* save is at the end of the chain, zero hash, it moved */
-    ctx.get_mcs_lock( save_mcs_id ).release( save->hash, 0, ZOMBIE64,
-                                             save_mcs_id, spin, closure );
-    ctx.release_mcs_lock( save_mcs_id );
-  }
-  this->entry = NULL;
-  this->msg   = NULL;
-  if ( spin > 0 )
-    ctx.incr_spins( spin );
-  //ctx.incr_drop();  tombstone does it
-  return KEY_OK;
+  this->big = NULL;
 }
 
 KeyStatus
@@ -434,109 +134,6 @@ KeyCtx::tombstone( void )
   return KEY_OK;
 }
 
-/* 32b aligned hash entry copy, zero if slot is empty */
-static inline uint64_t
-copy_hash_entry( uint64_t k,  void *p,  void *q,  uint32_t sz )
-{
-  uint64_t h = ( ((uint64_t *) p)[ 0 ] = ((uint64_t *) q)[ 0 ] );
-  if ( h == 0 ) {
-    for (;;) {
-      ((uint64_t *) p)[ 1 ] = 0;
-      ((uint64_t *) p)[ 2 ] = 0;
-      ((uint64_t *) p)[ 3 ] = 0;
-      if ( (sz -= 32) == 0 )
-        return 0;
-      p = &((uint64_t *) p)[ 4 ];
-      ((uint64_t *) p)[ 0 ] = 0;
-    }
-  }
-  if ( h != k ) /* could be busy, or could be ! match */
-    return h;
-  for (;;) {
-    ((uint64_t *) p)[ 1 ] = ((uint64_t *) q)[ 1 ];
-    ((uint64_t *) p)[ 2 ] = ((uint64_t *) q)[ 2 ];
-    ((uint64_t *) p)[ 3 ] = ((uint64_t *) q)[ 3 ];
-    if ( (sz -= 32) == 0 )
-      return h;
-    p = &((uint64_t *) p)[ 4 ]; q = &((uint64_t *) q)[ 4 ];
-    ((uint64_t *) p)[ 0 ] = ((uint64_t *) q)[ 0 ];
-  }
-}
-
-KeyStatus
-KeyCtx::find( KeyCtxAlloc *a,  const uint64_t spin_wait )
-{
-  this->init_work( a ); /* buffer used for copying hash entry & data */
-  return this->find2( spin_wait );
-}
-
-/* find key for read only access without locking slot */
-KeyStatus
-KeyCtx::find2( const uint64_t spin_wait )
-{
-  ThrCtx       & ctx     = this->ht.ctx[ this->ctx_id ];
-  const uint64_t k       = this->key;
-  HashEntry    * cpy     = this->get_work_entry();
-  uint64_t       i       = this->start,
-                 spin    = 0,
-                 h;
-  this->chains = 0;
-  if ( cpy == NULL )
-    return KEY_ALLOC_FAILED;
-  /* loop, until found or empty slot -- this algo does not lock the slot */
-  for (;;) {
-    HashEntry &el = *this->ht.get_entry( i, this->hash_entry_size );
-    for (;;) {
-      h = copy_hash_entry( k, cpy, &el, this->hash_entry_size );
-      if ( ( h & ZOMBIE64 ) == 0 ) {
-        if ( h == k ) {    /* check if it is the key we're looking for */
-          if ( cpy->check_seal( this->hash_entry_size ) )
-            goto check_equals;
-        }
-        else if ( h == 0 ) /* check if it is an empty slot */
-          goto not_found;
-        else               /* h is not the key */
-          goto not_equal;
-      }
-      /* spin, check hash again */
-      if ( ++spin == spin_wait ) {
-        ctx.incr_spins( spin );
-        return KEY_BUSY;
-      }
-      kv_sync_pause();
-    }
-  check_equals:;
-    if ( this->equals( *cpy ) ) {
-  not_found:;
-      if ( this->chains > 0 )
-        ctx.incr_chains( this->chains );
-      if ( spin > 0 )
-        ctx.incr_spins( spin );
-      ctx.incr_read();
-      this->pos       = i;
-      this->lock      = h;
-      this->serial    = cpy->value_ctr( this->hash_entry_size ).get_serial();
-      this->update_ns = 0; /* loaded on demand */
-      this->expire_ns = 0;
-      this->entry     = cpy;
-      this->msg       = NULL;
-      this->set( KEYCTX_IS_READ_ONLY );
-      if ( h != 0 ) {
-        ctx.incr_hit();
-        return KEY_OK;
-      }
-      ctx.incr_miss();
-      return KEY_NOT_FOUND;
-    }
-  not_equal:;
-    this->chains++;
-    if ( ++i == this->ht_size )
-      i = 0;
-    if ( i == this->start )
-      return KEY_HT_FULL;
-  }
-}
-
 bool
 KeyCtx::equals( const HashEntry &el ) const
 {
@@ -545,119 +142,23 @@ KeyCtx::equals( const HashEntry &el ) const
   KeyFragment &kb = *this->kbuf;
   if ( el.test( FL_IMMEDIATE_KEY ) )
     return el.key.frag_equals( kb );
-  if ( el.key.keylen == kb.keylen ) {
+
   /* 95 bits of hash, 1 billion keys birthday paradox:
      k^2 / 2N = ( 1e9 * 1e9 ) / ( 2 << 95 ) =
      probability of a collision is 1 / 80 billion,
      where all keys are the same length, since keylen is compared
      and large enough to overflow HashEntry(64b) or keylen > 32b
      ... may need to use HashEntry(128b) if 512bit SHA hashes are the keys */
-    uint32_t check = kv_crc_c( kb.buf, kb.keylen, 0 );
-    return check == ( ( (uint32_t) el.key.x.b1 << 16 ) |
-                        (uint32_t) el.key.x.b2 );
-  }
-  return false;
-}
-
-KeyStatus
-KeyCtx::fetch( KeyCtxAlloc *a,  uint64_t i,
-               const uint64_t spin_wait )
-{
-  this->init_work( a ); /* buffer used for copying hash entry & data */
-  return this->fetch2( i, spin_wait );
-}
-
-/* 32b aligned hash entry fetch, zero if slot is empty */
-static inline uint64_t
-fetch_hash_entry( void *p,  void *q,  uint32_t sz )
-{
-  uint64_t h = ( ((uint64_t *) p)[ 0 ] = ((uint64_t *) q)[ 0 ] );
-  if ( ( h & ZOMBIE64 ) != 0 ) /* slot busy */
-    return h;
-  if ( h == 0 ) {
-    for (;;) {
-      ((uint64_t *) p)[ 1 ] = 0;
-      ((uint64_t *) p)[ 2 ] = 0;
-      ((uint64_t *) p)[ 3 ] = 0;
-      if ( (sz -= 32) == 0 )
-        return 0;
-      p = &((uint64_t *) p)[ 4 ];
-      ((uint64_t *) p)[ 0 ] = 0;
-    }
-  }
-  for (;;) {
-    ((uint64_t *) p)[ 1 ] = ((uint64_t *) q)[ 1 ];
-    ((uint64_t *) p)[ 2 ] = ((uint64_t *) q)[ 2 ];
-    ((uint64_t *) p)[ 3 ] = ((uint64_t *) q)[ 3 ];
-    if ( (sz -= 32) == 0 )
-      return h;
-    p = &((uint64_t *) p)[ 4 ]; q = &((uint64_t *) q)[ 4 ];
-    ((uint64_t *) p)[ 0 ] = ((uint64_t *) q)[ 0 ];
-  }
-}
-
-/* spin on ht[ i ] until it is fetchable */
-KeyStatus
-KeyCtx::fetch2( const uint64_t i,  const uint64_t spin_wait )
-{
-  ThrCtx    & ctx  = this->ht.ctx[ this->ctx_id ];
-  HashEntry * cpy  = this->get_work_entry();
-  uint64_t    spin = 0,
-              h;
-  if ( cpy == NULL )
-    return KEY_ALLOC_FAILED;
-  HashEntry &el = *this->ht.get_entry( i, this->hash_entry_size );
-  /* loop, until slot is not busy -- this algo does not lock the slot */
-  for (;;) {
-    for (;;) {
-      h = fetch_hash_entry( cpy, &el, this->hash_entry_size );
-      /* if slot is not busy */
-      if ( ( h & ZOMBIE64 ) == 0 ) {
-        if ( h != 0 ) /* if has data */
-          goto check_seal;
-        else          /* no data in slot */
-          goto not_found;
-      }
-      /* key was locked, spin again */
-      if ( ++spin == spin_wait ) {
-        ctx.incr_spins( spin );
-        return KEY_BUSY;
-      }
-      kv_sync_pause();
-    }
-  check_seal:;
-    if ( cpy->check_seal( this->hash_entry_size ) ) {
-  not_found:;
-      if ( spin > 0 )
-        ctx.incr_spins( spin );
-      ctx.incr_read();
-      this->pos       = i;
-      this->key       = h;
-      this->lock      = h;
-      this->serial    = cpy->value_ctr( this->hash_entry_size ).get_serial();
-      this->update_ns = 0; /* loaded on demand */
-      this->expire_ns = 0;
-      this->entry     = cpy;
-      this->msg       = NULL;
-      this->set( KEYCTX_IS_READ_ONLY );
-      if ( h != 0 )
-        return KEY_OK;
-      return KEY_NOT_FOUND;
-    }
-  }
-}
-
-HashEntry *
-KeyCtx::get_work_entry( void )
-{
-  return (HashEntry *) ( this->wrk == NULL ? NULL :
-                         this->wrk->alloc( this->hash_entry_size ) );
+  return ( el.key.keylen == kb.keylen ) &&
+         ( kv_crc_c( kb.u.buf, kb.keylen, 0 ) ==
+                    ( ( (uint32_t) el.key.u.x.b1 << 16 ) |
+                        (uint32_t) el.key.u.x.b2 ) );
 }
 
 void *
 KeyCtx::copy_data( void *data,  uint64_t sz )
 {
-  void *p = ( this->wrk == NULL ? NULL : this->wrk->alloc( sz ) );
+  void *p = this->wrk->alloc( sz );
   if ( p != NULL ) {
     ::memcpy( p, data, sz );
     return p;
@@ -718,7 +219,7 @@ KeyCtx::prefetch( uint64_t cnt ) const
 void
 KeyCtx::release( void )
 {
-  if ( this->entry == NULL )
+  if ( this->test( KEYCTX_IS_READ_ONLY ) != 0 )
     return;
   HashEntry & el   = *this->entry;
   ThrCtx    & ctx  = this->ht.ctx[ this->ctx_id ];
@@ -731,11 +232,12 @@ KeyCtx::release( void )
       this->entry = NULL;
       /* was already dropped, use pre-existing key and flags */
       if ( this->drop_key != 0 ) {
-        k = this->drop_key;
+        k        = this->drop_key;
         el.flags = this->drop_flags;
       }
       /* mark entry as tombstone */
       else {
+        k        = DROPPED_HASH;
         el.flags = FL_DROPPED;
       }
       el.seal( this->hash_entry_size, 0 );
@@ -744,6 +246,7 @@ KeyCtx::release( void )
     ctx.incr_add(); /* counter for added elements */
   }
   /* allow readers to access */
+  el.set_cuckoo_inc( this->inc );
   el.seal( this->hash_entry_size, this->serial );
   if ( el.test( FL_SEGMENT_VALUE ) )
     this->seal_msg();
@@ -955,10 +458,10 @@ KeyCtx::update_entry( void *res,  uint64_t size,  uint8_t alignment )
     else {
       /* only part of the key fits */
       if ( el.test( FL_PART_KEY ) == 0 ) {
-        uint32_t check = kv_crc_c( kb.buf, kb.keylen, 0 );
+        uint32_t check = kv_crc_c( kb.u.buf, kb.keylen, 0 );
         el.key.keylen = kb.keylen;
-        el.key.x.b1   = (uint16_t) ( check >> 16 );
-        el.key.x.b2   = (uint16_t) check;
+        el.key.u.x.b1 = (uint16_t) ( check >> 16 );
+        el.key.u.x.b2 = (uint16_t) check;
       }
       el.clear( FL_IMMEDIATE_VALUE | FL_IMMEDIATE_KEY | FL_DROPPED );
       el.set( FL_PART_KEY | FL_UPDATED );
@@ -973,10 +476,10 @@ KeyCtx::update_entry( void *res,  uint64_t size,  uint8_t alignment )
     }
     /* only part of the key fits */
     if ( el.test( FL_PART_KEY ) == 0 ) {
-      uint32_t check = kv_crc_c( kb.buf, kb.keylen, 0 );
+      uint32_t check = kv_crc_c( kb.u.buf, kb.keylen, 0 );
       el.key.keylen = kb.keylen;
-      el.key.x.b1   = (uint16_t) ( check >> 16 );
-      el.key.x.b2   = (uint16_t) check;
+      el.key.u.x.b1 = (uint16_t) ( check >> 16 );
+      el.key.u.x.b2 = (uint16_t) check;
     }
     el.clear( FL_IMMEDIATE_KEY | FL_DROPPED );
     el.set( FL_PART_KEY | FL_IMMEDIATE_VALUE | FL_UPDATED );
@@ -1219,7 +722,6 @@ kv_key_status_string( kv_key_status_t status )
   switch ( status ) {
     case KEY_OK:            return "KEY_OK";
     case KEY_IS_NEW:        return "KEY_IS_NEW";
-    case KEY_WAITING:       return "KEY_WAITING";
     case KEY_NOT_FOUND:     return "KEY_NOT_FOUND";
     case KEY_BUSY:          return "KEY_BUSY";
     case KEY_ALLOC_FAILED:  return "KEY_ALLOC_FAILED";
@@ -1232,6 +734,8 @@ kv_key_status_string( kv_key_status_t status )
     case KEY_SEG_VALUE:     return "KEY_SEG_VALUE";
     case KEY_TOMBSTONE:     return "KEY_TOMBSTONE";
     case KEY_PART_ONLY:     return "KEY_PART_ONLY";
+    case KEY_MAX_CHAINS:    return "KEY_MAX_CHAINS";
+    case KEY_PATH_SEARCH:   return "KEY_PATH_SEARCH";
   }
   return "unknown";
 }
@@ -1242,11 +746,10 @@ kv_key_status_description( kv_key_status_t status )
   switch ( status ) {
     case KEY_OK:            return "key ok";
     case KEY_IS_NEW:        return "key did not exist, is newly acquired";
-    case KEY_WAITING:       return "waiting for external event";
     case KEY_NOT_FOUND:     return "not found";
     case KEY_BUSY:          return "key timeout waiting for lock";
     case KEY_ALLOC_FAILED:  return "allocate key or data failed";
-    case KEY_HT_FULL:       return "looked at all ht entries";
+    case KEY_HT_FULL:       return "no more ht entries";
     case KEY_MUTATED:       return "another thread updated entry";
     case KEY_WRITE_ILLEGAL: return "no exclusive lock for write";
     case KEY_NO_VALUE:      return "key has no value attached";
@@ -1255,6 +758,9 @@ kv_key_status_description( kv_key_status_t status )
     case KEY_SEG_VALUE:     return "value is in segment";
     case KEY_TOMBSTONE:     return "key was dropped";
     case KEY_PART_ONLY:     return "no key attached, hash only";
+    case KEY_MAX_CHAINS:    return "nothing found before entry count hit "
+                                   "max chains";
+    case KEY_PATH_SEARCH:   return "need a path search to acquire cuckoo entry";
   }
   return "unknown";
 }
@@ -1277,13 +783,14 @@ kv_create_ctx_alloc( size_t sz,  kv_alloc_func_t ba,  kv_free_func_t bf,
 {
   size_t off = align<size_t>( sizeof( KeyCtxAlloc ), sizeof( CacheLine ) );
   size_t sz2 = align<size_t>( off + sz, sizeof( CacheLine ) );
-  void * ptr = ::aligned_alloc( sizeof( CacheLine ), sz2 );
+  void * ptr =
+#ifdef _ISOC11_SOURCE
+    ::aligned_alloc( sizeof( CacheLine ), sz2 ); /* >= RH7 */
+#else
+    ::malloc( sz2 ); /* RH5, RH6 */
+#endif
   if ( ptr == NULL )
     return NULL;
-  if ( ba == NULL )
-    ba = kv_key_ctx_big_alloc;
-  if ( bf == NULL )
-    bf = kv_key_ctx_big_free;
   new ( ptr ) KeyCtxAlloc( (CacheLine *) &((uint8_t *) ptr)[ off ],
                            sz2 - off, ba, bf, closure );
   return (kv_key_alloc_t *) ptr;
@@ -1315,7 +822,7 @@ kv_get_key_frag_mem_size( kv_key_frag_t *frag )
 void
 kv_set_key_frag_bytes( kv_key_frag_t *frag,  const void *p,  uint16_t sz )
 {
-  void *w = reinterpret_cast<KeyFragment *>( frag )->buf;
+  void *w = reinterpret_cast<KeyFragment *>( frag )->u.buf;
   reinterpret_cast<KeyFragment *>( frag )->keylen = sz;
   for ( uint16_t i = 0; i < sz; i += 2 )
     ((uint16_t *) w)[ i / 2 ] = ((const uint16_t *) p)[ i / 2 ];
@@ -1324,7 +831,7 @@ kv_set_key_frag_bytes( kv_key_frag_t *frag,  const void *p,  uint16_t sz )
 void
 kv_set_key_frag_string( kv_key_frag_t *frag,  const char *s,  uint16_t slen )
 {
-  void *w = frag->buf;
+  void *w = frag->u.buf;
   for ( uint16_t i = 0; i < slen; i += 2 )
     ((uint16_t *) w)[ i / 2 ] = ((const uint16_t *) (void *) s)[ i / 2 ];
   ((char *) w)[ slen ] = '\0';
@@ -1332,9 +839,10 @@ kv_set_key_frag_string( kv_key_frag_t *frag,  const char *s,  uint16_t slen )
 }
 
 uint64_t
-kv_hash_key_frag( kv_key_frag_t *frag )
+kv_hash_key_frag( kv_hash_tab_t *ht,  kv_key_frag_t *frag )
 {
-  return ((KeyFragment *) frag )->hash();
+  return ((KeyFragment *) frag )->hash(
+    reinterpret_cast<HashTab *>( ht )->hdr.hash_key_seed );
 }
 
 kv_key_ctx_t *
@@ -1373,15 +881,17 @@ kv_prefetch( kv_key_ctx_t *kctx,  uint64_t cnt )
 }
 
 kv_key_status_t
-kv_acquire( kv_key_ctx_t *kctx )
+kv_acquire( kv_key_ctx_t *kctx,  kv_key_alloc_t *a )
 {
-  return reinterpret_cast<KeyCtx *>( kctx )->acquire();
+  return reinterpret_cast<KeyCtx *>( kctx )->acquire(
+           reinterpret_cast<KeyCtxAlloc *>( a ) );
 }
 
 kv_key_status_t
-kv_try_acquire( kv_key_ctx_t *kctx )
+kv_try_acquire( kv_key_ctx_t *kctx,  kv_key_alloc_t *a )
 {
-  return reinterpret_cast<KeyCtx *>( kctx )->try_acquire();
+  return reinterpret_cast<KeyCtx *>( kctx )->try_acquire(
+           reinterpret_cast<KeyCtxAlloc *>( a ) );
 }
 
 kv_key_status_t
@@ -1473,4 +983,3 @@ kv_get_expire_time( kv_key_ctx_t *kctx,  uint64_t *expire_time_ns )
 }
 
 } /* extern "C" */
-

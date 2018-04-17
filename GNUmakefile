@@ -21,9 +21,9 @@ endif
 
 # the compiler and linker
 cc         := gcc
-cpp        := g++ -fno-rtti -fno-exceptions
+cpp        := g++ -fno-rtti -fno-exceptions -fno-omit-frame-pointer
 cpplink    := gcc
-gcc_wflags := -Wall -Werror
+gcc_wflags := -Wall -Werror -pedantic
 
 ifdef DEBUG
 cflags   := $(gcc_wflags) -ggdb
@@ -50,12 +50,16 @@ all_depends :=
 .PHONY: everything
 everything: all
 
-libraikv_objs := $(objd)/key_ctx.o $(objd)/key_hash.o $(objd)/msg_ctx.o \
-                  $(objd)/ht_stats.o $(objd)/ht_init.o $(objd)/util.o \
-		  $(objd)/rela_ts.o $(objd)/radix_sort.o
-libraikv_deps := $(dependd)/key_ctx.d $(dependd)/key_hash.d $(dependd)/msg_ctx.d \
-                  $(dependd)/ht_stats.d $(dependd)/ht_init.d $(dependd)/util.d \
-		  $(dependd)/rela_ts.d $(dependd)/radix_sort.d
+libraikv_objs := $(objd)/key_ctx.o $(objd)/ht_linear.o \
+                 $(objd)/ht_cuckoo.o $(objd)/key_hash.o \
+		 $(objd)/msg_ctx.o $(objd)/ht_stats.o \
+		 $(objd)/ht_init.o $(objd)/util.o \
+		 $(objd)/rela_ts.o $(objd)/radix_sort.o
+libraikv_deps := $(dependd)/key_ctx.d $(dependd)/ht_linear.d \
+                 $(dependd)/ht_cuckoo.d $(dependd)/key_hash.d \
+		 $(dependd)/msg_ctx.d $(dependd)/ht_stats.d \
+		 $(dependd)/ht_init.d $(dependd)/util.d \
+		 $(dependd)/rela_ts.d $(dependd)/radix_sort.d
 
 $(libd)/libraikv.a: $(libraikv_objs) $(libraikv_libs)
 
@@ -124,6 +128,11 @@ rela_test_libs = $(libd)/libraikv.a
 rela_test_lnk  = -lraikv
 
 $(bind)/rela_test: $(rela_test_objs) $(rela_test_libs)
+
+#cuckoo_test_objs = $(objd)/cuckoo_test.o
+#cuckoo_test_deps = $(dependd)/cuckoo_test.d
+
+#$(bind)/cuckoo_test: $(cuckoo_test_objs) $(cuckoo_test_libs)
 
 all_exes    += $(bind)/test $(bind)/hash_test $(bind)/ping \
                $(bind)/cli $(bind)/mcs_test $(bind)/server \

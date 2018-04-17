@@ -14,12 +14,12 @@ void
 incr_key( KeyFragment &kb )
 {
   for ( uint8_t j = kb.keylen - 1; ; ) {
-    if ( ++kb.buf[ --j ] <= '9' )
+    if ( ++kb.u.buf[ --j ] <= '9' )
       break;
-    kb.buf[ j ] = '0';
+    kb.u.buf[ j ] = '0';
     if ( j == 0 ) {
-      ::memmove( &kb.buf[ 1 ], kb.buf, kb.keylen );
-      kb.buf[ 0 ] = '1';
+      ::memmove( &kb.u.buf[ 1 ], kb.u.buf, kb.keylen );
+      kb.u.buf[ 0 ] = '1';
       kb.keylen++;
       break;
     }
@@ -29,22 +29,25 @@ incr_key( KeyFragment &kb )
 struct Content {
   const char *name;
   Content( const char *n ) : name( n ) {}
+  virtual ~Content() {}
   virtual void nextKey( KeyFragment &kb,  uint8_t keylen ) {}
+  void operator delete( void *ptr ) {}
 };
 
 struct RandContent : public Content {
-  rand::xorshift1024star rand;
+  kv::rand::xorshift1024star rand;
   RandContent() : Content( "rand" ) {
     this->rand.init();
   }
 
   virtual void nextKey( KeyFragment &kb,  uint8_t keylen ) {
-    kb.keylen = this->rand.nextByte() % (keylen*2) + 1;
+    kb.keylen = this->rand.next() % (keylen*2) + 1;
     for ( uint8_t j = 0; j < kb.keylen; j++ ) {
-      kb.buf[ j ] = "abcdefghijklmnopqrstuvwxyz.:0123456789"[
-        this->rand.nextByte() % 38 ];
+      kb.u.buf[ j ] = "abcdefghijklmnopqrstuvwxyz.:0123456789"[
+        this->rand.next() % 38 ];
     }
   }
+  void operator delete( void *ptr ) {}
 };
 
 struct IntContent : public Content {
@@ -55,11 +58,12 @@ struct IntContent : public Content {
     kb.keylen = keylen;
     uint8_t j = 0;
     do {
-      ::memcpy( &kb.buf[ j ], &this->counter, sizeof( this->counter ) );
+      ::memcpy( &kb.u.buf[ j ], &this->counter, sizeof( this->counter ) );
       this->counter++;
       j += sizeof( this->counter );
     } while ( j < keylen );
   }
+  void operator delete( void *ptr ) {}
 };
 
 struct IncrContent : public Content {
@@ -71,17 +75,18 @@ struct IncrContent : public Content {
     kb.keylen = keylen;
     uint8_t j = 0;
     do {
-      kb.buf[ j++ ] = '0';
+      kb.u.buf[ j++ ] = '0';
     } while ( j < keylen - 1 );
-    kb.buf[ j ] = 0;
+    kb.u.buf[ j ] = 0;
     for ( uint64_t k = this->counter++; ; ) {
-      kb.buf[ --j ] += ( k % 10 );
+      kb.u.buf[ --j ] += ( k % 10 );
       k /= 10;
       if ( j == 0 || k == 0 )
         break;
     }
     return;
   }
+  void operator delete( void *ptr ) {}
 };
 
 int
@@ -89,7 +94,9 @@ main( int argc, char *argv[] )
 {
   static const uint32_t MAP_COUNT = 256;
   kv_hash64_func_t func   = kv_hash_murmur64_a;
+#if 0
   kv_hash128_func_t func2 = NULL;
+#endif
   uint64_t i, j, k, keycount;
   uint32_t map[ MAP_COUNT ];
   uint16_t keylen = 32;
@@ -113,12 +120,14 @@ main( int argc, char *argv[] )
   else
     fill = &xfill;
   printf( "content=%s ", fill->name );
-
+#if 0
   if ( argc > 2 && ::strcmp( argv[ 2 ], "cm" ) == 0 ) {
     func2 = kv_hash_citymur128;
     printf( "hash=citymur128 " );
   }
-  else if ( argc > 2 && ::strcmp( argv[ 2 ], "xxh" ) == 0 ) {
+  else
+#endif
+  if ( argc > 2 && ::strcmp( argv[ 2 ], "xxh" ) == 0 ) {
     func = kv_hash_xxh64;
     printf( "hash=xxh64 " );
   }
@@ -151,15 +160,18 @@ main( int argc, char *argv[] )
 
     t1 = current_monotonic_time_s();
     j = 0;
+#if 0
     if ( func2 != NULL ) {
       for ( i = 0; i < TEST_COUNT; i++ ) {
         kb[ j ].hash128( func2 );
         j = ( j + 1 ) % keycount;
       }
     }
-    else {
+    else
+#endif
+    {
       for ( i = 0; i < TEST_COUNT; i++ ) {
-        kb[ j ].hash( func );
+        kb[ j ].hash( 0, func );
         j = ( j + 1 ) % keycount;
       }
     }
@@ -167,13 +179,16 @@ main( int argc, char *argv[] )
     t2 -= t1;
 
     ::memset( cov, 0, ht_size * sizeof( cov[ 0 ] ) );
+#if 0
     if ( func2 != NULL ) {
       for ( j = 0; j < keycount; j++ )
         cov[ kb[ j ].hash128( func2 ) % ht_size ]++;
     }
-    else {
+    else
+#endif
+    {
       for ( j = 0; j < keycount; j++ )
-        cov[ kb[ j ].hash( func ) % ht_size ]++;
+        cov[ kb[ j ].hash( 0, func ) % ht_size ]++;
     }
     ::memset( map, 0, sizeof( map ) );
     for ( j = 0; j < ht_size; j++ ) {

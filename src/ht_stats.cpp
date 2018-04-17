@@ -155,7 +155,16 @@ HashTab::get_ht_deltas( HashDeltaCounters *stats,  HashCounters &ops,
 void
 ThrCtx::get_ht_delta( HashDeltaCounters &stat ) const
 {
-  stat.get_ht_delta( this->stat );
+  for (;;) {
+    while ( ( this->key & ZOMBIE32 ) != 0 )
+      kv_sync_pause();
+    HashCounters tmp( this->stat );
+    /* XXX: weak sync, mutator could lock & unlock while stat copied to tmp */
+    if ( ( this->key & ZOMBIE32 ) == 0 ) {
+      stat.get_ht_delta( tmp );
+      return;
+    }
+  }
 }
 
 bool
@@ -194,7 +203,7 @@ HashTab::update_load( void )
   if ( (nsegs = this->hdr.nsegs) > 0 ) {
     for ( i = 0; i < nsegs; i++ )
       avail_size += this->hdr.seg[ i ].avail_size;
-    total_size = nsegs * this->hdr.seg_size;
+    total_size = nsegs * this->hdr.seg_size();
     /* calculate used size */
     value_load = (double) ( total_size - avail_size ) / (double) total_size;
   }

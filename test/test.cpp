@@ -17,12 +17,12 @@ void
 incr_key( KeyBuf &kb )
 {
   for ( uint8_t j = kb.keylen - 1; ; ) {
-    if ( ++kb.buf[ --j ] <= '9' )
+    if ( ++kb.u.buf[ --j ] <= '9' )
       break;
-    kb.buf[ j ] = '0';
+    kb.u.buf[ j ] = '0';
     if ( j == 0 ) {
-      ::memmove( &kb.buf[ 1 ], kb.buf, kb.keylen );
-      kb.buf[ 0 ] = '1';
+      ::memmove( &kb.u.buf[ 1 ], kb.u.buf, kb.keylen );
+      kb.u.buf[ 0 ] = '1';
       kb.keylen++;
       break;
     }
@@ -131,11 +131,11 @@ main( int argc, char *argv[] )
     while ( ! sighndl.signaled ) {
       KeyCtx kctx( map, ctx_id, &kb );
       kb.set( (uint64_t) 0 );
-      kctx.set_hash( kb.hash( func ) );
+      kctx.set_hash( kb.hash( map->hdr.hash_key_seed, func ) );
       for ( i = 0; i < TEST_COUNT; i++ ) {
         if ( use_find )
           kctx.find( &wrk );
-        else if ( kctx.acquire() <= KEY_IS_NEW ) {
+        else if ( kctx.acquire( &wrk ) <= KEY_IS_NEW ) {
           if ( kctx.resize( &p, 6 ) == KEY_OK )
             ::memcpy( p, "hello", 6 );
           kctx.release();
@@ -150,24 +150,24 @@ main( int argc, char *argv[] )
     }
   }
   else if ( ::strcmp( oper, "rand" ) == 0 ) {
-    rand::xorshift1024star rand;
+    kv::rand::xorshift1024star rand;
     if ( ! rand.init() )
       printf( "urandom failed\n" );
 
     KeyBufAligned * key = KeyBufAligned::new_array( TEST_COUNT );
     for ( i = 0; i < TEST_COUNT; i++ ) {
       key[ i ].zero();
-      uint16_t keylen = rand.nextByte() % 32 + 1;
+      uint16_t keylen = rand.next() % 32 + 1;
       key[ i ].kb.keylen = keylen;
       for ( j = 0; j < keylen; j++ )
-        key[ i ].kb.buf[ j ] =
-          "abcdefghijklmnopqrstuvwxyz.:0123456789"[ rand.nextByte() % 38 ];
+        key[ i ].kb.u.buf[ j ] =
+          "abcdefghijklmnopqrstuvwxyz.:0123456789"[ rand.next() % 38 ];
     }
     sighndl.install();
 
     mono = current_monotonic_time_s();
     for ( i = 0, k = 0; i < 1000000; i++ ) {
-      h += key[ k ].hash( func );
+      h += key[ k ].hash( map->hdr.hash_key_seed, func );
       k  = ( k + 1 ) % TEST_COUNT;
     }
     mono = current_monotonic_time_s() - mono;
@@ -188,7 +188,7 @@ main( int argc, char *argv[] )
             kctx[ j ].prefetch( pcnt );
           }
           for ( j = 0; j < stride; j++ ) {
-            if ( kctx[ j ].acquire() <= KEY_IS_NEW ) {
+            if ( kctx[ j ].acquire( &wrk ) <= KEY_IS_NEW ) {
               if ( kctx[ j ].resize( &p, 6 ) == KEY_OK )
                 ::memcpy( p, "hello", 6 );
               kctx[ j ].release();
@@ -200,7 +200,7 @@ main( int argc, char *argv[] )
         KeyCtx kctx( map, ctx_id );
         for ( i = 0; i < TEST_COUNT; i++ ) {
           kctx.set_key_hash( key[ i ] );
-          if ( kctx.acquire() <= KEY_IS_NEW ) {
+          if ( kctx.acquire( &wrk ) <= KEY_IS_NEW ) {
             if ( kctx.resize( &p, 6 ) == KEY_OK )
               ::memcpy( p, "hello", 6 );
             kctx.release();
@@ -222,9 +222,9 @@ main( int argc, char *argv[] )
       if ( k == 0 ) {
         kb.zero();
         kb.keylen = 2;
-        kb.buf[ 0 ] = '0';
+        kb.u.buf[ 0 ] = '0';
       }
-      h += kb.hash( func );
+      h += kb.hash( map->hdr.hash_key_seed, func );
       k  = ( k + 1 ) % TEST_COUNT;
       incr_key( kb );
     }
@@ -239,7 +239,7 @@ main( int argc, char *argv[] )
     while ( ! sighndl.signaled ) {
       kb.zero();
       kb.keylen = 2;
-      kb.buf[ 0 ] = '0';
+      kb.u.buf[ 0 ] = '0';
       if ( use_prefetch > 1 ) {
         const uint32_t stride = use_prefetch;
         KeyCtx * kctx = KeyCtx::new_array( map, ctx_id, NULL, stride );
@@ -260,7 +260,7 @@ main( int argc, char *argv[] )
           }
           else {
             for ( j = 0; j < stride; j++ ) {
-              if ( kctx[ j ].acquire() <= KEY_IS_NEW ) {
+              if ( kctx[ j ].acquire( &wrk ) <= KEY_IS_NEW ) {
                 if ( kctx[ j ].resize( &p, 6 ) == KEY_OK )
                   ::memcpy( p, "hello", 6 );
                 kctx[ j ].release();
@@ -272,11 +272,11 @@ main( int argc, char *argv[] )
       else {
         KeyCtx kctx( map, ctx_id, &kb );
         for ( i = 0; i < TEST_COUNT; i++ ) {
-          kctx.set_hash( kb.hash( func ) );
+          kctx.set_hash( kb.hash( map->hdr.hash_key_seed, func ) );
           if ( use_find )
             kctx.find( &wrk );
           else {
-            if ( kctx.acquire() <= KEY_IS_NEW ) {
+            if ( kctx.acquire( &wrk ) <= KEY_IS_NEW ) {
               if ( kctx.resize( &p, 6 ) == KEY_OK )
                 ::memcpy( p, "hello", 6 );
               kctx.release();
@@ -299,7 +299,7 @@ main( int argc, char *argv[] )
     ukb.zero();
     for ( i = 0, k = 0; i < 1000000; i++ ) {
       ukb.set( k );
-      h += ukb.hash( func );
+      h += ukb.hash( map->hdr.hash_key_seed, func );
       k  = ( k + 1 ) % TEST_COUNT;
     }
     mono = current_monotonic_time_s() - mono;
@@ -312,7 +312,7 @@ main( int argc, char *argv[] )
     akb.zero();
     for ( i = 0, k = 0; i < 1000000; i++ ) {
       akb.set( k );
-      h += akb.hash( func );
+      h += akb.hash( map->hdr.hash_key_seed, func );
       k  = ( k + 1 ) % TEST_COUNT;
     }
     mono = current_monotonic_time_s() - mono;
@@ -341,7 +341,7 @@ main( int argc, char *argv[] )
           }
           else {
             for ( j = 0; j < stride; j++ ) {
-              if ( kctx[ j ].acquire() <= KEY_IS_NEW ) {
+              if ( kctx[ j ].acquire( &wrk ) <= KEY_IS_NEW ) {
                 if ( kctx[ j ].resize( &p, 6 ) == KEY_OK )
                   ::memcpy( p, "hello", 6 );
                 kctx[ j ].release();
@@ -355,10 +355,10 @@ main( int argc, char *argv[] )
         KeyCtx kctx( map, ctx_id, kb );
         for ( i = 0; i < TEST_COUNT; i++ ) {
           kb.set( i );
-          kctx.set_hash( kb.hash( func ) );
+          kctx.set_hash( kb.hash( map->hdr.hash_key_seed, func ) );
           if ( use_find )
             kctx.find( &wrk );
-          else if ( kctx.acquire() <= KEY_IS_NEW ) {
+          else if ( kctx.acquire( &wrk ) <= KEY_IS_NEW ) {
             if ( kctx.resize( &p, 6 ) == KEY_OK )
               ::memcpy( p, "hello", 6 );
             kctx.release();

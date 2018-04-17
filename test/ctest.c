@@ -33,11 +33,14 @@ typedef struct {
 
   char buf[ 64 * 1024 ];
   xh_t xh[ 16 * 1024 ];
-  kv_key_ctx_t *ctx[ CTX_COUNT ];
+  kv_key_ctx_t   * ctx[ CTX_COUNT ];
+  kv_key_alloc_t * wrk;
 
   kv_atom_uint64_t ready;
   kv_atom_uint8_t  done,
                    running;
+  uint16_t         id;
+  uint64_t         status_cnt[ 16 ];
 } thr_data_t;
 
 thr_data_t *thr[ MAX_THR ];
@@ -55,6 +58,13 @@ cmp_frag_hash( const void *p1,  const void *p2 )
   return n == 0 ? 0 : ( n < 0 ? -1 : 1 );
 }
 #endif
+uint32_t
+next_pos( void )
+{
+  static uint32_t val;
+  return kv_sync_add( &val, 1 );
+}
+
 void
 process_key_frags( thr_data_t *t )
 {
@@ -62,16 +72,16 @@ process_key_frags( thr_data_t *t )
   uint32_t dup[ CTX_COUNT ], src[ CTX_COUNT ];
 
   for ( i = 0; i < t->frag_count; i++ )
-    t->xh[ i ].hash = kv_hash_key_frag( t->xh[ i ].frag );
+    t->xh[ i ].hash = kv_hash_key_frag( ht, t->xh[ i ].frag );
 
   if ( testing == 2 ) {
     t->frag_count = 0;
     return;
   }
 
-  //qsort( t->xh, i, sizeof( t->xh[ 0 ] ), cmp_frag_hash );
+  /*qsort( t->xh, i, sizeof( t->xh[ 0 ] ), cmp_frag_hash );*/
   /* kv_ht_sort_t is generic version of xh_t */
-  kv_ht_radix_sort( (kv_ht_sort_t *) (void *) t->xh, i, kv_map_get_size( ht ) );
+  kv_ht_radix_sort( (kv_ht_sort_t *) (void *) t->xh, i, ht );
 
   if ( testing == 1 ) {
     t->frag_count = 0;
@@ -106,14 +116,23 @@ process_key_frags( thr_data_t *t )
     for (;;) {
       fail = 0;
       for ( k = 0; k < j; k++ ) {
-        kv_key_status_t status = kv_try_acquire( t->ctx[ k ] );
+        kv_key_status_t status = kv_try_acquire( t->ctx[ k ], t->wrk );
+        t->status_cnt[ status ]++;
         if ( status <= KEY_IS_NEW ) {
-          uint64_t *count;
-          if ( kv_resize( t->ctx[ k ], &count, sizeof( uint64_t ),
-                          sizeof( uint64_t ) ) == KEY_OK ) {
-            if ( status == KEY_IS_NEW )
-              *count = 0;
-            (*count) += dup[ k ];
+          typedef struct {
+            uint32_t count;
+            //uint32_t pos;
+            uint16_t id;
+          } kv_data_t;
+          kv_data_t *d;
+          if ( kv_resize( t->ctx[ k ], &d, sizeof( kv_data_t ),
+                          sizeof( uint32_t ) ) == KEY_OK ) {
+            if ( status == KEY_IS_NEW ) {
+              d->count = 0;
+              //d->pos   = next_pos();
+              d->id    = t->id;
+            }
+            d->count += dup[ k ];
           }
           kv_release( t->ctx[ k ] );
         }
@@ -152,14 +171,16 @@ thr_process( void *data )
   char          * p;
   uint32_t        j;
 
-  t->ctx_id = kv_attach_ctx( ht, (uint64_t) t );
+  t->ctx_id = kv_attach_ctx( ht, t->id );
   for ( j = 0; j < CTX_COUNT; j++ )
     t->ctx[ j ] = kv_create_key_ctx( ht, t->ctx_id );
+  t->wrk = kv_create_ctx_alloc( 8 * 1024, NULL, NULL, 0 );
+  memset( t->status_cnt, 0, sizeof( t->status_cnt ) );
 
   for (;;) {
     while ( t->ready == t->consumed && ! t->done )
       kv_sync_pause();
-    if ( t->done )
+    if ( t->ready == t->consumed && t->done )
       break;
 
     n   = t->ready - t->consumed;
@@ -211,9 +232,9 @@ thr_process( void *data )
 }
 
 void
-create_thr_data( uint32_t num_thr )
+create_thr_data( uint16_t num_thr )
 {
-  int i;
+  uint16_t i;
   for ( i = 0; i < num_thr; i++ ) {
     thr[ i ] = (thr_data_t *) malloc( sizeof( thr_data_t ) );
     thr[ i ]->count    = 0;
@@ -221,6 +242,7 @@ create_thr_data( uint32_t num_thr )
     thr[ i ]->consumed = 0;
     thr[ i ]->done     = 0;
     thr[ i ]->running  = 1;
+    thr[ i ]->id       = i;
   }
 }
 
@@ -272,8 +294,12 @@ process_input_data( uint32_t num_thr )
   } while ( x > 0 );
 
   for ( i = 0; i < num_thr; i++ )
-    printf( "[%d] %lu words, %lu bytes, %lu dup\n",
-            i, thr[ i ]->count, thr[ i ]->consumed, thr[ i ]->dup_count );
+    printf( "[%d] %lu words, %lu bytes, %lu dup "
+            "OK %lu NEW %lu BUSY %lu\n",
+            i, thr[ i ]->count, thr[ i ]->consumed, thr[ i ]->dup_count,
+            thr[ i ]->status_cnt[ KEY_OK ],
+            thr[ i ]->status_cnt[ KEY_IS_NEW ],
+            thr[ i ]->status_cnt[ KEY_BUSY ] );
 }
 
 int

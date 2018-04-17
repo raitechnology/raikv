@@ -47,12 +47,13 @@ uint64_t
 do_load( KeyCtx *kctx,  MsgCtx *mctx,  uint64_t count,  bool use_pref,
          uint64_t cur_time )
 {
+  KeyCtxAlloc8k wrk;
   KeyStatus status;
   uint64_t loaded = 0, i = 0;
   do {
     /*if ( use_pref && i + 1 < count )
       kctx[ i + 1 ].prefetch( 1 );*/
-    if ( (status = kctx[ i ].acquire()) <= KEY_IS_NEW ) {
+    if ( (status = kctx[ i ].acquire( &wrk )) <= KEY_IS_NEW ) {
       kctx[ i ].update_ns = cur_time;
       status = kctx[ i ].load( mctx[ i ] );
       kctx[ i ].release();
@@ -168,7 +169,7 @@ main( int argc, char *argv[] )
     sav[ 0 ] = '\0';
     for ( i = 0; ; ) {
       if ( precount > 0 )
-        buf = kba[ i ].kb.buf;
+        buf = kba[ i ].kb.u.buf;
       else
         buf = bufspc;
       if ( fgets( buf, MAX_KEY_BUF_SIZE, fp ) != NULL &&
@@ -228,10 +229,10 @@ main( int argc, char *argv[] )
         }
         if ( precount > 0 ) {
           KeyFragment &kb = kba[ i ];
-          kb.keylen = ::strlen( kb.buf );
-          while ( kb.keylen > 0 && kb.buf[ kb.keylen - 1 ] <= ' ' )
-            kb.buf[ --kb.keylen ] = '\0';
-          kb.buf[ kb.keylen++ ] = '\0';
+          kb.keylen = ::strlen( kb.u.buf );
+          while ( kb.keylen > 0 && kb.u.buf[ kb.keylen - 1 ] <= ' ' )
+            kb.u.buf[ --kb.keylen ] = '\0';
+          kb.u.buf[ kb.keylen++ ] = '\0';
           if ( use_pref )
             mctx[ i ].prefetch_segment( sz );
           mctx[ i ].set_key_hash( kb );

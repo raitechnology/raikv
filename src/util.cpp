@@ -12,8 +12,7 @@
 using namespace rai;
 using namespace kv;
 
-static const uint64_t newhash_magic = ( (uint64_t) 0x9e3779b9U << 32 ) |
-                                        (uint64_t) 0x7f4a7c13U;
+static const uint64_t newhash_magic = _U64( 0x9e3779b9U, 0x7f4a7c13U );
 inline void
 newhash_mix( uint64_t &a,  uint64_t &b,  uint64_t &c ) /* Bob Jenkins */
 {
@@ -93,7 +92,7 @@ rai::kv::rand::fill_urandom_bytes( void *buf,  uint16_t sz )
 }
 
 bool
-rand::xorshift1024star::init( void *seed,  uint16_t sz )
+rai::kv::rand::xorshift1024star::init( void *seed,  uint16_t sz )
 {
   this->p = 0;
   if ( sz == 0 )
@@ -104,17 +103,17 @@ rand::xorshift1024star::init( void *seed,  uint16_t sz )
 }
 
 uint64_t
-rand::xorshift1024star::next( void )
+rai::kv::rand::xorshift1024star::next( void )
 {
   const uint64_t s0 = this->state[ this->p ];
   uint64_t       s1 = this->state[ this->p = (this->p + 1) & 15 ];
   s1 ^= s1 << 31; // a
   this->state[ this->p ] = s1 ^ s0 ^ (s1 >> 11) ^ (s0 >> 30); // b,c
-  return this->state[ this->p ] * 0x9e3779b97f4a7c13;
+  return this->state[ this->p ] * _U64( 0x9e3779b9, 0x7f4a7c13 );
 }
 
 bool
-rand::xoroshiro128plus::init( void *seed,  uint16_t sz )
+rai::kv::rand::xoroshiro128plus::init( void *seed,  uint16_t sz )
 {
   if ( sz == 0 )
     return fill_urandom_bytes( this->state, sizeof( this->state ) );
@@ -162,6 +161,14 @@ rai::kv::get_rdtsc( void )
 }
 
 uint64_t
+rai::kv::get_rdtscp( void )
+{
+   uint32_t lo, hi;
+  __asm__ __volatile__("rdtscp" : "=a" (lo), "=d" (hi));
+  return ( (uint64_t) hi << 32 ) | (uint64_t) lo;
+}
+
+uint64_t
 rai::kv::current_monotonic_time_ns( void )
 {
   timespec ts;
@@ -180,6 +187,9 @@ rai::kv::current_monotonic_time_s( void )
 uint64_t
 rai::kv::current_monotonic_coarse_ns( void )
 {
+#ifndef CLOCK_MONOTONIC_COARSE
+#define CLOCK_MONOTONIC_COARSE 6
+#endif
   timespec ts;
   clock_gettime( CLOCK_MONOTONIC_COARSE, &ts );
   return ts.tv_sec * (uint64_t) 1000000000 + ts.tv_nsec;
@@ -212,6 +222,9 @@ rai::kv::current_realtime_s( void )
 uint64_t
 rai::kv::current_realtime_coarse_ns( void )
 {
+#ifndef CLOCK_REALTIME_COARSE
+#define CLOCK_REALTIME_COARSE 5
+#endif
   timespec ts;
   clock_gettime( CLOCK_REALTIME_COARSE, &ts );
   return ts.tv_sec * (uint64_t) 1000000000 + ts.tv_nsec;
@@ -226,6 +239,12 @@ rai::kv::current_realtime_coarse_s( void )
 }
 extern "C" {
 
+uint64_t kv_get_rdtsc( void ) {
+  return rai::kv::get_rdtsc(); /* intel rdtsc */
+}
+uint64_t kv_get_rdtscp( void ) {
+  return rai::kv::get_rdtscp(); /* intel rdtscp */
+}
 double kv_current_realtime_coarse_s( void ) {
   return rai::kv::current_realtime_coarse_s();
 }
@@ -297,23 +316,109 @@ SignalHandler::install( void )
 char *
 rai::kv::mem_to_string( int64_t m,  char *b,  int64_t k )
 {
-  char *s = b;
+  char * s = b;
+  size_t i = 0;
   if ( m == 0 )
-    *b++ = '0';
+    b[ i++ ] = '0';
   else if ( ( m > 0 && m < 100 * k ) || ( m < 0 && -m < 100 * k ) )
-    int_to_string<int64_t>( m, b, &b );
+    i = int64_to_string( m, b );
   else if ( ( m > 0 && m < 100 * k * k ) || ( m < 0 && -m < 100 * k * k ) ) {
-    int_to_string<int64_t>( ( m + k / 2 ) / k, b, &b );
-    *b++ = 'K';
+    i = int64_to_string( ( m + k / 2 ) / k, b );
+    b[ i++ ] = 'K';
     if ( k == 1024 )
-      *b++ = 'B';
+      b[ i++ ] = 'B';
   }
   else {
-    int_to_string<int64_t>( ( m + ( k * k / 2 ) ) / ( k * k ), b, &b );
-    *b++ = 'M';
+    i = int64_to_string( ( m + ( k * k / 2 ) ) / ( k * k ), b );
+    b[ i++ ] = 'M';
     if ( k == 1024 )
-      *b++ = 'B';
+      b[ i++ ] = 'B';
   }
-  *b = '\0';
+  b[ i ] = '\0';
   return s; 
 }   
+
+/* via Andrei Alexandrescu */
+static inline size_t
+uint64_digits( uint64_t v )
+{
+  for ( size_t n = 1; ; n += 4 ) {
+    if ( v < 10 )    return n;
+    if ( v < 100 )   return n + 1;
+    if ( v < 1000 )  return n + 2;
+    if ( v < 10000 ) return n + 3;
+    v /= 10000;
+  }
+}
+
+size_t
+rai::kv::uint64_to_string( uint64_t v,  char *buf )
+{
+  const size_t len = uint64_digits( v );
+  buf[ len ] = '\0';
+  for ( size_t pos = len; v >= 10; ) {
+    const uint64_t q = v / 10,
+                   r = v % 10;
+    buf[ --pos ] = '0' + r;
+    v = q;
+  }
+  buf[ 0 ] = '0' + v;
+  return len;
+}
+
+size_t
+rai::kv::int64_to_string( int64_t v,  char *buf )
+{
+  size_t len = 0;
+  if ( v < 0 ) { len++; *buf++ = '-'; v = -v; }
+  return uint64_to_string( (uint64_t) v, buf );
+}
+
+uint64_t
+rai::kv::string_to_uint64( const char *b,  size_t len )
+{
+  /* max is 1844674407,3709551615, this table doesnn't overflow 32bits */
+  static const uint32_t pow10[] = {     10000U * 10000U * 10,
+    10000U * 10000, 10000U * 1000, 10000U * 100, 10000U * 10,
+             10000,          1000,          100,          10,
+                 1
+  };
+  static const size_t max_pow10 = sizeof( pow10 ) / sizeof( pow10[ 0 ] );
+  size_t i, j;
+  uint64_t n = 0;
+  i = j = 0;
+  if ( len < max_pow10 )
+    i = max_pow10 - len;
+  else
+    j = len - max_pow10;
+  len = j;
+  for (;;) {
+    n += (uint64_t) pow10[ i++ ] * ( b[ j++ ] - '0' );
+    if ( i == max_pow10 )
+      break;
+  }
+  if ( len != 0 ) {
+    i = j = 0;
+    if ( len < max_pow10 )
+      i = max_pow10 - len;
+    else
+      j = len - max_pow10;
+    len = j;
+    const uint64_t m = (uint64_t) 10 * (uint64_t) pow10[ 0 ];
+    for (;;) {
+      n += m * (uint64_t) pow10[ i++ ] * ( b[ j++ ] - '0' );
+      if ( i == max_pow10 )
+        break;
+    }
+  }
+  return n;
+}
+
+int64_t
+rai::kv::string_to_int64( const char *b,  size_t len )
+{
+  int64_t n = 1;
+  if ( b[ 0 ] == '-' ) { n = -1; b++; len -= 1; }
+  return n * (int64_t) string_to_uint64( b, len );
+}
+

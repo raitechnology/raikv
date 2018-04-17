@@ -27,13 +27,13 @@ struct KeyBufT : public KeyFragment {
   }
   KeyBufT( const KeyFragment &x ) {
     this->keylen = x.keylen;
-    ::memcpy( this->buf, x.buf, x.keylen );
+    ::memcpy( this->u.buf, x.u.buf, x.keylen );
   }
   void set_string( const char *s ) {
     this->keylen = 0; /* null is valid input keylen=0, null char is keylen=1 */
     if ( s != NULL ) {
       do {
-        if ( (this->buf[ this->keylen++ ] = *s++) == '\0' )
+        if ( (this->u.buf[ this->keylen++ ] = *s++) == '\0' )
 	  break;
       } while ( this->keylen < KEY_SIZE );
     }
@@ -46,7 +46,7 @@ struct KeyBufT : public KeyFragment {
   void copy( const void *p,  uint16_t len ) {
     if ( len > KEY_SIZE )
       len = KEY_SIZE;
-    ::memcpy( this->buf, p, len ); /* if p == null then len = 0 */
+    ::memcpy( this->u.buf, p, len ); /* if p == null then len = 0 */
     this->keylen = len;
   }
   void zero( void ) {
@@ -75,12 +75,14 @@ struct KeyBufAligned {
   template<class T> void set( T arg ) { this->kb.set( arg ); }
   void copy( const void *p,  uint16_t len ) { this->kb.copy( p, len ); }
   void zero() { this->kb.zero(); }
-  uint64_t hash( kv_hash64_func_t func ) {
-    return this->kb.hash( func );
+  uint64_t hash( uint64_t seed,  kv_hash64_func_t func ) {
+    return this->kb.hash( seed, func );
   }
+#if 0
   uint64_t hash128( kv_hash128_func_t func ) {
     return this->kb.hash128( func );
   }
+#endif
   operator KeyFragment&() { return this->kb; }
 
   static KeyBufAligned *new_array( size_t sz ) {
@@ -97,14 +99,7 @@ struct KeyBufAligned {
 };
 
 /* simple version of the KeyCtxAlloc defining 8k stack space usage */
-struct KeyCtxAlloc8k : public KeyCtxAlloc {
-  CacheLine spc[ 8 * 1024 / sizeof( CacheLine ) ];
-
-  KeyCtxAlloc8k() : KeyCtxAlloc( this->spc, sizeof( this->spc ) ) {}
-  ~KeyCtxAlloc8k() {
-    this->reset();
-  }
-};
+typedef struct KeyCtxAllocT<8192> KeyCtxAlloc8k;
 
 }
 }

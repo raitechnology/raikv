@@ -1,9 +1,12 @@
 # dist
 /dist
 /export
-# notes
+# misc
 /notes
 /doc
+/data
+/script
+/tmp
 # Build temporaries
 /RH5_*
 /RH6_*

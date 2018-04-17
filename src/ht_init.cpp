@@ -1,7 +1,7 @@
 #include <stdio.h>
 #include <stdint.h>
-#include <stdarg.h>
 #include <stdlib.h>
+#include <stdarg.h>
 #include <string.h>
 #include <inttypes.h>
 #include <unistd.h>
@@ -49,7 +49,7 @@ HashTab::HashTab( const char *map_name,  const HashTabGeom &geom )
 {
   this->initialize( map_name, geom );
 }
-
+//#if 0
 static bool is_divis( uint64_t x, ... ) { /* pseudo prime checker */
   va_list ap;
   va_start( ap, x );
@@ -62,6 +62,7 @@ static bool is_divis( uint64_t x, ... ) { /* pseudo prime checker */
   }
   va_end( ap );
 }
+//#endif
                                           /* 01234567890123456 */
 const char HashTab::shared_mem_sig[ 16 ]  = "rai.kv.tab 0.1";
 static const int SHM_TYPE_IDX = 14;
@@ -80,9 +81,15 @@ HashTab::initialize( const char *map_name,  const HashTabGeom &geom )
            data_area, /* memory size minus the headers */
            seg_off,   /* init seg[] boundaries */
            seg_size,  /* size of each segment, must be large enough for max */
-           max_sz;    /* maximum entry size */
+           max_sz,    /* maximum entry size */
+           mask,
+           fraction,
+           max_idx,
+           el_cnt;
   uint32_t i,
            nsegs;     /* number of seg[] entries */
+  uint16_t szlog2;
+  uint8_t  shift;
 #if 0
   printf( "FileHdr %lu == %lu\n", sizeof( FileHdr ), HT_FILE_HDR_SIZE );
   printf( "ThrCtx %lu == %lu\n", sizeof( ThrCtx ), HT_THR_CTX_SIZE );
@@ -107,21 +114,53 @@ HashTab::initialize( const char *map_name,  const HashTabGeom &geom )
   this->hdr.map_size         = geom.map_size;
   this->hdr.max_value_size   = geom.max_value_size;
   this->hdr.hash_entry_size  = geom.hash_entry_size;
+  this->hdr.cuckoo_buckets   = geom.cuckoo_buckets;
+  this->hdr.cuckoo_arity     = geom.cuckoo_arity;
 
   data_area = geom.map_size - ( HT_HDR_SIZE + HT_CTX_SIZE );
-  sz        = (uint64_t) ( geom.hash_value_ratio * (double) data_area ) /
+  el_cnt    = (uint64_t) ( geom.hash_value_ratio * (double) data_area ) /
                            (uint64_t) geom.hash_entry_size;
+  sz = el_cnt;
+  /* not using integer mod, no need to be prime */
   while ( sz > 0 && is_divis( sz, 2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37,
-                                  41, 53, 59, 0 ) )
+                                  41, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97,
+                                  101, 103, 107, 109, 113, 127, 131, 137, 139,
+                                  149, 151, 0 ) )
     sz--;
+  //printf( "stash %lu\n", el_cnt - sz );
+  for ( szlog2 = 1; ( (uint64_t) 1 << szlog2 ) < sz; szlog2++ )
+    ;
   assert( sz > 0 );
   tab_size  = sz * (uint64_t) geom.hash_entry_size;
   data_size = data_area - tab_size;
+  /* check for overflow of the ( hash & mask ) bits for the mod calculation
+   * 30 bits works up to 16 * 10^9, or 1<<34 ( 30 + 34 = 64 ), that would be
+   * a ht mem size of 1tb ( 16gb * 64 or 1<<34 * 1<<6 == 1<<40 ) */
+  for ( shift = 30; shift > 1; shift-- ) {
+    mask     = ( (uint64_t) 1 << szlog2 ) - 1;
+    fraction = (uint64_t) ( ( (double) sz / (double) mask ) * 
+                              (double) ( (uint64_t) 1 << shift ) );
+    max_idx  = ( mask * fraction ) >> shift;
+    if ( max_idx > sz / 2 ) {
+      /* example of case where fraction is too large:
+       *  sz == 7, mask == 7, fraction = 0x40000000,
+       *  max_idx == ( 7 * 0x40000000 ) >> 30 == 7, and
+       *  max_idx == ( 7 * 0x3fffffff ) >> 30 == 6 */
+      if ( max_idx == sz )
+        fraction--;
+      break;
+    }
+  }
 
+  assert( max_idx > sz / 2 );
   assert( data_size < data_area );
   assert( tab_size <= data_area );
 
   this->hdr.ht_size         = sz;      /* number of entries */
+  this->hdr.log2_ht_size    = szlog2;
+  this->hdr.ht_mod_shift    = shift;
+  this->hdr.ht_mod_mask     = mask;
+  this->hdr.ht_mod_fraction = fraction;
   this->hdr.seg_align_shift = 6;       /* 1 << 6 = 64 */
 
   if ( geom.max_value_size == 0 )
@@ -145,13 +184,20 @@ HashTab::initialize( const char *map_name,  const HashTabGeom &geom )
     assert( nsegs > 0 ); /* at least 1 segs */
   }
   this->hdr.nsegs = nsegs;
-  seg_off  = HT_HDR_SIZE + HT_CTX_SIZE + tab_size;
-  this->hdr.seg_start = seg_off;
 
   if ( nsegs > 0 ) {
     /* calculate the segment offsets */
+    seg_off  = HT_HDR_SIZE + HT_CTX_SIZE + tab_size;
+    while ( ( seg_off >> this->hdr.seg_align_shift ) > ( (uint64_t) 1 << 32 ) )
+      this->hdr.seg_align_shift++;
+    /* calc segment size */
     seg_size = ( data_size / nsegs ) & ~( this->hdr.seg_align() - 1 ); /*floor*/
-    this->hdr.seg_size = seg_size;
+    while ( ( seg_size >> this->hdr.seg_align_shift ) > ( (uint64_t) 1 << 32 ) )
+      this->hdr.seg_align_shift++;
+    seg_size = ( data_size / nsegs ) & ~( this->hdr.seg_align() - 1 ); /*floor*/
+
+    this->hdr.seg_start_val = ( seg_off >> this->hdr.seg_align_shift );
+    this->hdr.seg_size_val  = ( seg_size >> this->hdr.seg_align_shift );
     this->hdr.seg[ 0 ].init( seg_off, seg_size );
 
     for ( i = 1; i < nsegs; i++ ) {
@@ -168,30 +214,34 @@ HashTab::initialize( const char *map_name,  const HashTabGeom &geom )
   }
   else {
     seg_size = 0;
-    this->hdr.seg_size = 0;
+    this->hdr.seg_start_val = 0;
+    this->hdr.seg_size_val  = 0;
   }
   /* zero the thread contexts and the ht elements */
   ::memset( this->ctx, 0, sizeof( this->ctx ) );
   /* init rand elems */
-  uint64_t buf[ MAX_CTX_ID * 2 ];
+  uint64_t buf[ MAX_CTX_ID * 2 + 2 ];
   rand::fill_urandom_bytes( buf, sizeof( buf ) );
   for ( i = 0; i < MAX_CTX_ID * 2; i += 2 )
-    this->ctx[ i / 2 ].rand.init( (void *) &buf[ i ], sizeof( buf[ i ] ) * 2 );
+    this->ctx[ i / 2 ].rng.init( (void *) &buf[ i ], sizeof( uint64_t ) * 2 );
+  this->hdr.hash_key_seed = buf[ i ] ^ buf[ i + 1 ];
 
-  /* check that ht doesn't overflow into seg data */
-  assert( (uint8_t *) (void *) this->get_entry( this->hdr.ht_size ) <=
-          (uint8_t *) this->seg_data( 0, 0 ) );
-  /* check that seg data doesn't overflow map size */
-  assert( (uint8_t *) this->seg_data( nsegs, 0 ) <=
-          &((uint8_t *) (void *) this)[ geom.map_size ] );
+  if ( nsegs > 0 ) {
+    /* check that ht doesn't overflow into seg data */
+    assert( (uint8_t *) (void *) this->get_entry( this->hdr.ht_size ) <=
+            (uint8_t *) this->seg_data( 0, 0 ) );
+    /* check that seg data doesn't overflow map size */
+    assert( (uint8_t *) this->seg_data( nsegs, 0 ) <=
+            &((uint8_t *) (void *) this)[ geom.map_size ] );
+  }
   /* check hash_entry_size is valid */
   assert( geom.hash_entry_size % 64 == 0 );
 
   this->hdr.max_immed_value_size = geom.hash_entry_size -
     ( sizeof( HashEntry ) + sizeof( ValueCtr ) );
   if ( nsegs > 0 ) {
-    assert( this->hdr.seg_size > sizeof( MsgHdr ) );
-    this->hdr.max_segment_value_size = this->hdr.seg_size -
+    assert( this->hdr.seg_size() > sizeof( MsgHdr ) );
+    this->hdr.max_segment_value_size = this->hdr.seg_size() -
       ( sizeof( MsgHdr ) + sizeof( ValueCtr ) ); /* msg hdr */
   }
   /* zero the ht[] array */
@@ -363,6 +413,9 @@ HashTab::create_map( const char *map_name,  uint8_t facility,
 #ifndef MAP_HUGE_SHIFT
 #define MAP_HUGE_SHIFT 26
 #endif
+#ifndef MAP_HUGETLB
+#define MAP_HUGETLB 0x40000
+#endif
     int flags = MAP_SHARED | MAP_POPULATE;
     if ( ( facility & KV_HUGE_2MB ) != 0 )
       flags |= ( MAP_HUGETLB | (21 << MAP_HUGE_SHIFT) );
@@ -474,14 +527,12 @@ HashTab::attach_map( const char *map_name,  uint8_t facility,
       ::close( fd );
       return NULL;
     }
-    geom.map_size         = hdr.map_size;
-    geom.max_value_size   = hdr.max_value_size;
-    geom.hash_entry_size  = hdr.hash_entry_size;
-    geom.hash_value_ratio = hdr.hash_value_ratio;
-    map_size              = align<uint64_t>( geom.map_size, page_align );
-
+    map_size = align<uint64_t>( hdr.map_size, page_align );
 #ifndef MAP_HUGE_SHIFT
 #define MAP_HUGE_SHIFT 26
+#endif
+#ifndef MAP_HUGETLB
+#define MAP_HUGETLB 0x40000
 #endif
     int flags = MAP_SHARED | MAP_POPULATE;
     if ( ( facility & KV_HUGE_2MB ) != 0 )
@@ -503,19 +554,20 @@ HashTab::attach_map( const char *map_name,  uint8_t facility,
       return NULL;
     }
     ::memcpy( &hdr, p, sizeof( hdr ) );
-
+    map_size = align<uint64_t>( hdr.map_size, page_align );
     if ( ::memcmp( hdr.sig, HashTab::shared_mem_sig, SHM_TYPE_IDX ) != 0 ) {
       fprintf( stderr, "shm sig doesn't match: [%s][%s]",
                HashTab::shared_mem_sig, hdr.sig );
       ::shmdt( p );
       return NULL;
     }
-    geom.map_size         = hdr.map_size;
-    geom.max_value_size   = hdr.max_value_size;
-    geom.hash_entry_size  = hdr.hash_entry_size;
-    geom.hash_value_ratio = hdr.hash_value_ratio;
-    map_size              = align<uint64_t>( geom.map_size, page_align );
   }
+  geom.map_size         = hdr.map_size;
+  geom.max_value_size   = hdr.max_value_size;
+  geom.hash_entry_size  = hdr.hash_entry_size;
+  geom.hash_value_ratio = hdr.hash_value_ratio;
+  geom.cuckoo_buckets   = hdr.cuckoo_buckets;
+  geom.cuckoo_arity     = hdr.cuckoo_arity;
 
   if ( ::mlock( p, map_size ) != 0 )
     perror( "warning: mlock()" );
@@ -599,20 +651,22 @@ HashTab::attach_ctx( uint32_t key )
     return KV_NO_CTX_ID;
 
   for (;;) {
-    el = &this->ctx[ i ];
-    while ( ( (val = el->key.xchg( bizyid )) & ZOMBIE32 ) != 0 )
-      kv_sync_pause();
-    /* keep used entries around for history, unless there are no more spots */
-    if ( el->ctx_pid == 0 || ( second_time && el->ctx_id >= MAX_CTX_ID ) ) {
-      el->zero();
-      el->ctx_id    = el - this->ctx;
-      el->ctx_pid   = ::getpid();
-      el->ctx_thrid = ::syscall( SYS_gettid );
-      this->hdr.ctx_used.add( 1 );
-      el->key.xchg( key );
-      return el->ctx_id;
+    if ( i != 0 ) { /* reserve ctx[ 0 ] for global accum */
+      el = &this->ctx[ i ];
+      while ( ( (val = el->key.xchg( bizyid )) & ZOMBIE32 ) != 0 )
+        kv_sync_pause();
+      /* keep used entries around for history, unless there are no more spots */
+      if ( el->ctx_pid == 0 || ( second_time && el->ctx_id >= MAX_CTX_ID ) ) {
+        el->zero();
+        el->ctx_id    = el - this->ctx;
+        el->ctx_pid   = ::getpid();
+        el->ctx_thrid = ::syscall( SYS_gettid );
+        this->hdr.ctx_used.add( 1 );
+        el->key.xchg( key );
+        return el->ctx_id;
+      }
+      el->key.xchg( val ); /* unlock */
     }
-    el->key.xchg( val ); /* unlock */
     i = ( i + 1 ) % MAX_CTX_ID;
     /* checked all slots */
     if ( i == start ) {
@@ -627,19 +681,24 @@ HashTab::attach_ctx( uint32_t key )
 void
 HashTab::detach_ctx( uint32_t ctx_id )
 {
-  ThrCtx * el;
+  ThrCtx & el   = this->ctx[ ctx_id ],
+         & base = this->ctx[ 0 ];
   uint32_t val;
   const uint32_t bizyid = ZOMBIE32 | ctx_id;
 
-  if ( ctx_id >= MAX_CTX_ID )
+  if ( ctx_id >= MAX_CTX_ID || ctx_id == 0 )
     return;
 
-  el = &this->ctx[ ctx_id ];
-  while ( ( (val = el->key.xchg( bizyid )) & ZOMBIE32 ) != 0 )
+  while ( ( (val = base.key.xchg( bizyid )) & ZOMBIE32 ) != 0 )
     kv_sync_pause();
-  el->ctx_id = KV_NO_CTX_ID;
+  while ( ( (val = el.key.xchg( bizyid )) & ZOMBIE32 ) != 0 )
+    kv_sync_pause();
+  base.stat += el.stat;
+  el.stat.zero();
+  el.ctx_id = KV_NO_CTX_ID;
   this->hdr.ctx_used.sub( 1 );
-  el->key.xchg( 0 );
+  el.key.xchg( 0 );
+  base.key.xchg( 0 );
 }
 
 extern "C" {

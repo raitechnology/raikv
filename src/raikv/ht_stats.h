@@ -46,9 +46,15 @@ struct HashCounters {
           add, drop,  /* count of new entries, count of dropped entries */
           htevict,    /* count of evictions because of ht collisions */
           afail,      /* write failed to allocate data */
-          hit, miss;  /* read when data was found, miss when not found */
+          hit, miss,  /* read when data was found, miss when not found */
+          cuckacq,    /* cuckoo path acquire */
+          cuckfet,    /* cuckoo path fetch */
+          cuckmov,    /* cuckoo path move */
+          cuckbiz;    /* cuckoo path busy */
+  int64_t pad[ 2 ];   /* 128b */
 
   HashCounters() { this->zero(); }
+  HashCounters( const HashCounters &cnt ) { *this = cnt; }
   void zero( void ) { ::memset( this, 0, sizeof( *this ) ); }
 
   HashCounters& operator=( const HashCounters &x );
@@ -66,7 +72,7 @@ struct HashDeltaCounters {
   void get_ht_delta( const HashCounters &stat );
 };
 
-} // namespace kv
-} // namespace rai
+} /* namespace kv */
+} /* namespace rai */
 #endif
 #endif

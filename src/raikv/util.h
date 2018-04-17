@@ -8,6 +8,7 @@ extern "C" {
 char *kv_timestamp( uint64_t ns,  int precision,  char *buf,  size_t len,
                     const char *fmt ); /* fmt=NULL sets default */
 uint64_t kv_get_rdtsc( void ); /* intel rdtsc */
+uint64_t kv_get_rdtscp( void ); /* intel rdtscp */
 
 uint64_t kv_current_monotonic_time_ns( void ); /* nanosecs */
 double kv_current_monotonic_time_s( void ); /* seconds + fraction (52b prec) */
@@ -28,6 +29,10 @@ typedef struct kv_signal_handler_s {
 
 void kv_sighndl_install( kv_signal_handler_t *sh );
 
+#define kv_likely(x) (__builtin_expect((x),1))
+#define kv_unlikely(x) (__builtin_expect((x),0))
+#define _U64( x, y ) ( ( ( (uint64_t) (uint32_t) x ) << 32 ) | \
+                           (uint64_t) (uint32_t) y )
 #ifdef __cplusplus
 }
 #endif
@@ -65,10 +70,6 @@ struct xorshift1024star {
   bool init( void *seed = 0,  uint16_t sz = 0 ); /* init state */
 
   uint64_t next( void );
-
-  uint8_t nextByte( void ) {
-    return ( this->next() >> 16 ) & 0xff;
-  }
 };
 
 /* Derived from xoroshiro128plus, 2016 by David Blackman and Sebastiano Vigna */
@@ -92,16 +93,13 @@ struct xoroshiro128plus {
   void incr( void ) {
     const uint64_t s0 = this->state[ 0 ];
     const uint64_t s1 = this->state[ 1 ] ^ s0;
-    this->state[ 0 ] = rotl(s0, 55) ^ s1 ^ (s1 << 14); // a, b
-    this->state[ 1 ] = rotl(s1, 36); // c
+    this->state[ 0 ] = rotl(s0, 55) ^ s1 ^ (s1 << 14); /* a, b */
+    this->state[ 1 ] = rotl(s1, 36); /* c */
   }
   uint64_t next( void ) {
     const uint64_t result = this->current();
     this->incr();
     return result;
-  }
-  uint8_t nextByte( void ) {
-    return ( this->next() >> 16 ) & 0xff;
   }
 };
 /* read /dev/urandom */
@@ -116,6 +114,7 @@ struct SignalHandler : public kv_signal_handler_s {
 char *timestamp( uint64_t ns,  int precision,  char *buf,  size_t len,
                  const char *fmt = NULL ); /* fmt=NULL sets default */
 uint64_t get_rdtsc( void ); /* intel rdtsc */
+uint64_t get_rdtscp( void ); /* intel rdtscp */
 
 uint64_t current_monotonic_time_ns( void ); /* nanosecs */
 double current_monotonic_time_s( void ); /* seconds + fraction (52b prec) */
@@ -129,30 +128,17 @@ double current_realtime_s( void ); /* seconds + fraction (52b prec) */
 uint64_t current_realtime_coarse_ns( void ); /* nanosecs */
 double current_realtime_coarse_s( void ); /* seconds + fraction (52b pr) */
 
-template<class Int> char *
-int_to_string( Int m,  char *b,  char **p = NULL )
-{
-  char buf[ 32 ];
-  int off = sizeof( buf );
-  Int n = m;
-  if ( m < 0 ) {
-    n = -m;
-    *b++ = '-';
-  }
-  do {
-    buf[ --off ] = (char) ( n % 10 ) + '0';
-    n /= 10;
-  } while ( n != 0 );
-  ::memmove( b, &buf[ off ], sizeof( buf ) - off );
-  off = sizeof( buf ) - off;
-  b[ off ] = '\0';
-  if ( p != NULL ) *p = &b[ off ];
-  return b;
-}
  /* round 10001 to 10K, 10000123 to 10M */
 char *mem_to_string( int64_t m,  char *b,  int64_t k = 1000 );
 
-} // namespace kv
-} // namespace rai
+size_t uint64_to_string( uint64_t v,  char *buf );
+
+size_t int64_to_string( int64_t v,  char *buf );
+
+uint64_t string_to_uint64( const char *b,  size_t len );
+
+int64_t string_to_int64( const char *b,  size_t len );
+} /* namespace kv */
+} /* namespace rai */
 #endif
 #endif

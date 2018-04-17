@@ -5,6 +5,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <math.h>
+#include <ctype.h>
 
 #include <raikv/shm_ht.h>
 
@@ -15,7 +16,7 @@ extern void print_map_geom( HashTab * map,  uint32_t ctx_id );
 char *
 mstring( double f,  char *buf,  int64_t k )
 {
-  return mem_to_string( ceil( f ), buf, 1000 );
+  return mem_to_string( (int64_t) ceil( f ), buf, 1000 );
 }
 
 void
@@ -96,8 +97,11 @@ main( int argc, char *argv[] )
   uint64_t      mbsize  = 256 * 1024 * 1024; /* 256MB */
   uint32_t      entsize = 64,                /* 64b */
                 valsize = 64 * 1024;         /* 64K */
+  uint8_t       arity   = 1;                 /* linear probe */
+  uint16_t      buckets = 1;
   const char  * entsize_string = NULL, /* max entry size */
               * valsize_string = NULL, /* max value size */
+              * cuckoo_string  = NULL, /* cuckoo arity+buckets */
               * ratio_string   = NULL, /* ratio entry/segment */
               * mb_string      = NULL, /* size of map file */
               * mn             = NULL; /* name of map file */
@@ -110,6 +114,7 @@ main( int argc, char *argv[] )
      "  MB             -- size of HT (MB * 1024 * 1024)\n"
      "  ratio          -- entry to segment memory ratio (float 0 -> 1)\n"
      "                    (1 = all ht, 0 = all msg -- must have some ht)\n"
+     "  arity+buckets  -- cuckoo hash arity and buckets\n"
      "  max entry size -- max value size or min segment size (in KB * 1024)\n"
      "  ht entry size  -- hash entry size (multiple of 64, default 64)\n",
              argv[ 0 ]);
@@ -117,8 +122,9 @@ main( int argc, char *argv[] )
   }
   switch ( argc ) {
     default: goto cmd_error;
-    case 6: entsize_string = argv[ 5 ];
-    case 5: valsize_string = argv[ 4 ];
+    case 7: entsize_string = argv[ 6 ];
+    case 6: valsize_string = argv[ 5 ];
+    case 5: cuckoo_string  = argv[ 4 ];
     case 4: ratio_string   = argv[ 3 ];
     case 3: mb_string      = argv[ 2 ];
     case 2: mn             = argv[ 1 ];
@@ -126,22 +132,33 @@ main( int argc, char *argv[] )
   }
 
   if ( mb_string != NULL ) {
-    mbsize = (uint64_t) atoi( mb_string ) * (uint64_t) ( 1024 * 1024 );
+    mbsize = (uint64_t) ( strtod( mb_string, 0 ) * (double) ( 1024 * 1024 ) );
     if ( mbsize == 0 )
       goto cmd_error;
     if ( ratio_string != NULL ) {
-      ratio = strtod( ratio_string, NULL );
+      ratio = strtod( ratio_string, 0 );
       if ( ratio < 0.0 || ratio > 1.0 )
         goto cmd_error;
-      if ( valsize_string != NULL ) {
-        valsize = (uint32_t) atoi( valsize_string ) * (uint32_t) 1024;
-        if ( valsize == 0 && ratio < 1.0 )
+      if ( cuckoo_string != NULL ) {
+        if ( isdigit( cuckoo_string[ 0 ] ) &&
+             cuckoo_string[ 1 ] == '+' &&
+             isdigit( cuckoo_string[ 2 ] ) ) {
+          arity   = cuckoo_string[ 0 ] - '0';
+          buckets = atoi( &cuckoo_string[ 2 ] );
+        }
+        else {
           goto cmd_error;
-
-        if ( entsize_string != NULL ) {
-          entsize = (uint32_t) atoi( entsize_string );
-          if ( entsize == 0 )
+        }
+        if ( valsize_string != NULL ) {
+          valsize = (uint32_t) atoi( valsize_string ) * (uint32_t) 1024;
+          if ( valsize == 0 && ratio < 1.0 )
             goto cmd_error;
+
+          if ( entsize_string != NULL ) {
+            entsize = (uint32_t) atoi( entsize_string );
+            if ( entsize == 0 )
+              goto cmd_error;
+          }
         }
       }
     }
@@ -149,6 +166,8 @@ main( int argc, char *argv[] )
     geom.max_value_size   = ratio < 0.999 ? valsize : 0;
     geom.hash_entry_size  = align<uint32_t>( entsize, 64 );
     geom.hash_value_ratio = ratio;
+    geom.cuckoo_buckets   = buckets;
+    geom.cuckoo_arity     = arity;
     map = HashTab::create_map( mn, 0, geom );
   }
   else {

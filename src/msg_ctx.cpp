@@ -18,6 +18,13 @@ MsgCtx::MsgCtx( HashTab *t,  uint32_t id )
         hash_entry_size( t->hdr.hash_entry_size ), key( 0 ),
         msg( 0 ), prefetch_ptr( 0 ) {}
 
+void
+MsgCtx::set_key_hash( KeyFragment &b )
+{
+  this->set_key( b );
+  this->set_hash( b.hash( this->ht.hdr.hash_key_seed ) );
+}
+
 MsgCtx *
 MsgCtx::new_array( HashTab *t,  uint32_t id,  void *b,  size_t bsz )
 {
@@ -57,12 +64,13 @@ MsgCtx::prefetch_segment( uint64_t size )
 KeyStatus
 MsgCtx::alloc_segment( void *res,  uint64_t size,  uint8_t alignment )
 {
-  ThrCtx       & ctx        = this->ht.ctx[ this->ctx_id ];
-  KeyCtx         mv_kctx( &this->ht, this->ctx_id );
-  const uint64_t seg_size   = this->ht.hdr.seg_size;
-  const uint32_t nsegs      = this->ht.hdr.nsegs,
-                 algn_shft  = this->ht.hdr.seg_align_shift,
-                 hdr_size   = MsgHdr::hdr_size( *this->kbuf );
+  ThrCtx           & ctx       = this->ht.ctx[ this->ctx_id ];
+  KeyCtx             mv_kctx( &this->ht, this->ctx_id );
+  KeyCtxAllocT<1024> wrk;
+  const uint64_t     seg_size  = this->ht.hdr.seg_size();
+  const uint32_t     nsegs     = this->ht.hdr.nsegs,
+                     algn_shft = this->ht.hdr.seg_align_shift,
+                     hdr_size  = MsgHdr::hdr_size( *this->kbuf );
 
   if ( nsegs == 0 )
     return KEY_TOO_BIG;
@@ -79,7 +87,7 @@ MsgCtx::alloc_segment( void *res,  uint64_t size,  uint8_t alignment )
   if ( alloc_size > seg_size )
     return KEY_TOO_BIG;
   if ( ctx.seg_pref < (uint64_t) nsegs )
-    ctx.seg_pref = ctx.rand.next();
+    ctx.seg_pref = ctx.rng.next();
   this->geom.segment = ctx.seg_pref % nsegs;
   this->geom.size    = alloc_size;
 
@@ -111,7 +119,7 @@ MsgCtx::alloc_segment( void *res,  uint64_t size,  uint8_t alignment )
             mv_kctx.set_key( msgptr.key );
             mv_kctx.set_hash( mv_hash );
             mv_kctx.set( KEYCTX_IS_GC_ACQUIRE );
-            if ( mv_kctx.try_acquire() <= KEY_IS_NEW ) {
+            if ( mv_kctx.try_acquire( &wrk ) <= KEY_IS_NEW ) {
               /* make sure it didn't move */
               if ( mv_kctx.entry->test( FL_SEGMENT_VALUE ) ) {
                 mv_kctx.entry->get_value_geom( this->hash_entry_size,
@@ -210,10 +218,10 @@ MsgCtx::alloc_segment( void *res,  uint64_t size,  uint8_t alignment )
       ctx.incr_htevict( htevict );
       return KEY_ALLOC_FAILED;
     }
-    ctx.rand.incr();
+    ctx.rng.incr();
     ctx.seg_pref = ctx.seg_pref / nsegs;
     if ( ctx.seg_pref < (uint64_t) nsegs )
-      ctx.seg_pref = ctx.rand.next();
+      ctx.seg_pref = ctx.rng.next();
     this->geom.segment = ctx.seg_pref % nsegs;
     if ( spins >= nsegs / 4 ) {
       this->ht.update_load();

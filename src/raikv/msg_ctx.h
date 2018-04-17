@@ -81,7 +81,7 @@ struct MsgHdr {
   void *copy_key( KeyFragment &kb,  uint32_t hsz ) {
     uint16_t * p = (uint16_t *) (void *) &this->key,
              * k = (uint16_t *) (void *) &kb,
-             * e = (uint16_t *) (void *) &kb.buf[ kb.keylen ];
+             * e = (uint16_t *) (void *) &kb.u.buf[ kb.keylen ];
     do {
       *p++ = *k++;
     } while ( k < e );
@@ -227,10 +227,8 @@ struct MsgCtx {
   void set_hash( uint64_t k ) {
     this->key = k;
   }
-  void set_key_hash( KeyFragment &b ) {
-    this->set_key( b );
-    this->set_hash( b.hash() );
-  }
+  void set_key_hash( KeyFragment &b );
+
   void prefetch_segment( uint64_t size );
 
   KeyStatus alloc_segment( void *res,  uint64_t size,  uint8_t alignment );
@@ -241,15 +239,17 @@ struct MsgCtx {
 typedef uint64_t MsgCtxBuf[ sizeof( MsgCtx ) / sizeof( uint64_t ) ];
 }
 }
-#endif // ifdef cplusplus
+#endif /* ifdef cplusplus */
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+#ifndef __rai__raikv__key_ctx_h__
 struct kv_hash_tab_s;
 struct kv_msg_ctx_s;
 typedef struct kv_hash_tab_s kv_hash_tab_t;
 typedef struct kv_msg_ctx_s kv_msg_ctx_t;
+#endif
 
 kv_msg_ctx_t *kv_create_msg_ctx( kv_hash_tab_t *ht,  uint32_t ctx_id );
 void kv_release_msg_ctx( kv_msg_ctx_t *mctx );
