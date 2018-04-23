@@ -47,17 +47,21 @@ KeyCtx::KeyCtx( HashTab *t, uint32_t id, KeyFragment &b )
 }
 
 void
-KeyCtx::set_hash( uint64_t k )
+KeyCtx::set_hash( uint64_t k,  uint64_t k2 )
 {
   this->key   = k;
+  this->key2  = k2;
   this->start = this->ht.hdr.ht_mod( k );
 }
 
 void
 KeyCtx::set_key_hash( KeyFragment &b )
 {
+  uint64_t k  = this->ht.hdr.hash_key_seed,
+           k2 = this->ht.hdr.hash_key_seed2;
   this->set_key( b );
-  this->set_hash( b.hash( this->ht.hdr.hash_key_seed ) );
+  b.hash( k, k2 );
+  this->set_hash( k, k2 );
 }
 
 KeyCtx *
@@ -137,7 +141,7 @@ KeyCtx::tombstone( void )
 bool
 KeyCtx::equals( const HashEntry &el ) const
 {
-  if ( this->kbuf == NULL )
+  if ( this->kbuf == NULL || el.hash2 == this->key2 )
     return true;
   KeyFragment &kb = *this->kbuf;
   if ( el.test( FL_IMMEDIATE_KEY ) )
@@ -233,6 +237,7 @@ KeyCtx::release( void )
       /* was already dropped, use pre-existing key and flags */
       if ( this->drop_key != 0 ) {
         k        = this->drop_key;
+        el.hash2 = this->drop_key2;
         el.flags = this->drop_flags;
       }
       /* mark entry as tombstone */
@@ -240,14 +245,15 @@ KeyCtx::release( void )
         k        = DROPPED_HASH;
         el.flags = FL_DROPPED;
       }
-      el.seal( this->hash_entry_size, 0 );
+      el.seal_entry( this->hash_entry_size, 0 );
       goto done; /* skip over the seals, they will be tossed */
     }
     ctx.incr_add(); /* counter for added elements */
   }
   /* allow readers to access */
+  el.hash2 = this->key2;
   el.set_cuckoo_inc( this->inc );
-  el.seal( this->hash_entry_size, this->serial );
+  el.seal_entry( this->hash_entry_size, this->serial );
   if ( el.test( FL_SEGMENT_VALUE ) )
     this->seal_msg();
 done:;
@@ -281,7 +287,7 @@ KeyCtx::attach_msg( AttachType upd )
       return KEY_ALLOC_FAILED;
     /* check that msg is valid */
     this->msg = (MsgHdr *) p;
-    if ( ! this->msg->check_seal( this->key, this->geom.serial,
+    if ( ! this->msg->check_seal( this->key, this->key2, this->geom.serial,
                                   this->geom.size ) ) {
       this->msg = NULL;
       return KEY_MUTATED;
@@ -293,7 +299,7 @@ KeyCtx::attach_msg( AttachType upd )
                                  this->ht.hdr.seg_align_shift );
     this->msg = (MsgHdr *) this->ht.seg_data( this->geom.segment,
                                               this->geom.offset );
-    if ( ! this->msg->check_seal( this->key, this->geom.serial,
+    if ( ! this->msg->check_seal( this->key, this->key2, this->geom.serial,
                                   this->geom.size ) ) {
       this->msg = NULL;
       return KEY_MUTATED;
@@ -353,8 +359,8 @@ KeyCtx::release_evict( void )
                          this->ht.hdr.seg_align_shift );
       tmp = (MsgHdr *) this->ht.seg_data( this->geom.segment,
                                           this->geom.offset );
-      if ( ! tmp->check_seal( this->drop_key, this->geom.serial,
-                              this->geom.size ) ) {
+      if ( ! tmp->check_seal( this->drop_key, this->drop_key2,
+                              this->geom.serial, this->geom.size ) ) {
         return KEY_MUTATED;
       }
       Segment &seg = this->ht.segment( this->geom.segment );
@@ -513,7 +519,7 @@ KeyCtx::alloc( void *res,  uint64_t size,  uint8_t alignment )
     /* allocate mem from a segment */
     MsgCtx msg_ctx( &this->ht, this->ctx_id, this->hash_entry_size );
     msg_ctx.set_key( *this->kbuf );
-    msg_ctx.set_hash( this->key );
+    msg_ctx.set_hash( this->key, this->key2 );
     if ( (status = msg_ctx.alloc_segment( res, size, alignment )) == KEY_OK ) {
       el.set( FL_SEGMENT_VALUE );
       msg_ctx.geom.serial = this->serial;
@@ -703,18 +709,6 @@ KeyCtx::get_expire_time( uint64_t &expire_time_ns )
   return KEY_NOT_FOUND;
 }
 
-const char *
-rai::kv::key_status_string( KeyStatus status )
-{
-  return kv_key_status_string( status );
-}
-
-const char *
-rai::kv::key_status_description( KeyStatus status )
-{
-  return kv_key_status_description( status );
-}
-
 extern "C" {
 const char *
 kv_key_status_string( kv_key_status_t status )
@@ -736,6 +730,7 @@ kv_key_status_string( kv_key_status_t status )
     case KEY_PART_ONLY:     return "KEY_PART_ONLY";
     case KEY_MAX_CHAINS:    return "KEY_MAX_CHAINS";
     case KEY_PATH_SEARCH:   return "KEY_PATH_SEARCH";
+    case KEY_MAX_STATUS:    return "KEY_MAX_STATUS";
   }
   return "unknown";
 }
@@ -761,6 +756,7 @@ kv_key_status_description( kv_key_status_t status )
     case KEY_MAX_CHAINS:    return "nothing found before entry count hit "
                                    "max chains";
     case KEY_PATH_SEARCH:   return "need a path search to acquire cuckoo entry";
+    case KEY_MAX_STATUS:    return "maximum status";
   }
   return "unknown";
 }
@@ -838,11 +834,13 @@ kv_set_key_frag_string( kv_key_frag_t *frag,  const char *s,  uint16_t slen )
   frag->keylen = slen + 1;
 }
 
-uint64_t
-kv_hash_key_frag( kv_hash_tab_t *ht,  kv_key_frag_t *frag )
+void
+kv_hash_key_frag( kv_hash_tab_t *ht,  kv_key_frag_t *frag,
+                  uint64_t *k,  uint64_t *k2 )
 {
-  return ((KeyFragment *) frag )->hash(
-    reinterpret_cast<HashTab *>( ht )->hdr.hash_key_seed );
+  *k  = reinterpret_cast<HashTab *>( ht )->hdr.hash_key_seed;
+  *k2 = reinterpret_cast<HashTab *>( ht )->hdr.hash_key_seed2;
+  ((KeyFragment *) frag )->hash( *k, *k2 );
 }
 
 kv_key_ctx_t *
@@ -869,9 +867,9 @@ kv_set_key( kv_key_ctx_t *kctx,  kv_key_frag_t *kbuf )
 }
 
 void
-kv_set_hash( kv_key_ctx_t *kctx,  uint64_t h )
+kv_set_hash( kv_key_ctx_t *kctx,  uint64_t k,  uint64_t k2 )
 {
-  reinterpret_cast<KeyCtx *>( kctx )->set_hash( h );
+  reinterpret_cast<KeyCtx *>( kctx )->set_hash( k, k2 );
 }
 
 void

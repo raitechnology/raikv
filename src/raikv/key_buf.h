@@ -75,8 +75,8 @@ struct KeyBufAligned {
   template<class T> void set( T arg ) { this->kb.set( arg ); }
   void copy( const void *p,  uint16_t len ) { this->kb.copy( p, len ); }
   void zero() { this->kb.zero(); }
-  uint64_t hash( uint64_t seed,  kv_hash64_func_t func ) {
-    return this->kb.hash( seed, func );
+  void hash( uint64_t &seed,  uint64_t &seed2,  kv_hash128_func_t func ) {
+    this->kb.hash( seed, seed2, func );
   }
 #if 0
   uint64_t hash128( kv_hash128_func_t func ) {

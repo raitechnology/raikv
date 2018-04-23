@@ -138,7 +138,7 @@ struct CuckooAltHash {
   static CuckooAltHash *create( KeyCtx &kctx );
 
   void calc_hash( KeyCtx &kctx,  const uint64_t key,
-                  const uint64_t start_pos );
+                  const uint64_t key2,  const uint64_t start_pos );
   KeyStatus find_cuckoo_path( CuckooPosition &kpos );
 };
 

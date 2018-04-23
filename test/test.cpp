@@ -96,7 +96,7 @@ main( int argc, char *argv[] )
 
   HashDeltaCounters stats[ MAX_CTX_ID ];
   HashCounters ops, tot;
-  uint64_t   i, k, h = 0;
+  uint64_t   i, k, h1, h2;
   uint32_t   j;
 
   uint32_t ctx_id = map->attach_ctx( ::getpid() );
@@ -106,7 +106,7 @@ main( int argc, char *argv[] )
   }
   print_map_geom( map, ctx_id );
 
-  kv_hash64_func_t func = kv_hash_cityhash64;
+  kv_hash128_func_t func = KV_DEFAULT_HASH;
 
   const uint64_t TEST_COUNT = (
     ( load_pct != NULL && atoi( load_pct ) > 0 && atoi( load_pct ) <= 100 ) ?
@@ -131,7 +131,10 @@ main( int argc, char *argv[] )
     while ( ! sighndl.signaled ) {
       KeyCtx kctx( map, ctx_id, &kb );
       kb.set( (uint64_t) 0 );
-      kctx.set_hash( kb.hash( map->hdr.hash_key_seed, func ) );
+      h1 = map->hdr.hash_key_seed;
+      h2 = map->hdr.hash_key_seed2;
+      kb.hash( h1, h2, func );
+      kctx.set_hash( h1, h2 );
       for ( i = 0; i < TEST_COUNT; i++ ) {
         if ( use_find )
           kctx.find( &wrk );
@@ -167,7 +170,9 @@ main( int argc, char *argv[] )
 
     mono = current_monotonic_time_s();
     for ( i = 0, k = 0; i < 1000000; i++ ) {
-      h += key[ k ].hash( map->hdr.hash_key_seed, func );
+      h1 = map->hdr.hash_key_seed;
+      h2 = map->hdr.hash_key_seed2;
+      key[ k ].hash( h1, h2, func );
       k  = ( k + 1 ) % TEST_COUNT;
     }
     mono = current_monotonic_time_s() - mono;
@@ -224,7 +229,9 @@ main( int argc, char *argv[] )
         kb.keylen = 2;
         kb.u.buf[ 0 ] = '0';
       }
-      h += kb.hash( map->hdr.hash_key_seed, func );
+      h1 = map->hdr.hash_key_seed;
+      h2 = map->hdr.hash_key_seed2;
+      kb.hash( h1, h2, func );
       k  = ( k + 1 ) % TEST_COUNT;
       incr_key( kb );
     }
@@ -272,7 +279,10 @@ main( int argc, char *argv[] )
       else {
         KeyCtx kctx( map, ctx_id, &kb );
         for ( i = 0; i < TEST_COUNT; i++ ) {
-          kctx.set_hash( kb.hash( map->hdr.hash_key_seed, func ) );
+          h1 = map->hdr.hash_key_seed;
+          h2 = map->hdr.hash_key_seed2;
+          kb.hash( h1, h2, func );
+          kctx.set_hash( h1, h2 );
           if ( use_find )
             kctx.find( &wrk );
           else {
@@ -299,7 +309,9 @@ main( int argc, char *argv[] )
     ukb.zero();
     for ( i = 0, k = 0; i < 1000000; i++ ) {
       ukb.set( k );
-      h += ukb.hash( map->hdr.hash_key_seed, func );
+      h1 = map->hdr.hash_key_seed;
+      h2 = map->hdr.hash_key_seed2;
+      ukb.hash( h1, h2, func );
       k  = ( k + 1 ) % TEST_COUNT;
     }
     mono = current_monotonic_time_s() - mono;
@@ -312,7 +324,9 @@ main( int argc, char *argv[] )
     akb.zero();
     for ( i = 0, k = 0; i < 1000000; i++ ) {
       akb.set( k );
-      h += akb.hash( map->hdr.hash_key_seed, func );
+      h1 = map->hdr.hash_key_seed;
+      h2 = map->hdr.hash_key_seed2;
+      akb.hash( h1, h2, func );
       k  = ( k + 1 ) % TEST_COUNT;
     }
     mono = current_monotonic_time_s() - mono;
@@ -355,7 +369,10 @@ main( int argc, char *argv[] )
         KeyCtx kctx( map, ctx_id, kb );
         for ( i = 0; i < TEST_COUNT; i++ ) {
           kb.set( i );
-          kctx.set_hash( kb.hash( map->hdr.hash_key_seed, func ) );
+          h1 = map->hdr.hash_key_seed;
+          h2 = map->hdr.hash_key_seed2;
+          kb.hash( h1, h2, func );
+          kctx.set_hash( h1, h2 );
           if ( use_find )
             kctx.find( &wrk );
           else if ( kctx.acquire( &wrk ) <= KEY_IS_NEW ) {

@@ -17,7 +17,7 @@ extern void print_map_geom_c( kv_hash_tab_t *map, uint32_t ctx_id );
 #define CTX_COUNT 24
 
 typedef struct {
-  uint64_t hash;
+  uint64_t hash, hash2;
   kv_key_frag_t *frag;
 } xh_t;
 
@@ -40,7 +40,7 @@ typedef struct {
   kv_atom_uint8_t  done,
                    running;
   uint16_t         id;
-  uint64_t         status_cnt[ 16 ];
+  uint64_t         status_cnt[ KEY_MAX_STATUS ];
 } thr_data_t;
 
 thr_data_t *thr[ MAX_THR ];
@@ -72,7 +72,7 @@ process_key_frags( thr_data_t *t )
   uint32_t dup[ CTX_COUNT ], src[ CTX_COUNT ];
 
   for ( i = 0; i < t->frag_count; i++ )
-    t->xh[ i ].hash = kv_hash_key_frag( ht, t->xh[ i ].frag );
+    kv_hash_key_frag( ht, t->xh[ i ].frag, &t->xh[ i ].hash, &t->xh[ i ].hash2 );
 
   if ( testing == 2 ) {
     t->frag_count = 0;
@@ -89,7 +89,8 @@ process_key_frags( thr_data_t *t )
   }
 
   for ( k = 1; k < i; k++ ) {
-    if ( t->xh[ k - 1 ].hash == t->xh[ k ].hash ) {
+    if ( t->xh[ k - 1 ].hash == t->xh[ k ].hash &&
+         t->xh[ k - 1 ].hash2 == t->xh[ k ].hash2 ) {
       t->xh[ k - 1 ].hash = 0;
       t->dup_count++;
     }
@@ -103,7 +104,7 @@ process_key_frags( thr_data_t *t )
         break;
       if ( t->xh[ i ].hash != 0 ) {
         kv_set_key( t->ctx[ j ], t->xh[ i ].frag );
-        kv_set_hash( t->ctx[ j ], t->xh[ i ].hash );
+        kv_set_hash( t->ctx[ j ], t->xh[ i ].hash, t->xh[ i ].hash2 );
         kv_prefetch( t->ctx[ j ], 1 );
         src[ j ] = i;
         j++;
@@ -121,7 +122,7 @@ process_key_frags( thr_data_t *t )
         if ( status <= KEY_IS_NEW ) {
           typedef struct {
             uint32_t count;
-            //uint32_t pos;
+            /*uint32_t pos;*/
             uint16_t id;
           } kv_data_t;
           kv_data_t *d;
@@ -129,17 +130,18 @@ process_key_frags( thr_data_t *t )
                           sizeof( uint32_t ) ) == KEY_OK ) {
             if ( status == KEY_IS_NEW ) {
               d->count = 0;
-              //d->pos   = next_pos();
+              /*d->pos   = next_pos();*/
               d->id    = t->id;
             }
             d->count += dup[ k ];
           }
           kv_release( t->ctx[ k ] );
         }
-        else {
+        else if ( status != KEY_HT_FULL ) {
           if ( k > fail ) {
             kv_set_key( t->ctx[ fail ], t->xh[ src[ k ] ].frag );
-            kv_set_hash( t->ctx[ fail ], t->xh[ src[ k ] ].hash );
+            kv_set_hash( t->ctx[ fail ], t->xh[ src[ k ] ].hash,
+                         t->xh[ src[ k ] ].hash2 );
             src[ fail ] = src[ k ];
           }
           fail++;
@@ -260,7 +262,7 @@ void
 process_input_data( uint32_t num_thr )
 {
   ssize_t x = 0, n = 0;
-  int i;
+  int i, j;
   create_thr_data( num_thr );
   start_threads( num_thr );
 
@@ -293,13 +295,17 @@ process_input_data( uint32_t num_thr )
     kv_sync_pause();
   } while ( x > 0 );
 
-  for ( i = 0; i < num_thr; i++ )
-    printf( "[%d] %lu words, %lu bytes, %lu dup "
-            "OK %lu NEW %lu BUSY %lu\n",
-            i, thr[ i ]->count, thr[ i ]->consumed, thr[ i ]->dup_count,
-            thr[ i ]->status_cnt[ KEY_OK ],
-            thr[ i ]->status_cnt[ KEY_IS_NEW ],
-            thr[ i ]->status_cnt[ KEY_BUSY ] );
+  for ( i = 0; i < num_thr; i++ ) {
+    printf( "[%d] %lu words, %lu bytes, %lu dup -- ",
+            i, thr[ i ]->count, thr[ i ]->consumed, thr[ i ]->dup_count );
+    for ( j = 0; j < KEY_MAX_STATUS; j++ ) {
+      if ( thr[ i ]->status_cnt[ j ] != 0 ) {
+        const char *s = kv_key_status_string( (kv_key_status_t) j );
+        printf( "%s:%lu ", &s[ 4 ], thr[ i ]->status_cnt[ j ] );
+      }
+    }
+    printf( "\n" );
+  }
 }
 
 int

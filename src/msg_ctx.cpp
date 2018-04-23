@@ -21,8 +21,11 @@ MsgCtx::MsgCtx( HashTab *t,  uint32_t id )
 void
 MsgCtx::set_key_hash( KeyFragment &b )
 {
+  uint64_t k  = this->ht.hdr.hash_key_seed,
+           k2 = this->ht.hdr.hash_key_seed2;
   this->set_key( b );
-  this->set_hash( b.hash( this->ht.hdr.hash_key_seed ) );
+  b.hash( k, k2 );
+  this->set_hash( k, k2 );
 }
 
 MsgCtx *
@@ -112,12 +115,13 @@ MsgCtx::alloc_segment( void *res,  uint64_t size,  uint8_t alignment )
           break;
         }
         if ( (mv_hash = msgptr.hash) != ZOMBIE64 ) {
+          uint64_t mv_hash2 = msgptr.hash2;
           /* move messages to the head of segment */
           if ( i > j || how_aggressive == 0 ) {
             bool success = false;
             /* key is still alive, try to acquire it */
             mv_kctx.set_key( msgptr.key );
-            mv_kctx.set_hash( mv_hash );
+            mv_kctx.set_hash( mv_hash, mv_hash2 );
             mv_kctx.set( KEYCTX_IS_GC_ACQUIRE );
             if ( mv_kctx.try_acquire( &wrk ) <= KEY_IS_NEW ) {
               /* make sure it didn't move */
@@ -128,7 +132,8 @@ MsgCtx::alloc_segment( void *res,  uint64_t size,  uint8_t alignment )
                 if ( mv_kctx.geom.segment == this->geom.segment &&
                      mv_kctx.geom.offset == i &&
                      mv_kctx.geom.size == msgsize ) {
-                  if ( msgptr.check_seal( mv_hash, mv_kctx.serial, msgsize ) ) {
+                  if ( msgptr.check_seal( mv_hash, mv_hash2, mv_kctx.serial,
+                                          msgsize ) ) {
                     bool isexp = msgptr.is_expired( this->ht );
                     if ( isexp || how_aggressive == 0 ) {
                       if ( ! isexp ) {
@@ -197,7 +202,7 @@ MsgCtx::alloc_segment( void *res,  uint64_t size,  uint8_t alignment )
       /* region is free, use it */
       this->geom.offset = j;
       this->msg = (MsgHdr *) (void *) &segptr[ j ];
-      this->msg->init( FL_SEGMENT_VALUE, this->key, alloc_size, size );
+      this->msg->init( FL_SEGMENT_VALUE, this->key, this->key2, alloc_size, size );
       *(void **) res = this->msg->copy_key( *this->kbuf, hdr_size );
       j += alloc_size;
       if ( j + 1024 < seg_size )

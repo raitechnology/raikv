@@ -20,15 +20,17 @@ ifeq (-g,$(findstring -g,$(port_extra)))
 endif
 
 # the compiler and linker
-cc         := gcc
-cpp        := g++ -fno-rtti -fno-exceptions -fno-omit-frame-pointer
-cpplink    := gcc
-gcc_wflags := -Wall -Werror -pedantic
+cc          := gcc
+cpp         := g++
+cppflags    := -fno-rtti -fno-exceptions
+arch_cflags := -march=corei7-avx -fno-omit-frame-pointer
+cpplink     := gcc
+gcc_wflags  := -Wall -Werror -pedantic
 
 ifdef DEBUG
-cflags   := $(gcc_wflags) -ggdb
+cflags   := $(gcc_wflags) -ggdb $(arch_cflags)
 else
-cflags   := $(gcc_wflags) -O3
+cflags   := $(gcc_wflags) -O3 $(arch_cflags)
 endif
 
 includes    := -Isrc
@@ -168,13 +170,13 @@ $(dependd)/depend.make: $(dependd) $(all_depends)
 -include $(dependd)/depend.make
 
 $(objd)/%.o: src/%.cpp
-	$(cpp) $(cflags) $(includes) $(defines) $($(notdir $*)_includes) $($(notdir $*)_defines) -c $< -o $@
+	$(cpp) $(cflags) $(cppflags) $(includes) $(defines) $($(notdir $*)_includes) $($(notdir $*)_defines) -c $< -o $@
 
 $(objd)/%.o: src/%.c
 	$(cc) $(cflags) $(includes) $(defines) $($(notdir $*)_includes) $($(notdir $*)_defines) -c $< -o $@
 
 $(objd)/%.o: test/%.cpp
-	$(cpp) $(cflags) $(includes) $(defines) $($(notdir $*)_includes) $($(notdir $*)_defines) -c $< -o $@
+	$(cpp) $(cflags) $(cppflags) $(includes) $(defines) $($(notdir $*)_includes) $($(notdir $*)_defines) -c $< -o $@
 
 $(objd)/%.o: test/%.c
 	$(cc) $(cflags) $(includes) $(defines) $($(notdir $*)_includes) $($(notdir $*)_defines) -c $< -o $@

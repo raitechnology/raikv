@@ -237,7 +237,7 @@ main( int argc, char *argv[] )
             mctx[ i ].prefetch_segment( sz );
           mctx[ i ].set_key_hash( kb );
           kctx[ i ].set_key( kb );
-          kctx[ i ].set_hash( mctx[ i ].key );
+          kctx[ i ].set_hash( mctx[ i ].key, mctx[ i ].key2 );
           if ( use_pref )
             kctx[ i ].prefetch( 1 );
           if ( mctx[ i ].alloc_segment( &ptr, sz, 8 ) == KEY_OK ) {

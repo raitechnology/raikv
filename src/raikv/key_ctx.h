@@ -9,6 +9,23 @@
 #include <raikv/key_hash.h>
 #endif
 
+/* choice of hash function matters less as memory latency dominates access,
+ * especially when the hash computation is hidden within mem prefetching */
+#ifndef KV_DEFAULT_HASH
+//#define KV_DEFAULT_HASH kv_hash_murmur64
+//#define KV_DEFAULT_HASH_STR "murmur64"
+//#define KV_DEFAULT_HASH kv_hash_xxh64
+//#define KV_DEFAULT_HASH_STR "xxh64"
+//#define KV_DEFAULT_HASH kv_hash_cityhash64
+//#define KV_DEFAULT_HASH_STR "cityhash64"
+//#define KV_DEFAULT_HASH kv_hash_citymur128
+//#define KV_DEFAULT_HASH_STR "citymur128"
+//#define KV_DEFAULT_HASH kv_hash_spooky128
+//#define KV_DEFAULT_HASH_STR "spooky128"
+#define KV_DEFAULT_HASH kv_hash_aes128
+#define KV_DEFAULT_HASH_STR "aes128"
+#endif
+
 /* also include stdint.h, string.h */
 #ifdef __cplusplus
 extern "C" {
@@ -30,8 +47,13 @@ typedef enum kv_key_status_e {
   KEY_TOMBSTONE     = 12, /* key not valid, was dropped */
   KEY_PART_ONLY     = 13, /* no key attached, hashes only */
   KEY_MAX_CHAINS    = 14, /* nothing found before entry count hit max chains */
-  KEY_PATH_SEARCH   = 15  /* need a path search to acquire cuckoo entry */
+  KEY_PATH_SEARCH   = 15, /* need a path search to acquire cuckoo entry */
+  KEY_MAX_STATUS    = 16  /* maximum status code */
 } kv_key_status_t;
+
+/* string versions of the above */
+const char *kv_key_status_string( kv_key_status_t status );
+const char *kv_key_status_description( kv_key_status_t status );
 
 typedef void *(*kv_alloc_func_t)( void *closure,  size_t item_size );
 typedef void (*kv_free_func_t)( void *closure,  void *item );
@@ -58,10 +80,6 @@ namespace rai {
 namespace kv {
 
 typedef enum kv_key_status_e KeyStatus;
-
-/* string versions of the above */
-const char *key_status_string( KeyStatus status );
-const char *key_status_description( KeyStatus status );
 
 /* high bit in hash that signifies entity is not present
    (not in the main ht[] index, that doesn't have tombstones) */
@@ -96,12 +114,12 @@ struct KeyFragment : public kv_key_frag_s {
     }
     return eq;
   }
-  /* 63 bit hash */
-  uint64_t hash( uint64_t seed,  kv_hash64_func_t func = kv_hash_cityhash64 ) {
-    uint64_t h = func( this->u.buf, this->keylen, seed );
-    if ( (h &= ~ZOMBIE64) <= DROPPED_HASH) /* clear tombstone */
-      h = DROPPED_HASH + 1; /* zero & one are reserved for empty, dropped */
-    return h;
+  /* 127 bit hash */
+  void hash( uint64_t &seed,  uint64_t &seed2,
+             kv_hash128_func_t func = KV_DEFAULT_HASH ) {
+    func( this->u.buf, this->keylen, &seed, &seed2 );
+    if ( (seed &= ~ZOMBIE64) <= DROPPED_HASH) /* clear tombstone */
+      seed = DROPPED_HASH + 1; /* zero & one are reserved for empty, dropped */
   }
 #if 0
   uint64_t hash128( kv_hash128_func_t func = kv_hash_citymur128 ) {
@@ -187,7 +205,10 @@ struct KeyCtxAllocT : public KeyCtxAlloc {
    KeyCtxAlloc8k wrk;
    void *data;
    uint64_t sz;
-   kctx.set_hash( kbuf.hash() );
+   uint64_t h1 = map->hdr.hash_key_seed,
+            h2 = map->hdr.hash_key_seed2;
+   kbuf.hash( h1, h2 );
+   kctx.set_hash( h1, h2 );
    if ( kctx.acquire() == KEY_OK ) {
      if ( kctx.resize( &data, 80 ) == KEY_OK )
        ::memset( data, 'x', 80 );
@@ -221,9 +242,11 @@ struct KeyCtx {
                  chains,     /* number of chains used to find/acquire */
                  start,   /* key % ht_size */
                  key,     /* KeyBuf hash() */
+                 key2,    /* KeyBuf hash() */
                  pos,     /* position of entry */
                  lock,    /* value stored in ht[], either zero or == key */
                  drop_key,/* the dropped key that is being recycled */
+                 drop_key2,/* the dropped key2 */
                  mcs_id,  /* id of lock queue for above ht lock */
                  serial,  /* serial number of the hash ent & message */
                  update_ns, /* absolute ns time when updated, 0 is unset */
@@ -260,7 +283,7 @@ struct KeyCtx {
    * kctx.set_hash( kctx.kbuf->hash( ht.hdr.hash_key_seed ) ),
    * this function is separate from the key because there may not be a key or
    * the hash may be precomputed using vector functions or client resources */
-  void set_hash( uint64_t k );
+  void set_hash( uint64_t k,  uint64_t k2 );
   /* set key and hash by using set_key() then b.hash() to compute hash value */
   void set_key_hash( KeyFragment &b );
   /* used for find() operations where data is copied from ht to local buffers */
@@ -306,7 +329,6 @@ struct KeyCtx {
     return this->try_acquire_cuckoo( this->key, this->start );
   }
   void init_acquire( void ) {
-    this->drop_flags = 0; /* clear drop flags */
     this->chains     = 0; /* count of chains */
     this->drop_key   = 0;
     this->update_ns  = 0; /* loaded on demand */
@@ -433,9 +455,6 @@ typedef struct kv_key_ctx_s   kv_key_ctx_t;
 typedef struct kv_msg_ctx_s   kv_msg_ctx_t;
 typedef struct kv_key_alloc_s kv_key_alloc_t;
 
-const char *kv_key_status_string( kv_key_status_t status );
-const char *kv_key_status_description( kv_key_status_t status );
-
 /* kv_key_alloc_t alloc = kc_create_ctx_alloc( 8 * 1024, NULL, NULL, NULL ); */
 kv_key_alloc_t *kv_create_ctx_alloc( size_t sz,  kv_alloc_func_t ba,
                                      kv_free_func_t bf,  void *closure );
@@ -458,13 +477,14 @@ void kv_set_key_frag_bytes( kv_key_frag_t *frag,  const void *p,  uint16_t sz );
 /* this null terminates a key string */
 void kv_set_key_frag_string( kv_key_frag_t *frag,  const char *s, 
                              uint16_t slen /* strlen(s) */ );
-uint64_t kv_hash_key_frag( kv_hash_tab_t *ht,  kv_key_frag_t *frag );
+void kv_hash_key_frag( kv_hash_tab_t *ht,  kv_key_frag_t *frag,
+                       uint64_t *k,  uint64_t *k2 );
 
 kv_key_ctx_t *kv_create_key_ctx( kv_hash_tab_t *ht,  uint32_t ctx_id );
 void kv_release_key_ctx( kv_key_ctx_t *kctx );
 
 void kv_set_key( kv_key_ctx_t *kctx,  kv_key_frag_t *kbuf );
-void kv_set_hash( kv_key_ctx_t *kctx,  uint64_t h );
+void kv_set_hash( kv_key_ctx_t *kctx,  uint64_t k,  uint64_t k2 );
 void kv_prefetch( kv_key_ctx_t *kctx,  uint64_t cnt );
 
 /* status = kv_acquire( kctx );

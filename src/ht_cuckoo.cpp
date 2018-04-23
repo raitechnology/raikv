@@ -11,6 +11,7 @@
 using namespace rai;
 using namespace kv;
 
+static const uint32_t MAX_CUCKOO_RETRY = 5;
 static const uint64_t cuckoo_position_8k = 8 * 1024;
 static const uint64_t cuckoo_position_mask = cuckoo_position_8k - 1;
 static const uint64_t cuckoo_hash_seed     = _U64( 0x9e3779b9U, 0x7f4a7c13U );
@@ -36,21 +37,32 @@ CuckooAltHash::create( KeyCtx &kctx )
 
 void
 CuckooAltHash::calc_hash( KeyCtx &kctx,  const uint64_t key,
-                          const uint64_t start_pos )
+                          const uint64_t key2,  const uint64_t start_pos )
 {
   const uint64_t buckets = kctx.cuckoo_buckets;
-  uint64_t       seed = cuckoo_hash_seed;
+  uint64_t       seed = cuckoo_hash_seed ^ key2;
   uint64_t     * r    = this->alt,
                * q    = this->pos,
                * n    = this->num;
   bool           collision;
+  uint8_t        inc  = 1;
 
   r[ 0 ] = key;
   q[ 0 ] = start_pos;
   n[ 0 ] = start_pos & cuckoo_position_mask;
 
+  r[ 1 ] = key2;
+  q[ 1 ] = kctx.ht.hdr.ht_mod( key2 );
+  n[ 1 ] = q[ 1 ] & cuckoo_position_mask;
+
+  collision = ( n[ 1 ] == n[ 0 ] ) |
+    ( KeyCtx::calc_offset( q[ 1 ], q[ 0 ], kctx.ht_size ) < buckets ) |
+    ( KeyCtx::calc_offset( q[ 0 ], q[ 1 ], kctx.ht_size ) < buckets );
+  if ( ! collision )
+    inc++;
+
   /* find unique spots in the ht for all of the alt hashes */
-  for ( uint8_t inc = 1; inc < kctx.cuckoo_arity; inc++ ) {
+  for ( ; inc < kctx.cuckoo_arity; inc++ ) {
     r[ inc ] = r[ inc - 1 ];
     do {
       cuckoo_incr( r[ inc ], seed );
@@ -88,7 +100,7 @@ CuckooAltHash::find_cuckoo_path( CuckooPosition &cp )
   ThrCtx           & ctx = kctx.ht.ctx[ kctx.ctx_id ];
   rand::xoroshiro128plus
                    & rng = ctx.rng;
-  uint64_t           key, p, rng_bits, boff;
+  uint64_t           key, key2, p, rng_bits, boff;
   uint32_t           inc, off, tos, maxtos, tos_bits,
                      fetch_cnt = 0, acquire_cnt = 0, move_cnt = 0,
                      busy_cnt = 0, retry;
@@ -98,7 +110,7 @@ CuckooAltHash::find_cuckoo_path( CuckooPosition &cp )
     fpmod.init();
   rng_bits = rng.next();
 
-  for ( retry = 0; retry < 5; retry++ ) {
+  for ( retry = 0; retry < MAX_CUCKOO_RETRY; retry++ ) {
     PositionBits<cuckoo_position_8k> bits( this->num, arity );
     tos = 0;
     off = 0;
@@ -136,10 +148,11 @@ CuckooAltHash::find_cuckoo_path( CuckooPosition &cp )
         continue; /* skip this node, is acquired by something else */
       }
       /* trying to move this key */
-      key = fr_kctx.key;
-      inc = fr_kctx.inc;
+      key  = fr_kctx.key;
+      key2 = fr_kctx.key2;
+      inc  = fr_kctx.inc;
       /* fill alternative hash with positions based on key */
-      h->calc_hash( kctx, key, kctx.ht.hdr.ht_mod( key ) );
+      h->calc_hash( kctx, key, key2, kctx.ht.hdr.ht_mod( key ) );
       /* get the current bucket position */
       boff = KeyCtx::calc_offset( h->pos[ inc ], p, kctx.ht_size );
 
@@ -190,6 +203,7 @@ CuckooAltHash::find_cuckoo_path( CuckooPosition &cp )
               to_kctx.inc    = inc;
               to_kctx.lock   = fr_kctx.lock;
               to_kctx.key    = fr_kctx.key;
+              to_kctx.key2   = fr_kctx.key2;
               to_kctx.serial = fr_kctx.serial;
               to_kctx.release();
 
@@ -210,21 +224,31 @@ CuckooAltHash::find_cuckoo_path( CuckooPosition &cp )
                     cp.inc++;
                     cp.buckets_off = 0;
                   }
+                  /* if not at the end of the chain, jumping backwards
+                   * requires a check that no other thread added the same
+                   * hash entry key */
                   if ( cp.inc < arity ) {
+                    /* when acq position incremented, path_search is checked */
                     cp.is_path_search = true;
                     key = kctx.key;
                     p = this->pos[ cp.inc ] + cp.buckets_off;
                     if ( p >= ht_size )
                       p -= ht_size;
+                    /* this set causes acquire to not incr write counter */
+                    kctx.set( KEYCTX_IS_CUCKOO_ACQUIRE );
                     /* search after this location, see if another thread
                      * did a cuckoo search and found a position */
-                    status = kctx.try_acquire<CuckooPosition>( key, p, cp );
+                    status = kctx.acquire<CuckooPosition, false>( key, p, cp );
+                    kctx.clear( KEYCTX_IS_CUCKOO_ACQUIRE );
                     cp.is_path_search = false;
+                    /* if another key exists, then drop this entry and use
+                     * the other key */
                     if ( status != KEY_NOT_FOUND ) {
                       /* release the empty slot, found another or busy */
                       to_kctx.drop_flags = FL_DROPPED;
                       to_kctx.lock       = 0;
                       to_kctx.drop_key   = DROPPED_HASH;
+                      to_kctx.drop_key2  = 0;
                       to_kctx.release();
                       /* either KEY_BUSY or KEY_OK or error status */
                       if ( status == KEY_IS_NEW )
@@ -235,15 +259,17 @@ CuckooAltHash::find_cuckoo_path( CuckooPosition &cp )
                       status = KEY_IS_NEW;
                     }
                   }
+                  /* initialize kctx with the new hash entry */
                   if ( status == KEY_IS_NEW ) {
                     kctx.drop_flags = FL_DROPPED;
                     kctx.clear( KEYCTX_IS_READ_ONLY );
-                    kctx.inc      = vis->to_inc;
-                    kctx.pos      = to_kctx.pos;
-                    kctx.lock     = 0;
-                    kctx.drop_key = DROPPED_HASH;
-                    kctx.mcs_id   = to_kctx.mcs_id;
-                    kctx.entry    = to_kctx.entry;
+                    kctx.inc       = vis->to_inc;
+                    kctx.pos       = to_kctx.pos;
+                    kctx.lock      = 0;
+                    kctx.drop_key  = DROPPED_HASH;
+                    kctx.drop_key2 = 0;
+                    kctx.mcs_id    = to_kctx.mcs_id;
+                    kctx.entry     = to_kctx.entry;
                     kctx.entry->set( FL_MOVED );
                   }
                 skip_new_slot_init:;
@@ -273,6 +299,7 @@ CuckooAltHash::find_cuckoo_path( CuckooPosition &cp )
                   to_kctx.inc    = vis->to_inc;
                   to_kctx.lock   = fr_kctx.lock;
                   to_kctx.key    = fr_kctx.key;
+                  to_kctx.key2   = fr_kctx.key2;
                   to_kctx.serial = fr_kctx.serial;
                   to_kctx.release();
 
@@ -289,6 +316,7 @@ CuckooAltHash::find_cuckoo_path( CuckooPosition &cp )
                   to_kctx.clear( KEYCTX_IS_READ_ONLY );
                   to_kctx.lock       = 0;
                   to_kctx.drop_key   = DROPPED_HASH;
+                  to_kctx.drop_key2  = 0;
                   busy_cnt++;
                   break;
                 }
@@ -298,6 +326,7 @@ CuckooAltHash::find_cuckoo_path( CuckooPosition &cp )
             else if ( to_kctx.drop_key == 0 ) {
               to_kctx.drop_flags = FL_DROPPED;
               to_kctx.drop_key   = DROPPED_HASH;
+              to_kctx.drop_key2  = 0;
               busy_cnt++;
             }
             fr_kctx.release();
@@ -321,14 +350,19 @@ CuckooAltHash::find_cuckoo_path( CuckooPosition &cp )
       if ( rng_bits == 0 )
         rng_bits = rng.next();
     }
-    printf( "retrying %u off %u maxtos %u\n", retry, off, maxtos );
+    //printf( "retrying %u off %u maxtos %u\n", retry, off, maxtos );
+    ctx.incr_cuckret( 1 );
   }
 key_busy:;
   ctx.incr_cuckacq( acquire_cnt );
   ctx.incr_cuckfet( fetch_cnt );
   ctx.incr_cuckmov( move_cnt );
   ctx.incr_cuckbiz( busy_cnt );
-  return retry == 5 ? KEY_HT_FULL : KEY_BUSY;
+  if ( retry == MAX_CUCKOO_RETRY ) {
+    ctx.incr_cuckmax( 1 );
+    return KEY_HT_FULL;
+  }
+  return KEY_BUSY;
 }
 
 KeyStatus
@@ -339,12 +373,12 @@ KeyCtx::acquire_cuckoo( const uint64_t k,  const uint64_t start_pos )
   for (;;) {
     cp.start();
     this->inc = 0;
-    status = this->acquire<CuckooPosition, false>( k, start_pos, cp );
+    status = this->acquire<CuckooPosition, true>( k, start_pos, cp );
     if ( status == KEY_PATH_SEARCH ) {
       if ( cp.h == NULL ) {
         cp.h = CuckooAltHash::create( *this );
         if ( cp.h != NULL )
-          cp.h->calc_hash( *this, this->key, this->start );
+          cp.h->calc_hash( *this, this->key, this->key2, this->start );
         else
           status = KEY_ALLOC_FAILED;
       }
@@ -364,7 +398,7 @@ KeyCtx::try_acquire_cuckoo( const uint64_t k,  const uint64_t start_pos )
   KeyStatus status;
   cp.start();
   this->inc = 0;
-  status = this->try_acquire<CuckooPosition>( k, start_pos, cp );
+  status = this->acquire<CuckooPosition, false>( k, start_pos, cp );
   if ( status == KEY_PATH_SEARCH ) {
     status = cp.h->find_cuckoo_path( cp );
     cp.unlock_cuckoo_path();
@@ -390,7 +424,8 @@ CuckooPosition::next_hash( uint64_t &pos,  const bool is_find )
       this->h = CuckooAltHash::create( this->kctx );
       if ( this->h == NULL )
         return KEY_ALLOC_FAILED;
-      this->h->calc_hash( this->kctx, this->kctx.key, this->kctx.start );
+      this->h->calc_hash( this->kctx, this->kctx.key, this->kctx.key2,
+                          this->kctx.start );
     }
     pos = this->h->pos[ this->inc ];
     this->kctx.inc    = this->inc;
@@ -414,7 +449,7 @@ KeyCtx::get_pos_info( uint64_t &natural_pos,  uint64_t &pos_off )
   pos_off = KeyCtx::calc_offset( natural_pos, this->pos, this->ht_size );
   if ( this->cuckoo_buckets > 1 && pos_off >= (uint64_t) this->cuckoo_buckets ) {
     CuckooAltHash *h = CuckooAltHash::create( *this );
-    h->calc_hash( *this, this->key, natural_pos );
+    h->calc_hash( *this, this->key, this->key2, natural_pos );
     for ( uint8_t inc = 1; inc < this->cuckoo_arity; inc++ ) {
       pos_off = KeyCtx::calc_offset( h->pos[ inc ], this->pos, this->ht_size );
       if ( pos_off < this->cuckoo_buckets ) {
@@ -447,6 +482,7 @@ KeyCtx::try_acquire_position( const uint64_t i )
       ctx.incr_write();
     if ( el->test( FL_DROPPED ) ) {
       this->drop_key   = h;
+      this->drop_key2  = el->hash2;
       this->drop_flags = el->flags;
       el->flags        = FL_NO_ENTRY;
       h                = 0;
@@ -455,6 +491,7 @@ KeyCtx::try_acquire_position( const uint64_t i )
     this->clear( KEYCTX_IS_READ_ONLY );
     this->pos    = i;
     this->key    = h;
+    this->key2   = el->hash2;
     this->lock   = h;
     this->mcs_id = cur_mcs_id;
     this->serial = el->value_ctr( this->hash_entry_size ).get_serial();

@@ -106,14 +106,14 @@ HashTab::initialize( const char *map_name,  const HashTabGeom &geom )
 
   /* sig is set later, it indicates the mapping type (malloc, posix, sysv) */
   ::strcpy( this->hdr.name, map_name ); /* length checked before calling */
+  this->hdr.last_entry_count = 0;
   this->hdr.hash_value_ratio = geom.hash_value_ratio;
-  this->hdr.critical_load    = 0.90;
-  this->hdr.current_load     = 0.0;
+  this->hdr.critical_load    = 90;
   this->hdr.create_stamp     = current_realtime_ns();
   this->hdr.current_stamp    = this->hdr.create_stamp;
   this->hdr.map_size         = geom.map_size;
-  this->hdr.max_value_size   = geom.max_value_size;
   this->hdr.hash_entry_size  = geom.hash_entry_size;
+  this->hdr.max_value_size   = geom.max_value_size;
   this->hdr.cuckoo_buckets   = geom.cuckoo_buckets;
   this->hdr.cuckoo_arity     = geom.cuckoo_arity;
 
@@ -220,11 +220,12 @@ HashTab::initialize( const char *map_name,  const HashTabGeom &geom )
   /* zero the thread contexts and the ht elements */
   ::memset( this->ctx, 0, sizeof( this->ctx ) );
   /* init rand elems */
-  uint64_t buf[ MAX_CTX_ID * 2 + 2 ];
+  uint64_t buf[ MAX_CTX_ID * 2 + 4 ];
   rand::fill_urandom_bytes( buf, sizeof( buf ) );
   for ( i = 0; i < MAX_CTX_ID * 2; i += 2 )
     this->ctx[ i / 2 ].rng.init( (void *) &buf[ i ], sizeof( uint64_t ) * 2 );
-  this->hdr.hash_key_seed = buf[ i ] ^ buf[ i + 1 ];
+  this->hdr.hash_key_seed  = buf[ i ] ^ buf[ i + 1 ];
+  this->hdr.hash_key_seed2 = buf[ i + 2 ] ^ buf[ i + 3 ];
 
   if ( nsegs > 0 ) {
     /* check that ht doesn't overflow into seg data */
@@ -694,7 +695,7 @@ HashTab::detach_ctx( uint32_t ctx_id )
   while ( ( (val = el.key.xchg( bizyid )) & ZOMBIE32 ) != 0 )
     kv_sync_pause();
   base.stat += el.stat;
-  el.stat.zero();
+  //el.stat.zero();
   el.ctx_id = KV_NO_CTX_ID;
   this->hdr.ctx_used.sub( 1 );
   el.key.xchg( 0 );
@@ -733,7 +734,7 @@ float
 kv_update_load( kv_hash_tab_t *ht )
 {
   reinterpret_cast<HashTab *>( ht )->update_load();
-  return reinterpret_cast<HashTab *>( ht )->hdr.current_load;
+  return reinterpret_cast<HashTab *>( ht )->hdr.current_load();
 }
 
 uint32_t

@@ -26,9 +26,9 @@
 extern "C" {
 #endif
 typedef struct kv_geom_s {
-  uint64_t map_size,         /* size of memory used by shm */
-           max_value_size;   /* max size of an data entry */
-  uint32_t hash_entry_size;  /* size of a hash entry, min 32b */
+  uint64_t map_size;         /* size of memory used by shm */
+  uint32_t max_value_size,   /* max size of an data entry */
+           hash_entry_size;  /* size of a hash entry, min 32b */
   float    hash_value_ratio; /* ratio of hash/data cells: hash = ratio * size */
   uint16_t cuckoo_buckets;   /* how many buckets for each hash */
   uint8_t  cuckoo_arity;     /* how many hash functions */
@@ -83,13 +83,12 @@ struct FileHdr {
   char       name[ MAX_FILE_HDR_NAME_LEN ];  /* name of this map file */
 
              /* second 64b, updated infreq, load calculations and stamps */
+  uint64_t   last_entry_count;       /* sum of entry counts in ctx[] */
   float      hash_value_ratio,       /* ratio of ht[] mem to values mem */
-             critical_load,          /* current > critical, forced evictions */
-             current_load,           /* max( ht load, value load ) */
              ht_load,                /* hash entry used / ht_size */
              value_load;             /* seg data used / seg size */
-  uint8_t    load_percent;           /* current_load * 100 / critical_load */
-  uint8_t    padb;      
+  uint8_t    load_percent,           /* current_load * 100 / critical_load */
+             critical_load;      
   uint16_t   padh;
   AtomUInt16 next_ctx;               /* next free ctx[] */
   AtomUInt16 ctx_used;               /* number of ctx used */
@@ -101,26 +100,30 @@ struct FileHdr {
              map_size,        /* map size from geom */
 
              /* third 64b useful read only data, referenced a lot */
-             max_value_size,  /* max value size from geom */
              ht_size,         /* calculated size of ht[] */
              hash_key_seed,   /* dynamic seed of hash, make DoS harder */
+             hash_key_seed2,  /* dynamic seed of hash2 */
              ht_mod_mask,     /* mask of bits used for mod */
              ht_mod_fraction; /* fraction of mask used in ht */
   uint32_t   seg_size_val,    /* size of segment[] ( val << seg_align_shift ) */
              seg_start_val,   /* offset of first segment ( val << seg_align ) */
-             hash_entry_size; /* size of each hash table entry */
-  uint16_t   seg_align_shift, /* 1 << 6 = 64, align size for vals in segment */
-             nsegs,           /* count of segments */
-             log2_ht_size,    /* ht_size <= 1 << log2_ht_size */
+             hash_entry_size, /* size of each hash table entry */
+             max_value_size;  /* max value size from geom */
+  uint16_t   nsegs,           /* count of segments */
              cuckoo_buckets;  /* number of buckets per hash function */
-  uint8_t    ht_mod_shift,    /* mod calc: ( ( k & mask ) * frac ) >> shift */
+  uint8_t    seg_align_shift, /* 1 << 6 = 64, align size for vals in segment */
+             log2_ht_size,    /* ht_size <= 1 << log2_ht_size */
+             ht_mod_shift,    /* mod calc: ( ( k & mask ) * frac ) >> shift */
              cuckoo_arity;    /* number of hash functions used, <= 1 linear */
-  uint8_t    padb2[ 2 ];
   /* spin locks */
   static const uint64_t LOCKQ_SIZE =
     ( KV_HT_FILE_HDR_SIZE - 64 * 3 ) / sizeof( uint64_t );
   uint64_t   lockq[ LOCKQ_SIZE ];
 
+  /* max( ht load, value load ) */
+  float current_load( void ) const {
+    return this->ht_load > this->value_load ? this->ht_load : this->value_load;
+  }
   /* value segment alignment and sizes (usually is 64 byte aligned) */
   uint64_t seg_align( void ) const {
     return (uint64_t) 1 << this->seg_align_shift;
@@ -203,7 +206,7 @@ struct ThrCtxEntry : public ThrCtxHdr {
   ThrMCSLock mcs[ MCS_CNT ]; /* a queue of ctx waiting for ht.entry[ x ] */
 
   void zero( void ) {
-    this->stat.zero(); /* TODO: accum to a global counter, for monitoring */
+    this->stat.zero();
     this->mcs_used = 0;
     ::memset( this->mcs, 0, sizeof( this->mcs ) );
   }
@@ -229,8 +232,10 @@ struct ThrCtx : public ThrCtxEntry { /* each thread needs one of these */
   void incr_cuckfet( uint64_t cnt = 1 ) { this->stat.cuckfet += cnt; }
   void incr_cuckmov( uint64_t cnt = 1 ) { this->stat.cuckmov += cnt; }
   void incr_cuckbiz( uint64_t cnt = 1 ) { this->stat.cuckbiz += cnt; }
+  void incr_cuckret( uint64_t cnt = 1 ) { this->stat.cuckret += cnt; }
+  void incr_cuckmax( uint64_t cnt = 1 ) { this->stat.cuckmax += cnt; }
 
-  void get_ht_delta( HashDeltaCounters &stat ) const;
+  bool get_ht_delta( HashDeltaCounters &stat ) const;
 
   uint64_t next_mcs_lock( void ) {
     uint32_t id = ( this->mcs_used == 0 ) ? 0 :

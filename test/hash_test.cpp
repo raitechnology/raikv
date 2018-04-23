@@ -93,10 +93,7 @@ int
 main( int argc, char *argv[] )
 {
   static const uint32_t MAP_COUNT = 256;
-  kv_hash64_func_t func   = kv_hash_murmur64_a;
-#if 0
-  kv_hash128_func_t func2 = NULL;
-#endif
+  kv_hash128_func_t func   = NULL;
   uint64_t i, j, k, keycount;
   uint32_t map[ MAP_COUNT ];
   uint16_t keylen = 32;
@@ -105,10 +102,13 @@ main( int argc, char *argv[] )
   RandContent rfill;
   IncrContent xfill;
   Content   * fill;
+  const char * name = "aes";
   const uint64_t TEST_COUNT = 10000000;
 
   if ( argc == 1 ) {
-    fprintf( stderr, "%s (int|rand|incr) (cm|ch|xxh|murmur) (keylen)\n",
+cmd_error:;
+    fprintf( stderr, "%s (int|rand|incr) "
+             "(citymur|aes|spooky) (keylen)\n",
              argv[ 0 ] );
     return 1;
   }
@@ -120,30 +120,49 @@ main( int argc, char *argv[] )
   else
     fill = &xfill;
   printf( "content=%s ", fill->name );
-#if 0
-  if ( argc > 2 && ::strcmp( argv[ 2 ], "cm" ) == 0 ) {
-    func2 = kv_hash_citymur128;
-    printf( "hash=citymur128 " );
+  if ( argc > 2 )
+    name = argv[ 2 ];
+#ifdef USE_KV_CITY_HASH
+  if ( ::strcmp( name, "citymur" ) == 0 ) {
+    func = kv_hash_citymur128;
+    printf( "hash=citymur64 " );
   }
   else
 #endif
-  if ( argc > 2 && ::strcmp( argv[ 2 ], "xxh" ) == 0 ) {
+#if 0 && defined( USE_KV_XXH_HASH )
+  if ( ::strcmp( name, "xxh" ) == 0 )
     func = kv_hash_xxh64;
-    printf( "hash=xxh64 " );
-  }
-  else if ( argc > 2 && ::strcmp( argv[ 2 ], "ch" ) == 0 ) {
+  else
+#endif
+#if 0 && defined( USE_KV_CITY_HASH )
+  if ( ::strcmp( name, "city" ) == 0 )
     func = kv_hash_cityhash64;
-    printf( "hash=cityhash64 " );
+  else
+#endif
+#ifdef USE_KV_AES_HASH
+  if ( ::strcmp( name, "aes" ) == 0 )
+    func = kv_hash_aes128;
+  else
+#endif
+#ifdef USE_KV_SPOOKY_HASH
+  if ( ::strcmp( name, "spooky" ) == 0 )
+    func = kv_hash_spooky128;
+  else
+#endif
+#if 0 && defined( USE_KV_MURMUR_HASH )
+  if ( ::strcmp( name, "murmur" ) == 0 )
+    func = kv_hash_murmur64;
+#endif
+  if ( func == NULL ) {
+    fprintf( stderr, "hash %s not available\n", name );
+    goto cmd_error;
   }
-  else {
-    func = kv_hash_murmur64_a;
-    printf( "hash=murmur " );
-  }
-
-  if ( argc > 3 )
+  if ( argc > 3 ) {
     keylen = atoi( argv[ 3 ] );
-  printf( "with keylen=%u\n", keylen );
-
+    if ( keylen == 0 )
+      goto cmd_error;
+  }
+  printf( "hash=%s with keylen=%u\n", name, keylen );
   printf( "timing iteration count = %lu\n\n", TEST_COUNT );
 
   for ( keycount = 16; keycount <= 1024 * 1024; keycount *= 2 ) {
@@ -160,35 +179,19 @@ main( int argc, char *argv[] )
 
     t1 = current_monotonic_time_s();
     j = 0;
-#if 0
-    if ( func2 != NULL ) {
-      for ( i = 0; i < TEST_COUNT; i++ ) {
-        kb[ j ].hash128( func2 );
-        j = ( j + 1 ) % keycount;
-      }
-    }
-    else
-#endif
-    {
-      for ( i = 0; i < TEST_COUNT; i++ ) {
-        kb[ j ].hash( 0, func );
-        j = ( j + 1 ) % keycount;
-      }
+    for ( i = 0; i < TEST_COUNT; i++ ) {
+      uint64_t h1 = 0, h2 = 0;
+      kb[ j ].hash( h1, h2, func );
+      j = ( j + 1 ) % keycount;
     }
     t2 = current_monotonic_time_s();
     t2 -= t1;
 
     ::memset( cov, 0, ht_size * sizeof( cov[ 0 ] ) );
-#if 0
-    if ( func2 != NULL ) {
-      for ( j = 0; j < keycount; j++ )
-        cov[ kb[ j ].hash128( func2 ) % ht_size ]++;
-    }
-    else
-#endif
-    {
-      for ( j = 0; j < keycount; j++ )
-        cov[ kb[ j ].hash( 0, func ) % ht_size ]++;
+    for ( j = 0; j < keycount; j++ ) {
+      uint64_t h1 = 0, h2 = 0;
+      kb[ j ].hash( h1, h2, func );
+      cov[ h1 % ht_size ]++;
     }
     ::memset( map, 0, sizeof( map ) );
     for ( j = 0; j < ht_size; j++ ) {
@@ -216,4 +219,3 @@ main( int argc, char *argv[] )
   }
   return 0;
 }
-

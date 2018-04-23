@@ -125,8 +125,15 @@ main( int argc, char *argv[] )
 
   KeyCtx pingctx( map, ctx_id, &pingkb ),
          pongctx( map, ctx_id, &pongkb );
-  pingctx.set_hash( pingkb.hash( map->hdr.hash_key_seed ) );
-  pongctx.set_hash( pongkb.hash( map->hdr.hash_key_seed ) );
+  uint64_t h1, h2;
+  h1 = map->hdr.hash_key_seed;
+  h2 = map->hdr.hash_key_seed2;
+  pingkb.hash( h1, h2 );
+  pingctx.set_hash( h1, h2 );
+  h1 = map->hdr.hash_key_seed;
+  h2 = map->hdr.hash_key_seed2;
+  pongkb.hash( h1, h2 );
+  pongctx.set_hash( h1, h2 );
 
   if ( pausesp != NULL && ::strcmp( pausesp, "pause" ) == 0 )
     use_pause = true;

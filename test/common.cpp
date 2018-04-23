@@ -17,7 +17,7 @@ print_map_geom( HashTab *map,  uint32_t ctx_id )
     (double) map->hdr.map_size / ( 1024.0 * 1024.0 ) );
   printf( "created:              %s\n", timestamp( map->hdr.create_stamp,
                                                  0, buf, sizeof( buf ) ) );
-  printf( "max_value_size:       %lu (config)\n", map->hdr.max_value_size );
+  printf( "max_value_size:       %u (config)\n", map->hdr.max_value_size );
   printf( "immed_value_size:     %u (calc)\n", map->hdr.max_immed_value_size );
   printf( "segment_value_size:   %lu (calc)\n",
           map->hdr.max_segment_value_size );
@@ -26,9 +26,11 @@ print_map_geom( HashTab *map,  uint32_t ctx_id )
           map->hdr.ht_size,
 	  (double) ( map->hdr.ht_size *
 		     map->hdr.hash_entry_size ) / ( 1024.0 * 1024.0 ) );
+  printf( "last_entry_count:     %lu\n", map->hdr.last_entry_count );
   printf( "ht_mod:               ( ( hash & 0x%lx ) * 0x%lx ) >> %u (* %.9f)\n",
           map->hdr.ht_mod_mask, map->hdr.ht_mod_fraction, map->hdr.ht_mod_shift,
           (double) map->hdr.ht_size / (double) map->hdr.ht_mod_mask );
+  printf( "default_hash:         " KV_DEFAULT_HASH_STR "\n" );
   printf( "cuckoo_arity+buckets: %u+%u (config%s)\n", map->hdr.cuckoo_arity,
           map->hdr.cuckoo_buckets,
          ( map->hdr.cuckoo_buckets <= 1 ? " == linear probe" : " == cuckoo" ) );
@@ -43,8 +45,8 @@ print_map_geom( HashTab *map,  uint32_t ctx_id )
   map->update_load();
   printf( "current_time:         %s\n", timestamp( map->hdr.current_stamp,
                                                  3, buf, sizeof( buf ) ) );
-  printf( "critical_load:        %.3f%%\n", map->hdr.critical_load * 100.0 );
-  printf( "current_load:         %.3f%%\n", map->hdr.current_load * 100.0 );
+  printf( "critical_load:        %u%%\n", map->hdr.critical_load );
+  printf( "current_load:         %.3f%%\n", map->hdr.current_load() * 100.0 );
   printf( "ht_load:              %.3f%%\n", map->hdr.ht_load * 100.0 );
   printf( "value_load:           %.3f%%\n", map->hdr.value_load * 100.0 );
   printf( "load_pecent:          %u%%\n", map->hdr.load_percent );

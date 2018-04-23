@@ -89,12 +89,13 @@ print_stats( uint32_t c )
     }
     xprintf( 0, "ctx %u%c:  pid %u, read %lu, write %lu, spin %lu, chains %lu, "
             "add %lu, drop %lu, htevict %lu, afail %lu, hit %lu, miss %lu, "
-            "cuckacq %lu, cuckfet %lu, cuckmov %lu, cuckbiz %lu\n",
+            "cuckacq %lu, cuckfet %lu, cuckmov %lu, cuckbiz %lu cuckret %lu "
+            "cuckmax %lu\n",
         c, ( c == ctx_id ? '*' :
              ( alive == 2 ? '+' : ( alive == 1 ? '?' : '/' ) ) ),
         pid, stat.rd, stat.wr, stat.spins, stat.chains, stat.add, stat.drop,
         stat.htevict, stat.afail, stat.hit, stat.miss, stat.cuckacq,
-        stat.cuckfet, stat.cuckmov, stat.cuckbiz );
+        stat.cuckfet, stat.cuckmov, stat.cuckbiz, stat.cuckret, stat.cuckmax );
   }
   else {
     xprintf( 0, "No ctx_id\n" );
@@ -156,8 +157,8 @@ print_status( const char *cmd,  const char *key,  KeyStatus status )
 {
   xprintf( 0, "%s %s%s%s status=%s:%s\n", cmd,
           key[ 0 ] == 0 ? "" : "\"", key, key[ 0 ] == 0 ? "" : "\"",
-          key_status_string( status ),
-          key_status_description( status ) );
+          kv_key_status_string( status ),
+          kv_key_status_description( status ) );
 }
 
 struct HexDump {
@@ -221,11 +222,14 @@ dump_value( const char *key )
   KeyBuf    kb;
   KeyCtx    kctx( map, ctx_id, &kb );
   void    * ptr;
-  uint64_t  size;
+  uint64_t  size, h1, h2;
   KeyStatus status;
 
   kb.set_string( key );
-  kctx.set_hash( kb.hash( map->hdr.hash_key_seed ) );
+  h1 = map->hdr.hash_key_seed;
+  h2 = map->hdr.hash_key_seed2;
+  kb.hash( h1, h2 );
+  kctx.set_hash( h1, h2 );
 
   if ( (status = kctx.find( &wrk )) == KEY_OK &&
        (status = kctx.value( &ptr, size )) == KEY_OK ) {
@@ -233,8 +237,8 @@ dump_value( const char *key )
   }
   if ( status != KEY_OK ) {
     xprintf( 0, "value \"%s\" status=%s:%s\n", key,
-            key_status_string( status ),
-            key_status_description( status ) );
+            kv_key_status_string( status ),
+            kv_key_status_description( status ) );
   }
 }
 
@@ -560,7 +564,7 @@ print_key_data( KeyCtx &kctx,  const char *what,  uint64_t sz )
   sprintf_stamps( kctx, upd, exp );
   if ( kctx.msg != NULL ) {
     ValueGeom &geom = kctx.geom;
-    xprintf( 0, "[%lu] [h=%lx:chn=%lu:cnt=%lu:inc=%u:sz=%lu%s%s] "
+    xprintf( 0, "[%lu] [h=0x%08lx:%08lx:chn=%lu:cnt=%lu:inc=%u:sz=%lu%s%s] "
             "(%s seg=%u:sz=%lu:off=%lu:cnt=%lu) %s\n",
             kctx.pos, kctx.key, kctx.chains, kctx.serial -
             ( kctx.key & ValueCtr::SERIAL_MASK ), kctx.inc, sz, upd, exp,
@@ -569,8 +573,8 @@ print_key_data( KeyCtx &kctx,  const char *what,  uint64_t sz )
             geom.serial - ( kctx.key & ValueCtr::SERIAL_MASK ), what );
   }
   else {
-    xprintf( 0, "[%lu] [h=%lx:chn=%lu:cnt=%lu:inc=%u:sz=%lu%s%s] (%s) %s\n",
-            kctx.pos, kctx.key, kctx.chains, kctx.serial -
+    xprintf( 0, "[%lu] [h=%08lx:%08lx:chn=%lu:cnt=%lu:inc=%u:sz=%lu%s%s] (%s) %s\n",
+            kctx.pos, kctx.key, kctx.key2, kctx.chains, kctx.serial -
             ( kctx.key & ValueCtr::SERIAL_MASK ), kctx.inc, sz, upd, exp,
             flags_string( kctx.entry->flags, fl ), what );
   }
@@ -600,6 +604,7 @@ validate_ht( HashTab *map )
   KeyCtx        kctx( map, ctx_id, &kb ),
                 kctx2( map, ctx_id, &kb2 );
   KeyCtxAlloc8k wrk, wrk2;
+  uint64_t      h1, h2;
   char          buf[ 1024 ];
   KeyStatus     status;
 
@@ -618,7 +623,10 @@ validate_ht( HashTab *map )
           xprintf( 0, "pos_off %lu natural_pos %lu\n", pos_off, natural_pos );
           print_key_data( kctx, "", 0 );
         }
-        kctx2.set_hash( kb2.hash( map->hdr.hash_key_seed ) );
+        h1 = map->hdr.hash_key_seed;
+        h2 = map->hdr.hash_key_seed2;
+        kb2.hash( h1, h2 );
+        kctx2.set_hash( h1, h2 );
         if ( (status = kctx2.find( &wrk2 )) != KEY_OK ||
              kctx2.pos != pos ) {
           get_key_string( kb2, buf );
@@ -652,7 +660,7 @@ cli( void )
   FILE        * fp,
               * infp = stdin;
   uint64_t      exp_ns;
-  uint64_t      sz, h, t1, t2, t3, t4;
+  uint64_t      sz, h, t1, t2, t3, t4, h1, h2;
   double        f;
   uint32_t      cnt, i, j, print_count;
   char          cmd_char, last_cmd = 0;
@@ -719,7 +727,10 @@ cli( void )
       case 'p': /* put */
       case 't': /* tombstone */
         parse_key_string( kb, key );
-        kctx.set_hash( kb.hash( map->hdr.hash_key_seed ) );
+        h1 = map->hdr.hash_key_seed;
+        h2 = map->hdr.hash_key_seed2;
+        kb.hash( h1, h2 );
+        kctx.set_hash( h1, h2 );
 
         if ( (status = kctx.acquire( &wrk )) <= KEY_IS_NEW ) {
           kctx.expire_ns = exp_ns;
@@ -765,14 +776,20 @@ cli( void )
           case 'g': do_get = true; break;
         }
         t1 = get_rdtscp();
-        kctx.set_hash( kb.hash( map->hdr.hash_key_seed ) );
+        h1 = map->hdr.hash_key_seed;
+        h2 = map->hdr.hash_key_seed2;
+        kb.hash( h1, h2 );
+        kctx.set_hash( h1, h2 );
         t2 = get_rdtscp();
         cnt = 0;
         do {
           if ( cmd_char != 'f' )
             status = kctx.find( &wrk );
-          else
-            status = kctx.fetch( &wrk, *(uint64_t *) kb.u.buf );
+          else {
+            uint64_t pos;
+            ::memcpy( &pos, kb.u.buf, sizeof( pos ) );
+            status = kctx.fetch( &wrk, pos );
+          }
           if ( status == KEY_OK ) {
             t3 = get_rdtscp();
             if ( (status = kctx.value( &data, sz )) == KEY_OK ) {
@@ -827,7 +844,10 @@ cli( void )
                 j = map->hdr.ht_size - 24;
               else if ( ::strcmp( key, "0" ) != 0 ) {
                 parse_key_string( kb, key );
-                j = map->hdr.ht_mod( kb.hash( map->hdr.hash_key_seed ) );
+                h1 = map->hdr.hash_key_seed;
+                h2 = map->hdr.hash_key_seed2;
+                kb.hash( h1, h2 );
+                j = map->hdr.ht_mod( h1 );
               }
             }
             if ( j == 0 )
@@ -845,13 +865,18 @@ cli( void )
             if ( status == KEY_OK || status == KEY_TOMBSTONE ||
                  status == KEY_PART_ONLY ) {
               uint64_t natural_pos, pos_off = 0;
-              kctx.get_pos_info( natural_pos, pos_off );
-              if ( pos_off < MAX_OFF )
-                kld.hit[ pos_off ]++;
+              if ( kctx.key != DROPPED_HASH ) {
+                kctx.get_pos_info( natural_pos, pos_off );
+                if ( pos_off < MAX_OFF )
+                  kld.hit[ pos_off ]++;
+                else {
+                  kld.hit[ MAX_OFF ]++;
+                  if ( pos_off > kld.max_hit )
+                    kld.max_hit = pos_off;
+                }
+              }
               else {
-                kld.hit[ MAX_OFF ]++;
-                if ( pos_off > kld.max_hit )
-                  kld.max_hit = pos_off;
+                pos_off = 0;
               }
               if ( kctx.entry->test( FL_DROPPED ) )
                 kld.drops++;
@@ -863,7 +888,7 @@ cli( void )
                   if ( kp != NULL )
                     get_key_string( *kp, key );
                   else
-                    ::strcpy( key, key_status_string( status ) );
+                    ::strcpy( key, kv_key_status_string( status ) );
                   sprintf_stamps( kctx, upd, exp );
                   xprintf( 0,
                            "[%lu]+%u.%lu %s (%s seg=%u:sz=%lu:off=%lu%s%s)\n",
@@ -883,7 +908,7 @@ cli( void )
                   if ( kp != NULL )
                     get_key_string( *kp, key );
                   else
-                    ::strcpy( key, key_status_string( status ) );
+                    ::strcpy( key, kv_key_status_string( status ) );
                   sprintf_stamps( kctx, upd, exp );
                   xprintf( 0, "[%lu]+%u.%lu %s (%s %s%s)\n",
                            kld.pos, kctx.inc, pos_off, key,

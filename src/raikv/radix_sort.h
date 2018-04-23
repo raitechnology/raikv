@@ -6,7 +6,7 @@ extern "C" {
 #endif
 /* a generic ht element for sorting */
 typedef struct kv_ht_sort_s {
-  uint64_t key;
+  uint64_t key, key2;
   void   * item;
 } kv_ht_sort_t;
 

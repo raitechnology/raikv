@@ -25,15 +25,18 @@ namespace kv {
 struct HashTab;
 
 struct MsgHdr {
-  uint64_t    size,     /* alloc size including hdr, key, data */
-              msg_size, /* data size */
-              hash;     /* key hash value */
+  uint32_t    size,     /* alloc size including hdr, key, data */
+              msg_size; /* data size */
+  uint64_t    hash,     /* key hash value */
+              hash2;    /* second hash value */
   uint16_t    flags;    /* where is data, how is it aligned */
   KeyFragment key;      /* all of the key */
 
   /* offset to the data */
   static uint64_t hdr_size( const KeyFragment &kb ) {
-    return align<uint64_t>( sizeof( uint64_t ) * 3 + sizeof( uint16_t ) +
+    return align<uint64_t>( sizeof( uint32_t ) * 2 +
+                            sizeof( uint64_t ) * 2 +
+                            sizeof( uint16_t ) +
                             kb.keylen + sizeof( kb.keylen ), 8 );
   }
   uint64_t hdr_size( void ) const {
@@ -64,16 +67,17 @@ struct MsgHdr {
     this->flags = flags; /* clears FL_BUSY */
   }
   /* check that the message has same serial as hash_entry and is not unsealed */
-  bool check_seal( uint64_t h,  uint64_t serial,  uint64_t sz ) {
+  bool check_seal( uint64_t h,  uint64_t h2,  uint64_t serial,  uint32_t sz ) {
     const ValueCtr &ctr = this->value_ctr();
-    return this->size == sz && this->hash == h && this->test( FL_BUSY ) == 0 &&
-           ctr.get_serial() == serial && ctr.seal == 1;
+    return this->size == sz && this->hash == h && this->hash2 == h2 &&
+           this->test( FL_BUSY ) == 0 && ctr.get_serial() == serial && ctr.seal == 1;
   }
   /* set the header flags, unseal() to prevent msg from going anywhere */
-  void init( uint16_t fl,  uint64_t h,  uint64_t sz,  uint64_t msz ) {
+  void init( uint16_t fl,  uint64_t h,  uint64_t h2,  uint32_t sz,  uint32_t msz ) {
     this->size     = sz;
     this->msg_size = msz;
     this->hash     = h;
+    this->hash2    = h2;
     this->flags    = fl;
     this->unseal();
   }
@@ -100,7 +104,7 @@ struct MsgHdr {
     return *(RelativeStamp *) this->ptr( this->size -
                              ( sizeof( ValueCtr ) + sizeof( RelativeStamp ) ) );
   }
-  void *ptr( uint64_t off ) {
+  void *ptr( uint32_t off ) {
     return &((uint8_t *) (void *) this)[ off ];
   }
   bool is_expired( const HashTab &ht );
@@ -185,7 +189,7 @@ struct Segment {
    if ( mctx.alloc_segment( &ptr, 100, 8 ) == KEY_OK ) {
      ::memset( ptr, 'x', 100 );
      kctx.set_key( kbuf );
-     kctx.set_hash( mctx.key );
+     kctx.set_hash( mctx.key, mctx.key2 );
      if ( kctx.acquire() == KEY_OK ) {
        kctx.load( mctx );
        kctx.release();
@@ -200,7 +204,8 @@ struct MsgCtx {
   KeyFragment  * kbuf;    /* key to place */
   const uint32_t ctx_id,  /* which thread owns this this context */
                  hash_entry_size;
-  uint64_t       key;
+  uint64_t       key,
+                 key2;
   MsgHdr       * msg;
   void         * prefetch_ptr;
   ValueGeom      geom;    /* value location */
@@ -224,8 +229,9 @@ struct MsgCtx {
 
   void set_key( KeyFragment &b ) { this->kbuf = &b; }
 
-  void set_hash( uint64_t k ) {
-    this->key = k;
+  void set_hash( uint64_t k,  uint64_t k2 ) {
+    this->key  = k;
+    this->key2 = k2;
   }
   void set_key_hash( KeyFragment &b );
 

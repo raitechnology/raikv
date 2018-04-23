@@ -138,31 +138,45 @@ HashTab::get_ht_deltas( HashDeltaCounters *stats,  HashCounters &ops,
   ops.zero();
   tot.zero();
   if ( ctx_id >= MAX_CTX_ID ) {
+    HashCounters mvd;
+    mvd.zero();
     for ( size_t i = 0; i < MAX_CTX_ID; i++ ) {
-      this->ctx[ i ].get_ht_delta( stats[ i ] );
-      ops += stats[ i ].delta;
-      tot += stats[ i ].last;
+      if ( this->ctx[ i ].get_ht_delta( stats[ i ] ) ) {
+        ops += stats[ i ].delta;
+        tot += stats[ i ].last;
+      }
+      else {
+        mvd += stats[ i ].last;
+        stats[ i ].zero();
+      }
     }
+    ops -= mvd;
   }
   else {
-    this->ctx[ ctx_id ].get_ht_delta( stats[ 0 ] );
-    ops += stats[ 0 ].delta;
-    tot += stats[ 0 ].last;
+    if ( this->ctx[ ctx_id ].get_ht_delta( stats[ 0 ] ) ) {
+      ops += stats[ 0 ].delta;
+      tot += stats[ 0 ].last;
+    }
+    else {
+      stats[ 0 ].zero();
+    }
   }
   return ops != 0;
 }
 
-void
+bool
 ThrCtx::get_ht_delta( HashDeltaCounters &stat ) const
 {
   for (;;) {
     while ( ( this->key & ZOMBIE32 ) != 0 )
       kv_sync_pause();
+    if ( this->ctx_id == KV_NO_CTX_ID )
+      return false;
     HashCounters tmp( this->stat );
     /* XXX: weak sync, mutator could lock & unlock while stat copied to tmp */
     if ( ( this->key & ZOMBIE32 ) == 0 ) {
       stat.get_ht_delta( tmp );
-      return;
+      return true;
     }
   }
 }
@@ -195,8 +209,10 @@ HashTab::update_load( void )
 
   this->hdr.current_stamp = current_realtime_coarse_ns();
   for ( i = 0; i < MAX_CTX_ID; i++ ) {
-    total_add  += this->ctx[ i ].stat.add;
-    total_drop += this->ctx[ i ].stat.drop;
+    if ( this->ctx[ i ].ctx_id != KV_NO_CTX_ID ) {
+      total_add  += this->ctx[ i ].stat.add;
+      total_drop += this->ctx[ i ].stat.drop;
+    }
   }
   /* total add - total drop should be the used entries */
   ht_load = (double) ( total_add - total_drop ) / (double) this->hdr.ht_size;
@@ -211,11 +227,11 @@ HashTab::update_load( void )
     max_load = ht_load;
   else
     max_load = value_load;
-  this->hdr.current_load = (float) max_load;
-  this->hdr.ht_load      = (float) ht_load;
-  this->hdr.value_load   = (float) value_load;
-  this->hdr.load_percent = (uint8_t) ( max_load * 100.0 /
-                                       (double) this->hdr.critical_load );
+  this->hdr.last_entry_count = total_add - total_drop;
+  this->hdr.ht_load          = (float) ht_load;
+  this->hdr.value_load       = (float) value_load;
+  this->hdr.load_percent     = (uint8_t) ( max_load * 100.0 /
+                                           (double) this->hdr.critical_load );
 }
 
 MemDeltaCounters *

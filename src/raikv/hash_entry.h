@@ -37,34 +37,26 @@ enum KeyValueFlags {
 };
 
 struct ValuePtr { /* packed 128 bit pointer with seg & off & size & serial */
-  static const uint32_t VALUE_SIZE_BITS = 32; /* (sizehi << 16) | sizelo */
+  static const uint32_t VALUE_SIZE_BITS = 32; /* number of bits in offset/size*/
   uint16_t segment, /* seg=16, off=32, size=32, serial=48 = 128 */
-           sizehi,
-           sizelo,
-           offsethi,
-           offsetlo,
            serialhi;
-  uint32_t seriallo;
+  uint32_t seriallo,
+           size,
+           offset;
 
   void set( const ValueGeom &geom,  uint32_t align_shift ) {
-    uint32_t sz  = (uint32_t) ( geom.size >> align_shift ),
-             off = (uint32_t) ( geom.offset >> align_shift );
     this->segment  = geom.segment;
-    this->sizehi   = (uint16_t) ( sz >> 16 );
-    this->sizelo   = (uint16_t) sz;
-    this->offsethi = (uint16_t) ( off >> 16 );
-    this->offsetlo = (uint16_t) off;
     this->serialhi = (uint16_t) ( geom.serial >> 32 );
     this->seriallo = (uint32_t) geom.serial;
+    this->size     = (uint32_t) ( geom.size >> align_shift ),
+    this->offset   = (uint32_t) ( geom.offset >> align_shift );
   }
   void get( ValueGeom &geom,  uint32_t align_shift ) const {
     geom.segment = this->segment;
-    geom.size    = ( (uint64_t) ( (uint32_t) this->sizehi << 16 ) |
-                                  (uint32_t) this->sizelo ) << align_shift;
-    geom.offset  = ( (uint64_t) ( (uint32_t) this->offsethi << 16 ) |
-                                  (uint32_t) this->offsetlo ) << align_shift;
     geom.serial  = ( (uint64_t) this->serialhi << 32 ) |
                      (uint64_t) this->seriallo;
+    geom.size    = (uint64_t) this->size << align_shift;
+    geom.offset  = (uint64_t) this->offset << align_shift;
   }
   uint64_t set_serial( uint64_t serial ) {
     this->serialhi = (uint16_t) ( serial >> 32 );
@@ -86,17 +78,39 @@ struct ValueCtr { /* packed 64 bit immediate size & serial & seal */
   uint64_t get_serial( void ) const {
     return ( (uint64_t) this->serialhi << 32 ) | (uint64_t) this->seriallo;
   }
-  void set_serial( uint64_t ctr ) {
-    this->seriallo = (uint32_t) ctr;
-    this->serialhi = (uint16_t) ( ctr >> 32 );
+  void set_serial( uint64_t ser ) {
+    this->seriallo = (uint32_t) ser;
+    this->serialhi = (uint16_t) ( ser >> 32 );
   }
   void zero( void ) {
     ::memset( this, 0, sizeof( *this ) );
   }
 };
 
-struct HashEntry { /* min sizeof HashEntry is 40b: 16 key, 16 val ptr, 8 ctr */
+/* HashEntry layout:
+     What       |  Fields             | Offset
+    ------------+---------------------+----------
+     Header     |  8b = hash          |  0 ->  8
+                |  8b = hash2         |  8 -> 16
+                |  4b = seal          | 16 -> 20
+                |  2b = flags         | 20 -> 22
+                |  2b = key len       | 22 -> 24
+                |  8b = key part      | 24 -> 32
+                |                     |
+     Value PTR  |  2b = segment       | 32 -> 34
+                |  6b = serial cnt    | 34 -> 40
+                |  4b = size          | 40 -> 44
+                |  4b = offset        | 44 -> 48
+                |                     |
+     Rela Stamp |  8b = timestamp     | 48 -> 56
+                |                     |
+     Value CTR  |  2b = size/seal     | 56 -> 58
+                |  6b = serial cnt    | 58 -> 64
+*/
+struct HashEntry {
   AtomUInt64  hash;   /* the lock and the hash value */
+  uint64_t    hash2;  /* more hash (64 -> 128 bit) */
+  uint32_t    seal;   /* matches the serial number at the end of struct */
   uint16_t    flags;  /* KeyValueFlags, where is data, alignment */
   KeyFragment key;    /* key, or just the prefix of the key */
 
@@ -110,8 +124,11 @@ struct HashEntry { /* min sizeof HashEntry is 40b: 16 key, 16 val ptr, 8 ctr */
     } while ( k < e );
   }
   static uint32_t hdr_size( const KeyFragment &kb ) {
-    return align<uint32_t>( sizeof( uint64_t ) + sizeof( uint16_t ) +
-                            kb.keylen + sizeof( kb.keylen ), 8 );
+    return align<uint32_t>( sizeof( AtomUInt64 ) +
+                            sizeof( uint64_t ) +
+                            sizeof( uint32_t ) +
+                            sizeof( uint16_t ) +
+                            sizeof( kb.keylen ) + kb.keylen, 8 );
   }
   uint32_t hdr_size2( void ) const {
     if ( this->test( FL_PART_KEY ) == 0 )
@@ -121,18 +138,22 @@ struct HashEntry { /* min sizeof HashEntry is 40b: 16 key, 16 val ptr, 8 ctr */
   void clear( uint32_t fl )          { this->flags &= ~fl; }
   void set( uint32_t fl )            { this->flags |= fl; }
   uint32_t test( uint32_t fl ) const { return this->flags & fl; }
-  uint64_t unseal( uint32_t hash_entry_size ) {
+  uint64_t unseal_entry( uint32_t hash_entry_size ) {
+    this->seal = 0;
     ValueCtr &ctr = this->value_ctr( hash_entry_size );
     ctr.seal = 0;
     return ctr.get_serial();
   }
-  void seal( uint32_t hash_entry_size,  uint64_t serial ) { 
+  void seal_entry( uint32_t hash_entry_size,  uint64_t serial ) { 
     ValueCtr &ctr = this->value_ctr( hash_entry_size );
     ctr.set_serial( serial );
     ctr.seal = 1;
+    this->seal = (uint32_t) serial;
   }
   bool check_seal( uint32_t hash_entry_size ) {
-    return this->value_ctr( hash_entry_size ).seal == 1;
+    const ValueCtr &ctr = this->value_ctr( hash_entry_size );
+    return ( ctr.seal == 1 ) &
+           ( ctr.seriallo == this->seal );
   }
   uint8_t cuckoo_inc( void ) const {
     return this->test( FL_CUCKOO_INC ) >> FL_CUCKOO_SHIFT;

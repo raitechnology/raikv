@@ -10,7 +10,7 @@ namespace kv {
    hashing, then it must back out with KEY_BUSY to avoid deadlock of two
    threads jumping to eachothers position while holding the old positions's
    lock */
-template <class Position, bool is_linear_probe>
+template <class Position, bool is_blocking>
 KeyStatus
 KeyCtx::acquire( const uint64_t k,  uint64_t i,  Position &next )
 {
@@ -27,20 +27,29 @@ KeyCtx::acquire( const uint64_t k,  uint64_t i,  Position &next )
                drop_h = 0,      /* hash val at the drop element */
                spin   = 0;      /* count of spinning */
   KeyStatus    status;
-  bool         is_next_hash = false;
+  bool         try_me = false;
 
   /* start the search, this is the busiest part of the function, most items
    * will be found at the first hash table position */
   cur_mcs_id = ctx.next_mcs_lock();
   el         = this->ht.get_entry( i, this->hash_entry_size );
-  h          = ctx.get_mcs_lock( cur_mcs_id ).acquire( el->hash, ZOMBIE64,
-                                                    cur_mcs_id, spin, closure );
+  if ( is_blocking ) {
+    h = ctx.get_mcs_lock( cur_mcs_id ).acquire( el->hash, ZOMBIE64,
+                                                cur_mcs_id, spin, closure );
+  }
+  else {
+    h = ctx.get_mcs_lock( cur_mcs_id ).try_acquire( el->hash, ZOMBIE64,
+                                                    cur_mcs_id, spin );
+    if ( (h & ZOMBIE64) != 0 )
+      goto key_is_busy3;
+  }
   /* if either empty or existing item was found */
   if ( h == 0 || ( h == k && this->equals( *el ) ) ) {
     /* if item found was dropped, save the old hash and flags */
     if ( kv_unlikely( h != 0 && el->test( FL_DROPPED ) ) ) {
   found_drop:;
       this->drop_key   = h; /* track in case entry needs to restore tombstone */
+      this->drop_key2  = el->hash2;
       this->drop_flags = el->flags;
       el->flags        = FL_NO_ENTRY; /* clear the drop */
       h                = 0; /* treat as a new entry */
@@ -48,13 +57,14 @@ KeyCtx::acquire( const uint64_t k,  uint64_t i,  Position &next )
   found_match:;
     if ( spin > 0 )
       ctx.incr_spins( spin );
-    if ( kv_unlikely( ! this->test( KEYCTX_IS_GC_ACQUIRE ) ) )
+    if ( kv_unlikely( ! this->test( KEYCTX_IS_GC_ACQUIRE |
+                                    KEYCTX_IS_CUCKOO_ACQUIRE ) ) )
       ctx.incr_write();
     this->clear( KEYCTX_IS_READ_ONLY );
     this->pos    = i;
     this->lock   = h;
     this->mcs_id = cur_mcs_id;
-    this->serial = el->unseal( this->hash_entry_size );
+    this->serial = el->unseal_entry( this->hash_entry_size );
     this->entry  = el;
     return ( h == 0 ? KEY_IS_NEW : KEY_OK );
   }
@@ -62,7 +72,7 @@ KeyCtx::acquire( const uint64_t k,  uint64_t i,  Position &next )
   for ( this->chains = 1; ; this->chains++ ) {
     /* returns KEY_NOT_FOUND in cuckoo when no more buckets to search and in
      * linear when there are no more elements in table */
-    if ( (status = next.incr( i, this->chains, is_next_hash )) != KEY_OK )
+    if ( (status = next.incr( i, this->chains, try_me )) != KEY_OK )
       break;
     /* check for tombstoned entries */
     if ( kv_unlikely( drop == NULL && el->test( FL_DROPPED ) ) ) {
@@ -72,7 +82,7 @@ KeyCtx::acquire( const uint64_t k,  uint64_t i,  Position &next )
 
       cur_mcs_id = ctx.next_mcs_lock();
       el         = this->ht.get_entry( i, this->hash_entry_size );
-      if ( is_linear_probe || ! is_next_hash ) {
+      if ( is_blocking && ! try_me ) {
         h = ctx.get_mcs_lock( cur_mcs_id ).acquire( el->hash, ZOMBIE64,
                                                     cur_mcs_id, spin, closure );
       }
@@ -105,7 +115,7 @@ KeyCtx::acquire( const uint64_t k,  uint64_t i,  Position &next )
           goto found_drop;
         goto found_match;
       }
-      if ( (status = next.incr( i, this->chains, is_next_hash )) != KEY_OK )
+      if ( (status = next.incr( i, this->chains, try_me )) != KEY_OK )
         break;
     }
     /* keep one element locked by locking next and then releasing the current */
@@ -115,7 +125,7 @@ KeyCtx::acquire( const uint64_t k,  uint64_t i,  Position &next )
 
     cur_mcs_id = ctx.next_mcs_lock();
     el         = this->ht.get_entry( i, this->hash_entry_size );
-    if ( is_linear_probe || ! is_next_hash ) {
+    if ( is_blocking && ! try_me ) {
       h = ctx.get_mcs_lock( cur_mcs_id ).acquire( el->hash, ZOMBIE64,
                                                   cur_mcs_id, spin, closure );
     }
@@ -165,93 +175,12 @@ key_is_busy2:;
                                              drop_mcs_id, spin, closure );
     ctx.release_mcs_lock( drop_mcs_id );
   }
+key_is_busy3:;
   if ( spin > 0 )
     ctx.incr_spins( spin );
   ctx.release_mcs_lock( cur_mcs_id );
   ctx.incr_chains( this->chains );
   return KEY_BUSY;
-}
-
-
-template <class Position>
-KeyStatus
-KeyCtx::try_acquire( const uint64_t k,  uint64_t i,  Position &next )
-{
-  ThrCtxOwner  closure( this->ht.ctx );
-  ThrCtx     & ctx    = this->ht.ctx[ this->ctx_id ];
-  HashEntry  * el,          /* current ht[] ptr */
-             * last;        /* last ht[] ptr */
-  uint64_t     cur_mcs_id,  /* MCS lock queue for the current element */
-               last_mcs_id, /* MCS lock queue for the last element */
-               h,           /* hash val at the current element */
-               last_h,      /* hash val at the last element */
-               spin   = 0;  /* count of spinning */
-  KeyStatus    status;
-  bool         is_next_hash = false;
-
-  cur_mcs_id = ctx.next_mcs_lock();
-  el         = this->ht.get_entry( i, this->hash_entry_size );
-  h          = ctx.get_mcs_lock( cur_mcs_id ).try_acquire( el->hash, ZOMBIE64,
-                                                           cur_mcs_id, spin );
-  if ( (h & ZOMBIE64) != 0 ) {
-  key_is_busy:;
-    if ( spin > 0 )
-      ctx.incr_spins( spin );
-    ctx.release_mcs_lock( cur_mcs_id );
-    return KEY_BUSY;
-  }
-  /* acquire was successful, either empty or existing item was found */
-  if ( h == 0 || ( h == k && this->equals( *el ) ) ) {
-  key_is_matched:;
-    if ( spin > 0 )
-      ctx.incr_spins( spin );
-    if ( ! this->test( KEYCTX_IS_GC_ACQUIRE ) )
-      ctx.incr_write();
-    if ( el->test( FL_DROPPED ) ) {
-      this->drop_key   = h;
-      this->drop_flags = el->flags;
-      el->flags        = FL_NO_ENTRY;
-      h                = 0;
-    }
-    this->clear( KEYCTX_IS_READ_ONLY );
-    this->pos    = i;
-    this->lock   = h;
-    this->mcs_id = cur_mcs_id;
-    this->serial = el->unseal( this->hash_entry_size );
-    this->entry  = el;
-    return ( h == 0 ? KEY_IS_NEW : KEY_OK );
-  }
-  /* first element not equal, linear probe */
-  for ( this->chains = 1; ; this->chains++ ) {
-    if ( (status = next.incr( i, this->chains, is_next_hash )) != KEY_OK )
-      break;
-    /* keep one element locked by locking next and then releasing the current */
-    last_mcs_id   = cur_mcs_id;
-    last          = el;
-    last_h        = h;
-
-    cur_mcs_id = ctx.next_mcs_lock();
-    el         = this->ht.get_entry( i, this->hash_entry_size );
-    h          = ctx.get_mcs_lock( cur_mcs_id ).try_acquire( el->hash, ZOMBIE64,
-                                                             cur_mcs_id, spin );
-    ctx.get_mcs_lock( last_mcs_id ).release( last->hash, last_h, ZOMBIE64,
-                                             last_mcs_id, spin, closure );
-    ctx.release_mcs_lock( last_mcs_id );
-    /* check for match */
-    if ( (h & ZOMBIE64) != 0 || h == 0 || ( h == k && this->equals( *el ) ) ) {
-      ctx.incr_chains( this->chains );
-      if ( (h & ZOMBIE64) != 0 )
-        goto key_is_busy;
-      goto key_is_matched;
-    }
-  }
-  ctx.get_mcs_lock( cur_mcs_id ).release( el->hash, h, ZOMBIE64,
-                                          cur_mcs_id, spin, closure );
-  ctx.release_mcs_lock( cur_mcs_id );
-  if ( spin > 0 )
-    ctx.incr_spins( spin );
-  ctx.incr_chains( this->chains );
-  return status;
 }
 
 /* 32b aligned hash entry copy, zero if slot is empty */

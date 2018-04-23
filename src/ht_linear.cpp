@@ -51,7 +51,7 @@ KeyCtx::try_acquire_linear_probe( const uint64_t k,  const uint64_t start_pos )
 {
   LinearPosition lp( *this );
 
-  return this->try_acquire<LinearPosition>( k, start_pos, lp );
+  return this->acquire<LinearPosition, false>( k, start_pos, lp );
 }
 
 /* find key for read only access without locking slot */
@@ -127,11 +127,13 @@ KeyCtx::fetch_position( const uint64_t i,  const uint64_t spin_wait )
   not_found:;
       if ( spin > 0 )
         ctx.incr_spins( spin );
-      ctx.incr_read();
+      if ( ! this->test( KEYCTX_IS_CUCKOO_ACQUIRE ) )
+        ctx.incr_read();
       this->inc    = cpy->cuckoo_inc();
       this->set( KEYCTX_IS_READ_ONLY );
       this->pos    = i;
       this->key    = h;
+      this->key2   = cpy->hash2;
       this->lock   = h;
       this->serial = cpy->value_ctr( this->hash_entry_size ).get_serial();
       this->entry  = cpy;

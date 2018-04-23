@@ -50,8 +50,9 @@ struct HashCounters {
           cuckacq,    /* cuckoo path acquire */
           cuckfet,    /* cuckoo path fetch */
           cuckmov,    /* cuckoo path move */
-          cuckbiz;    /* cuckoo path busy */
-  int64_t pad[ 2 ];   /* 128b */
+          cuckbiz,    /* cuckoo path busy */
+          cuckret,    /* cuckoo path retry */
+          cuckmax;    /* cuckoo path max retry, could be cycle */
 
   HashCounters() { this->zero(); }
   HashCounters( const HashCounters &cnt ) { *this = cnt; }
@@ -68,6 +69,7 @@ struct HashDeltaCounters {
   HashCounters last, delta;
 
   HashDeltaCounters() {}
+  void zero( void ) { ::memset( this, 0, sizeof( *this ) ); }
 
   void get_ht_delta( const HashCounters &stat );
 };
