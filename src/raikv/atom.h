@@ -125,19 +125,80 @@ typedef struct Atom<uint8_t>  AtomUInt8;  /* a bool */
  * doubles as a lock.  For example if locked_bit = 0x80, then 0 -> 0x7f are
  * values and 0x80 -> 0xff are MCS thread lock list.
  */
+enum MCSStatus {
+  MCS_OK       = 0,
+  MCS_WAIT     = 1,
+  MCS_INACTIVE = 2
+};
 template <class Int, class Owner>
 struct MCSLock {
-  Atom<Int> lock, next; /* should be init to zero */
+  Atom<Int> val, lock, next; /* should be init to zero */
+  uint64_t  lock_id;
+
+  void reset( void ) {
+    this->val     = 0;
+    this->next    = 0; /* reset */
+    this->lock    = 0;
+    this->lock_id = 0;
+  }
+
+  /* try to recover from crashes by post-mortem unlocking */
+  MCSStatus recover_lock( Atom<Int> &link,  const Int locked_bit,
+                          const Int my_id,  Owner &closure ) {
+    uint64_t v = this->val;
+    /* if locked_bit is set, then waiting for another thread */
+    if ( ( v & locked_bit ) != 0 ) {
+      if ( ( this->lock & locked_bit ) == 0 ) {
+        v = this->lock;
+        this->val = v;
+        return MCS_OK;
+      }
+      if ( ! closure.is_active( v & ~locked_bit ) )
+        return MCS_INACTIVE;
+      /* waiting for another thread */
+      closure.owner( v & ~locked_bit ).next = my_id | locked_bit;
+      return MCS_WAIT;
+    }
+    return MCS_OK;
+  }
+
+  MCSStatus recover_unlock( Atom<Int> &link,  const Int locked_bit,
+                            const Int my_id,  Owner &closure ) {
+    Int waiting, v = this->val;
+    if ( link.cmpxchg( my_id | locked_bit, v ) ) {
+      /* sucessfully unlocked */
+      this->reset();
+      return MCS_OK;
+    }
+    /* wake the other thread */
+    if ( (waiting = this->next) != 0 ) {
+      if ( ! closure.is_active( waiting & ~locked_bit ) )
+        return MCS_INACTIVE;
+      MCSLock &own = closure.owner( waiting & ~locked_bit );
+      /* other thread should be waiting, communicate val */
+      if ( own.lock != 0 ) {
+        own.lock = v;
+        this->reset();
+        return MCS_OK; /* successfully communicated value */
+      }
+      /* other thread in list is not waiting */
+      /* return MCS_INACTIVE; */
+    }
+    /* other thread in list needs to unlock */
+    return MCS_WAIT;
+  }
 
   /* wait for lock to become available */
-  Int acquire( Atom<Int> &link,  const Int locked_bit,  const Int my_id,
-               uint64_t &spin,  Owner &closure ) {
-    Int val, wait;
-    if ( ( (val = link.xchg( my_id | locked_bit )) & locked_bit ) != 0 ) {
+  Int acquire( Atom<Int> &link,  uint64_t id,  const Int locked_bit,
+               const Int my_id,  uint64_t &spin,  Owner &closure ) {
+    Int v, wait;
+    this->lock_id = id + 1;
+    if ( ( (v = link.xchg( my_id | locked_bit )) & locked_bit ) != 0 ) {
+      this->val = v; /* val has lock bit set */
       /* These two store operations could be reordered as seen by the next
        * thread if memory ordering is weak */
       this->lock = locked_bit;
-      closure.owner( val & ~locked_bit ).next = my_id | locked_bit;
+      closure.owner( v & ~locked_bit ).next = my_id | locked_bit;
       for (;;) {
         /* spin on my lock, waiting for it to be free by owner signal */
         if ( ( (wait = this->lock) & locked_bit ) == 0 ) /* val communicated */
@@ -145,30 +206,37 @@ struct MCSLock {
         spin++;
         kv_sync_pause();
       }
-      val = wait;
+      v = wait;
     }
-    return val;
+    this->val = v; /* val does not have lock bit set */
+    return v;
   }
 
   /* same as acquire, except don't wait for lock */
-  Int try_acquire( Atom<Int> &link,  const Int locked_bit,  const Int my_id,
-                   uint64_t &spin ) {
+  Int try_acquire( Atom<Int> &link,  uint64_t id,  const Int locked_bit,
+                   const Int my_id,  uint64_t &spin ) {
+    this->lock_id = id + 1;
     for (;;) {
-      Int val = link.val;
-      if ( ( val & locked_bit ) != 0 )
-        return val;
-      if ( link.cmpxchg( val, my_id | locked_bit ) )
-        return val;
+      Int v = link.val;
+      if ( ( v & locked_bit ) != 0 ) {
+        this->lock_id = 0;
+        return v; /* lock is not free */
+      }
+      /* try to acquire it */
+      if ( link.cmpxchg( v, my_id | locked_bit ) ) {
+        this->val = v;
+        return v; /* success */
+      }
       spin++;
       kv_sync_pause();
     }
   }
 
   /* release lock and wake waiters */
-  void release( Atom<Int> &link,  const Int val,  const Int locked_bit,
+  void release( Atom<Int> &link,  const Int v,  const Int locked_bit,
                 const Int my_id,  uint64_t &spin,  Owner &closure ) {
     /* set lock=val if no one else is waiting */
-    if ( ! link.cmpxchg( my_id | locked_bit, val ) ) {
+    if ( ! link.cmpxchg( my_id | locked_bit, v ) ) {
       Int waiting;
       while ( (waiting = this->next) == 0 ) { /* find next thread in queue */
         spin++;
@@ -181,10 +249,9 @@ struct MCSLock {
         kv_sync_pause();
       }
       /* val is seen by the acquire() wait variable above */
-      own.lock = val;
+      own.lock = v;
     }
-    this->next = 0; /* reset */
-    this->lock = 0;
+    this->reset();
   }
 };
 

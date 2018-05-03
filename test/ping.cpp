@@ -123,8 +123,8 @@ main( int argc, char *argv[] )
     return 1;
   sighndl.install();
 
-  KeyCtx pingctx( map, ctx_id, &pingkb ),
-         pongctx( map, ctx_id, &pongkb );
+  KeyCtx pingctx( *map, ctx_id, &pingkb ),
+         pongctx( *map, ctx_id, &pongkb );
   uint64_t h1, h2;
   h1 = map->hdr.hash_key_seed;
   h2 = map->hdr.hash_key_seed2;

@@ -9,13 +9,13 @@
 using namespace rai;
 using namespace kv;
 
-MsgCtx::MsgCtx( HashTab *t,  uint32_t id,  uint32_t sz )
-      : ht( *t ), kbuf( 0 ), ctx_id( id ), hash_entry_size( sz ), key( 0 ),
+MsgCtx::MsgCtx( HashTab &t,  uint32_t id,  uint32_t sz )
+      : ht( t ), kbuf( 0 ), ctx_id( id ), hash_entry_size( sz ), key( 0 ),
         msg( 0 ), prefetch_ptr( 0 ) {}
 
-MsgCtx::MsgCtx( HashTab *t,  uint32_t id )
-      : ht( *t ), kbuf( 0 ), ctx_id( id ),
-        hash_entry_size( t->hdr.hash_entry_size ), key( 0 ),
+MsgCtx::MsgCtx( HashTab &t,  uint32_t id )
+      : ht( t ), kbuf( 0 ), ctx_id( id ),
+        hash_entry_size( t.hdr.hash_entry_size ), key( 0 ),
         msg( 0 ), prefetch_ptr( 0 ) {}
 
 void
@@ -29,7 +29,7 @@ MsgCtx::set_key_hash( KeyFragment &b )
 }
 
 MsgCtx *
-MsgCtx::new_array( HashTab *t,  uint32_t id,  void *b,  size_t bsz )
+MsgCtx::new_array( HashTab &t,  uint32_t id,  void *b,  size_t bsz )
 {
   MsgCtxBuf *p = (MsgCtxBuf *) b;
   if ( p == NULL ) {
@@ -68,7 +68,7 @@ KeyStatus
 MsgCtx::alloc_segment( void *res,  uint64_t size,  uint8_t alignment )
 {
   ThrCtx           & ctx       = this->ht.ctx[ this->ctx_id ];
-  KeyCtx             mv_kctx( &this->ht, this->ctx_id );
+  KeyCtx             mv_kctx( this->ht, this->ctx_id );
   KeyCtxAllocT<1024> wrk;
   const uint64_t     seg_size  = this->ht.hdr.seg_size();
   const uint32_t     nsegs     = this->ht.hdr.nsegs,
@@ -232,7 +232,7 @@ MsgCtx::alloc_segment( void *res,  uint64_t size,  uint8_t alignment )
       this->ht.update_load();
       kv_sync_pause();
     }
-    if ( this->ht.hdr.load_percent >= 100 )
+    if ( this->ht.hdr.load_percent >= this->ht.hdr.critical_load )
       how_aggressive = 0;
     /*else if ( this->ht.hdr.load_percent >= 90 )
       how_aggressive = 1;*/

@@ -10,36 +10,36 @@ using namespace rai;
 using namespace kv;
 
 /* KeyFragment b is usually null */
-KeyCtx::KeyCtx( HashTab *t, uint32_t id, KeyFragment *b )
-  : ht( *t )
+KeyCtx::KeyCtx( HashTab &t, uint32_t id, KeyFragment *b )
+  : ht( t )
   , kbuf( b )
   , ctx_id( id )
-  , hash_entry_size( t->hdr.hash_entry_size )
-  , ht_size( t->hdr.ht_size )
-  , cuckoo_buckets( t->hdr.cuckoo_buckets )
-  , cuckoo_arity( t->hdr.cuckoo_arity )
+  , hash_entry_size( t.hdr.hash_entry_size )
+  , ht_size( t.hdr.ht_size )
+  , cuckoo_buckets( t.hdr.cuckoo_buckets )
+  , cuckoo_arity( t.hdr.cuckoo_arity )
   , inc( 0 )
   , drop_flags( 0 )
   , flags( KEYCTX_IS_READ_ONLY )
-  , max_chains( t->hdr.ht_size )
+  , max_chains( t.hdr.ht_size )
 {
   ::memset( &this->chains, 0,
             (uint8_t *) (void *) &( &this->wrk )[ 1 ] -
               (uint8_t *) (void *) &this->chains );
 }
 
-KeyCtx::KeyCtx( HashTab *t, uint32_t id, KeyFragment &b )
-  : ht( *t )
+KeyCtx::KeyCtx( HashTab &t, uint32_t id, KeyFragment &b )
+  : ht( t )
   , kbuf( &b )
   , ctx_id( id )
-  , hash_entry_size( t->hdr.hash_entry_size )
-  , ht_size( t->hdr.ht_size )
-  , cuckoo_buckets( t->hdr.cuckoo_buckets )
-  , cuckoo_arity( t->hdr.cuckoo_arity )
+  , hash_entry_size( t.hdr.hash_entry_size )
+  , ht_size( t.hdr.ht_size )
+  , cuckoo_buckets( t.hdr.cuckoo_buckets )
+  , cuckoo_arity( t.hdr.cuckoo_arity )
   , inc( 0 )
   , drop_flags( 0 )
   , flags( KEYCTX_IS_READ_ONLY )
-  , max_chains( t->hdr.ht_size )
+  , max_chains( t.hdr.ht_size )
 {
   ::memset( &this->chains, 0,
             (uint8_t *) (void *) &( &this->wrk )[ 1 ] -
@@ -65,7 +65,7 @@ KeyCtx::set_key_hash( KeyFragment &b )
 }
 
 KeyCtx *
-KeyCtx::new_array( HashTab *t,  uint32_t id,  void *b,  size_t bsz )
+KeyCtx::new_array( HashTab &t,  uint32_t id,  void *b,  size_t bsz )
 {
   KeyCtxBuf *p = (KeyCtxBuf *) b;
   if ( p == NULL ) {
@@ -123,6 +123,57 @@ KeyCtxAlloc::release( void )
   this->big = NULL;
 }
 
+/* acquire lock for a key, if KEY_OK, set entry at &ht[ key % ht_size ] */
+KeyStatus
+KeyCtx::acquire( KeyCtxAlloc *a )
+{
+  this->init_work( a ); /* buffer used for copying hash entry & data */
+  this->init_acquire();
+  if ( this->test( KEYCTX_IS_SINGLE_THREAD ) == 0 ) {
+    if ( this->cuckoo_buckets <= 1 )
+      return this->acquire_linear_probe( this->key, this->start );
+    return this->acquire_cuckoo( this->key, this->start );
+  }
+  /* single thread version */
+  if ( this->cuckoo_buckets <= 1 )
+    return this->acquire_linear_probe_single_thread( this->key, this->start );
+  return this->acquire_cuckoo_single_thread( this->key, this->start );
+}
+
+/* try to acquire lock for a key without waiting */
+KeyStatus
+KeyCtx::try_acquire( KeyCtxAlloc *a )
+{
+  this->init_work( a ); /* buffer used for copying hash entry & data */
+  this->init_acquire();
+  if ( this->test( KEYCTX_IS_SINGLE_THREAD ) == 0 ) {
+    if ( this->cuckoo_buckets <= 1 )
+      return this->try_acquire_linear_probe( this->key, this->start );
+    return this->try_acquire_cuckoo( this->key, this->start );
+  }
+  /* single thread version */
+  if ( this->cuckoo_buckets <= 1 )
+    return this->acquire_linear_probe_single_thread( this->key, this->start );
+  return this->acquire_cuckoo_single_thread( this->key, this->start );
+}
+
+/* if find locates key, returns KEY_OK, sets entry at &ht[ key % ht_size ] */
+KeyStatus
+KeyCtx::find( KeyCtxAlloc *a,  const uint64_t spin_wait )
+{
+  this->init_work( a ); /* buffer used for copying hash entry & data */
+  this->init_find();
+  if ( this->test( KEYCTX_IS_SINGLE_THREAD ) == 0 ) {
+    if ( this->cuckoo_buckets <= 1 )
+      return this->find_linear_probe( this->key, this->start, spin_wait );
+    return this->find_cuckoo( this->key, this->start, spin_wait );
+  }
+  /* single thread version */
+  if ( this->cuckoo_buckets <= 1 )
+    return this->find_linear_probe_single_thread( this->key, this->start );
+  return this->find_cuckoo_single_thread( this->key, this->start );
+}
+
 KeyStatus
 KeyCtx::tombstone( void )
 {
@@ -139,10 +190,8 @@ KeyCtx::tombstone( void )
 }
 
 bool
-KeyCtx::equals( const HashEntry &el ) const
+KeyCtx::frag_equals( const HashEntry &el ) const
 {
-  if ( this->kbuf == NULL || el.hash2 == this->key2 )
-    return true;
   KeyFragment &kb = *this->kbuf;
   if ( el.test( FL_IMMEDIATE_KEY ) )
     return el.key.frag_equals( kb );
@@ -223,8 +272,11 @@ KeyCtx::prefetch( uint64_t cnt ) const
 void
 KeyCtx::release( void )
 {
-  if ( this->test( KEYCTX_IS_READ_ONLY ) != 0 )
+  if ( this->test( KEYCTX_IS_READ_ONLY | KEYCTX_IS_SINGLE_THREAD ) != 0 ) {
+    if ( this->test( KEYCTX_IS_READ_ONLY ) == 0 )
+      this->release_single_thread();
     return;
+  }
   HashEntry & el   = *this->entry;
   ThrCtx    & ctx  = this->ht.ctx[ this->ctx_id ];
   ThrCtxOwner closure( this->ht.ctx );
@@ -262,6 +314,52 @@ done:;
   ctx.release_mcs_lock( this->mcs_id );
   //__sync_mfence(); /* push the updates to memory */
   ctx.incr_spins( spin );
+  this->entry     = NULL;
+  this->msg       = NULL;
+  this->drop_key  = 0;
+  this->set( KEYCTX_IS_READ_ONLY );
+  /*this->update_ns = 0;
+  this->expire_ns = 0;*/
+}
+
+void
+KeyCtx::release_single_thread( void )
+{
+  if ( this->test( KEYCTX_IS_READ_ONLY ) != 0 )
+    return;
+  HashEntry & el   = *this->entry;
+  ThrCtx    & ctx  = this->ht.ctx[ this->ctx_id ];
+  uint64_t    k    = this->key;
+  /* if no data was inserted, mark the entry as tombstone */
+  if ( this->lock == 0 ) { /* if it's new */
+    /* don't keep keys with no data */
+    if ( kv_unlikely( el.flags == FL_NO_ENTRY ) ) {
+      this->entry = NULL;
+      /* was already dropped, use pre-existing key and flags */
+      if ( this->drop_key != 0 ) {
+        k        = this->drop_key;
+        el.hash2 = this->drop_key2;
+        el.flags = this->drop_flags;
+      }
+      /* mark entry as tombstone */
+      else {
+        k        = DROPPED_HASH;
+        el.hash2 = 0;
+        el.flags = FL_DROPPED;
+      }
+      el.seal_entry( this->hash_entry_size, 0 );
+      goto done; /* skip over the seals, they will be tossed */
+    }
+    ctx.incr_add(); /* counter for added elements */
+  }
+  /* allow readers to access */
+  el.hash2 = this->key2;
+  el.set_cuckoo_inc( this->inc );
+  el.seal_entry( this->hash_entry_size, this->serial );
+  if ( el.test( FL_SEGMENT_VALUE ) )
+    this->seal_msg();
+done:;
+  el.hash = k;
   this->entry     = NULL;
   this->msg       = NULL;
   this->drop_key  = 0;
@@ -501,11 +599,8 @@ KeyCtx::update_entry( void *res,  uint64_t size,  uint8_t alignment )
 KeyStatus
 KeyCtx::alloc( void *res,  uint64_t size,  uint8_t alignment )
 {
-  if ( this->test( KEYCTX_IS_READ_ONLY | KEYCTX_IS_HT_EVICT ) ) {
-    if ( this->test( KEYCTX_IS_READ_ONLY ) )
-      return KEY_WRITE_ILLEGAL;
-    this->release_evict();
-  }
+  if ( this->test( KEYCTX_IS_READ_ONLY ) )
+    return KEY_WRITE_ILLEGAL;
   HashEntry & el = *this->entry;
   /* if something is already allocated, release it */
   if ( el.test( FL_SEGMENT_VALUE ) )
@@ -517,7 +612,7 @@ KeyCtx::alloc( void *res,  uint64_t size,  uint8_t alignment )
 
   if ( status == KEY_SEG_VALUE ) {
     /* allocate mem from a segment */
-    MsgCtx msg_ctx( &this->ht, this->ctx_id, this->hash_entry_size );
+    MsgCtx msg_ctx( this->ht, this->ctx_id, this->hash_entry_size );
     msg_ctx.set_key( *this->kbuf );
     msg_ctx.set_hash( this->key, this->key2 );
     if ( (status = msg_ctx.alloc_segment( res, size, alignment )) == KEY_OK ) {
@@ -539,11 +634,8 @@ KeyCtx::alloc( void *res,  uint64_t size,  uint8_t alignment )
 KeyStatus
 KeyCtx::load( MsgCtx &msg_ctx )
 {
-  if ( this->test( KEYCTX_IS_READ_ONLY | KEYCTX_IS_HT_EVICT ) ) {
-    if ( this->test( KEYCTX_IS_READ_ONLY ) )
-      return KEY_WRITE_ILLEGAL;
-    this->release_evict();
-  }
+  if ( this->test( KEYCTX_IS_READ_ONLY ) )
+    return KEY_WRITE_ILLEGAL;
   HashEntry & el = *this->entry;
 
   if ( el.test( FL_SEGMENT_VALUE ) )
@@ -565,14 +657,10 @@ KeyCtx::load( MsgCtx &msg_ctx )
 KeyStatus
 KeyCtx::resize( void *res,  uint64_t size,  uint8_t alignment )
 {
-  if ( this->test( KEYCTX_IS_READ_ONLY | KEYCTX_IS_HT_EVICT ) ) {
-    if ( this->test( KEYCTX_IS_READ_ONLY ) )
-      return KEY_WRITE_ILLEGAL;
-    this->release_evict();
-  }
+  if ( this->test( KEYCTX_IS_READ_ONLY ) )
+    return KEY_WRITE_ILLEGAL;
 
   HashEntry & el = *this->entry;
-
   /* check if resize fits within current segment mem */
   if ( el.test( FL_SEGMENT_VALUE ) ) {
     KeyStatus mstatus;
@@ -730,6 +818,7 @@ kv_key_status_string( kv_key_status_t status )
     case KEY_PART_ONLY:     return "KEY_PART_ONLY";
     case KEY_MAX_CHAINS:    return "KEY_MAX_CHAINS";
     case KEY_PATH_SEARCH:   return "KEY_PATH_SEARCH";
+    case KEY_USE_DROP:      return "KEY_USE_DROP";
     case KEY_MAX_STATUS:    return "KEY_MAX_STATUS";
   }
   return "unknown";
@@ -756,6 +845,7 @@ kv_key_status_description( kv_key_status_t status )
     case KEY_MAX_CHAINS:    return "nothing found before entry count hit "
                                    "max chains";
     case KEY_PATH_SEARCH:   return "need a path search to acquire cuckoo entry";
+    case KEY_USE_DROP:      return "ok to use drop, end of chain";
     case KEY_MAX_STATUS:    return "maximum status";
   }
   return "unknown";
@@ -849,7 +939,7 @@ kv_create_key_ctx( kv_hash_tab_t *ht,  uint32_t ctx_id )
   void * ptr = ::malloc( sizeof( KeyCtx ) );
   if ( ptr == NULL )
     return NULL;
-  new ( ptr ) KeyCtx( reinterpret_cast<HashTab *>( ht ),  ctx_id );
+  new ( ptr ) KeyCtx( *reinterpret_cast<HashTab *>( ht ),  ctx_id );
   return (kv_key_ctx_t *) ptr;
 }
 
@@ -891,13 +981,13 @@ kv_try_acquire( kv_key_ctx_t *kctx,  kv_key_alloc_t *a )
   return reinterpret_cast<KeyCtx *>( kctx )->try_acquire(
            reinterpret_cast<KeyCtxAlloc *>( a ) );
 }
-
+#if 0
 kv_key_status_t
 kv_drop( kv_key_ctx_t *kctx )
 {
   return reinterpret_cast<KeyCtx *>( kctx )->drop();
 }
-
+#endif
 kv_key_status_t
 kv_tombstone( kv_key_ctx_t *kctx )
 {

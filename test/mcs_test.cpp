@@ -54,14 +54,14 @@ loop( uint64_t my_id )
     uint32_t j = i % HT_CNT;
     uint64_t lock;
     me.lck = j;
-    lock = ctx[ my_id ].mcs.acquire( ht[ j ].h, zombie, my_id,
+    lock = ctx[ my_id ].mcs.acquire( ht[ j ].h, j, zombie, my_id,
                                      ctx[ my_id ].spin, closure );
     me.lck = 0;
     ht[ j ].count++;
     me.count++;
     me.unl = j;
-    ctx[ my_id ].mcs.release( ht[ j ].h, lock, zombie, my_id, ctx[ my_id ].wait,
-                              closure );
+    ctx[ my_id ].mcs.release( ht[ j ].h, lock, zombie, my_id,
+                              ctx[ my_id ].wait, closure );
     me.unl = 0;
   }
 }

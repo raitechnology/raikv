@@ -16,7 +16,7 @@ using namespace kv;
 
 HashTabGeom geom;
 HashTab   * map;
-uint32_t    ctx_id = MAX_CTX_ID;
+uint32_t    ctx_id = MAX_CTX_ID, my_pid, no_pid = 666;
 extern void print_map_geom( HashTab * map,  uint32_t ctx_id );
 
 //static uint64_t max( uint64_t x,  uint64_t y ) { return ( x > y ? x : y ); }
@@ -25,6 +25,9 @@ static void get_key_string( KeyFragment &kb,  char *key );
 
 FILE *outfp = NULL;
 bool quiet;
+
+static int xprintf( FILE *out,  const char *format, ... )
+  __attribute__((format(printf,2,3)));
 
 static int
 xprintf( FILE *out,  const char *format, ... )
@@ -57,7 +60,7 @@ shm_attach( const char *mn )
 {
   map = HashTab::attach_map( mn, 0, geom );
   if ( map != NULL ) {
-    ctx_id = map->attach_ctx( ::getpid() );
+    ctx_id = map->attach_ctx( my_pid = ::getpid() );
     print_map_geom( map, ctx_id );
   }
 }
@@ -71,6 +74,64 @@ shm_close( void )
     ctx_id = MAX_CTX_ID;
   }
   delete map;
+}
+
+static void
+fix_locks( void )
+{
+  uint32_t hash_entry_size = map->hdr.hash_entry_size;
+  for ( uint32_t c = 1; c < MAX_CTX_ID; c++ ) {
+    uint32_t pid = map->ctx[ c ].ctx_pid;
+    if ( pid == 0 ||
+         map->ctx[ c ].ctx_id == KV_NO_CTX_ID ||
+         ::kill( pid, 0 ) == 0 )
+      continue;
+
+    uint64_t used, recovered = 0;
+    if ( (used = map->ctx[ c ].mcs_used) == 0 )
+      continue;
+
+    for ( uint32_t id = 0; id < 64; id++ ) {
+      if ( ( used & ( (uint64_t) 1 << id ) ) == 0 )
+        continue;
+      uint64_t mcs_id = ( c << ThrCtxEntry::MCS_SHIFT ) | id;
+      ThrMCSLock &mcs = map->ctx[ c ].get_mcs_lock( mcs_id );
+      MCSStatus status;
+      xprintf( 0,
+      "ctx %u: pid %u, mcs %u, val 0x%lx, lock 0x%lx, next 0x%lx, link %lu\n",
+               c, pid, id, mcs.val.val, mcs.lock.val, mcs.next.val,
+               mcs.lock_id );
+      if ( mcs.lock_id != 0 ) {
+        HashEntry *el = map->get_entry( mcs.lock_id - 1,
+                                        map->hdr.hash_entry_size );
+        ThrCtxOwner  closure( map->ctx );
+        status = mcs.recover_lock( el->hash, ZOMBIE64, mcs_id, closure );
+        if ( status == MCS_OK ) {
+          ValueCtr &ctr = el->value_ctr( hash_entry_size );
+          if ( ctr.seal == 0 || el->seal != ctr.seriallo ) {
+            ctr.seal = 1; /* these are lost with the context thread */
+            el->seal = ctr.seriallo;
+          }
+          status = mcs.recover_unlock( el->hash, ZOMBIE64, mcs_id, closure );
+          if ( status == MCS_OK ) {
+            xprintf( 0, "mcs_id %u:%u recovered\n", c, id );
+            recovered |= ( (uint64_t) 1 << id );
+          }
+        }
+        if ( status != MCS_OK ) {
+          xprintf( 0, "mcs_id %u:%u status %s\n", c, id,
+                   status == MCS_WAIT ? "MCS_WAIT" : "MCS_INACTIVE" );
+        }
+      }
+    }
+    map->ctx[ c ].mcs_used &= ~recovered;
+    if ( used != recovered ) {
+      xprintf( 0, "ctx %u still has locks\n", c );
+    }
+    else {
+      map->detach_ctx( c );
+    }
+  }
 }
 
 static void
@@ -138,7 +199,7 @@ print_seg( uint32_t s )
         }
         KeyFragment &kb = msg->key;
         get_key_string( kb, key );
-        xprintf( 0, "[%s %lu] ", key, msg->size );
+        xprintf( 0, "[%s %u] ", key, msg->size );
       }
       off += msg->size;
       if ( off >= seg_size )
@@ -220,7 +281,7 @@ dump_value( const char *key )
 {
   KeyCtxAlloc8k wrk;
   KeyBuf    kb;
-  KeyCtx    kctx( map, ctx_id, &kb );
+  KeyCtx    kctx( *map, ctx_id, &kb );
   void    * ptr;
   uint64_t  size, h1, h2;
   KeyStatus status;
@@ -566,7 +627,7 @@ print_key_data( KeyCtx &kctx,  const char *what,  uint64_t sz )
     ValueGeom &geom = kctx.geom;
     xprintf( 0, "[%lu] [h=0x%08lx:%08lx:chn=%lu:cnt=%lu:inc=%u:sz=%lu%s%s] "
             "(%s seg=%u:sz=%lu:off=%lu:cnt=%lu) %s\n",
-            kctx.pos, kctx.key, kctx.chains, kctx.serial -
+            kctx.pos, kctx.key, kctx.key2, kctx.chains, kctx.serial -
             ( kctx.key & ValueCtr::SERIAL_MASK ), kctx.inc, sz, upd, exp,
             flags_string( kctx.entry->flags, fl ),
             geom.segment, geom.size, geom.offset,
@@ -601,8 +662,8 @@ validate_ht( HashTab *map )
 {
   KeyBuf        kb, kb2;
   KeyFragment * kp;
-  KeyCtx        kctx( map, ctx_id, &kb ),
-                kctx2( map, ctx_id, &kb2 );
+  KeyCtx        kctx( *map, ctx_id, &kb ),
+                kctx2( *map, ctx_id, &kb2 );
   KeyCtxAlloc8k wrk, wrk2;
   uint64_t      h1, h2;
   char          buf[ 1024 ];
@@ -610,31 +671,42 @@ validate_ht( HashTab *map )
 
   for ( uint64_t pos = 0; pos < map->hdr.ht_size; pos++ ) {
     status = kctx.fetch( &wrk, pos );
-    if ( status == KEY_OK ) {
+    if ( status == KEY_OK && kctx.entry->test( FL_DROPPED ) == 0 ) {
       status = kctx.get_key( kp );
-      if ( status == KEY_OK ) {
-        uint64_t natural_pos, pos_off = 0;
-        kctx.get_pos_info( natural_pos, pos_off );
+      uint64_t natural_pos, pos_off = 0;
+      kctx.get_pos_info( natural_pos, pos_off );
+      if ( status == KEY_OK )
         kb2 = *kp;
-        if ( kctx.cuckoo_arity > 1 &&
-             pos_off / kctx.cuckoo_buckets != kctx.inc ) {
+      if ( kctx.cuckoo_arity > 1 &&
+           pos_off / kctx.cuckoo_buckets != kctx.inc ) {
+        if ( status == KEY_OK )
           get_key_string( kb2, buf );
-          print_status( "find-buckets", buf, KEY_MAX_CHAINS );
-          xprintf( 0, "pos_off %lu natural_pos %lu\n", pos_off, natural_pos );
-          print_key_data( kctx, "", 0 );
-        }
+        else
+          ::strcpy( buf, "key_part" );
+        print_status( "find-buckets", buf, KEY_MAX_CHAINS );
+        //kctx.get_pos_info( natural_pos, pos_off );
+        xprintf( 0, "pos_off %lu natural_pos %lu\n", pos_off, natural_pos );
+        print_key_data( kctx, "", 0 );
+      }
+      if ( status == KEY_OK ) {
         h1 = map->hdr.hash_key_seed;
         h2 = map->hdr.hash_key_seed2;
         kb2.hash( h1, h2 );
         kctx2.set_hash( h1, h2 );
-        if ( (status = kctx2.find( &wrk2 )) != KEY_OK ||
-             kctx2.pos != pos ) {
+      }
+      else {
+        kctx2.set_hash( kctx.key, kctx.key2 );
+      }
+      if ( (status = kctx2.find( &wrk2 )) != KEY_OK ||
+           kctx2.pos != pos ) {
+        if ( status == KEY_OK )
           get_key_string( kb2, buf );
-          print_status( "find-position", buf, status );
-          xprintf( 0, "pos %lu != kctx.pos %lu\n", pos, kctx2.pos );
-          xprintf( 0, "pos_off %lu natural_pos %lu\n", pos_off, natural_pos );
-          print_key_data( kctx, "", 0 );
-        }
+        else
+          ::strcpy( buf, "key_part" );
+        print_status( "find-position", buf, status );
+        xprintf( 0, "pos %lu != kctx.pos %lu\n", pos, kctx2.pos );
+        xprintf( 0, "pos_off %lu natural_pos %lu\n", pos_off, natural_pos );
+        print_key_data( kctx, "", 0 );
       }
     }
   }
@@ -647,12 +719,12 @@ cli( void )
   struct KeyListData {
     uint64_t pos, jump;
     uint64_t seg_values, immed_values, no_value,
-             key_count, drops, err_count;
+             key_count, drops, moves, busy, err_count;
     uint64_t hit[ MAX_OFF + 1 ], max_hit;
     void zero( void ) { ::memset( this, 0, sizeof( *this ) ); }
   } kld;
   KeyBuf        kb;
-  KeyCtx        kctx( map, ctx_id, &kb );
+  KeyCtx        kctx( *map, ctx_id, &kb );
   KeyCtxAlloc8k wrk;
   char          buf[ 16 * 1024 ], cmd[ 16 ], key[ 8192 ], *data;
   char          fl[ 32 ], upd[ 64 ], exp[ 64 ], xbuf[ 32 ], tmp = 0;
@@ -746,9 +818,9 @@ cli( void )
           else {
             const char *s = ( cmd_char == 'd' ? "drop" : "tomb" );
             if ( (status = print_key_data( kctx, s, 0 )) == KEY_OK ) {
-              if ( cmd_char == 'd' )
+              /*if ( cmd_char == 'd' )
                 status = kctx.drop();
-              else
+              else*/
                 status = kctx.tombstone();
             }
             kctx.release(); /* may not need release for drop() */
@@ -758,6 +830,26 @@ cli( void )
         if ( do_validate ) {
           validate_ht( map );
         }
+        break;
+
+      case 'a': /* acquire */
+        parse_key_string( kb, key );
+        h1 = map->hdr.hash_key_seed;
+        h2 = map->hdr.hash_key_seed2;
+        kb.hash( h1, h2 );
+        kctx.set_hash( h1, h2 );
+
+        if ( (status = kctx.acquire( &wrk )) <= KEY_IS_NEW ) {
+          if ( (status = kctx.resize( &ptr, 2 )) == KEY_OK ) {
+            ((uint8_t *) ptr)[ 0 ] = 'X'; ((uint8_t *) ptr)[ 1 ] = '\0';
+            status = print_key_data( kctx, "acquire", 2 );
+          }
+        }
+        break;
+
+      case 'A': /* release acquire */
+        status = print_key_data( kctx, "release", 2 );
+        kctx.release();
         break;
 
       case 'h': /* hex */
@@ -880,6 +972,10 @@ cli( void )
               }
               if ( kctx.entry->test( FL_DROPPED ) )
                 kld.drops++;
+              if ( kctx.entry->test( FL_MOVED ) )
+                kld.moves++;
+              if ( kctx.entry->test( FL_BUSY ) )
+                kld.busy++;
               if ( kctx.entry->test( FL_SEGMENT_VALUE ) ) {
                 if ( kld.pos >= kld.jump ) {
                   ValueGeom geom;
@@ -930,8 +1026,10 @@ cli( void )
           kld.pos++;
         }
         xprintf( 0, "%lu keys, (%lu segment, %lu immediate, %lu none, "
-                 "%lu drops)\n", kld.key_count, kld.seg_values,
-                 kld.immed_values, kld.no_value, kld.drops );
+                 "%lu drops %lu moves %lu busy)\n",
+                 kld.key_count, kld.seg_values,
+                 kld.immed_values, kld.no_value, kld.drops,
+                 kld.moves, kld.busy );
         if ( kld.err_count > 0 )
           xprintf( 0, "%lu errors\n", kld.err_count );
         h = kld.hit[ 0 ];
@@ -1001,15 +1099,32 @@ cli( void )
         print_seg( atoi( key ) );
         break;
 
+      case 'z': /* play dead */
+        xprintf( 0, "suspend ctx_id %u, pid %u\n", ctx_id, my_pid );
+        map->ctx[ ctx_id ].ctx_pid = no_pid;
+        break;
+
+      case 'Z': /* unplay dead */
+        xprintf( 0, "unsuspend ctx_id %u, pid %u\n", ctx_id, my_pid );
+        map->ctx[ ctx_id ].ctx_pid = my_pid;
+        break;
+
+      case 'y': /* fix locks */
+        xprintf( 0, "fix_locks\n" );
+        fix_locks();
+        break;
+
       case 'q': /* quit */
         goto break_loop;
 
       default:
         xprintf( 0,
+        "acdfghijkmpqrstvx:\n"
         "put [+exp] key value  ; set key to value w/optional +expires\n"
         "get key               ; print key value as string\n"
         "hex key               ; print hex dump of key value\n"
         "int key               ; print int value of key (sz 2^N)\n"
+        "acquire key           ; acquire key and 'A key' to release\n"
         "f{get,int,hex} pos    ; print int value of ht[ pos ]\n"
         "drop key              ; drop key\n"
         "tomb key              ; tombstone key\n"
@@ -1020,6 +1135,8 @@ cli( void )
         "xamin seg#            ; dump segment data\n"
         "stats                 ; print stats\n"
         "contexts              ; print stats for all contexts\n"
+        "y                     ; scan for broken locks"
+        "z                     ; suspend pid (Z to unsuspend)"
         "read file             ; read input from file (R to read quietly)\n"
         "quit                  ; bye\n" );
         break;
@@ -1043,7 +1160,7 @@ main( int argc, char *argv[] )
     return 1;
   }*/
 
-  shm_attach( argc < 2 ? "posix:shm.test" : argv[ 1 ] );
+  shm_attach( argc < 2 ? "sysv2m:shm.test" : argv[ 1 ] );
   if ( map == NULL )
     return 2;
 

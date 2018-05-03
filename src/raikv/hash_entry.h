@@ -2,10 +2,6 @@
 #define __rai__raikv__hash_entry_h__
 
 /* also include stdint.h, string.h */
-#ifndef __rai__raikv__key_ctx_h__
-#include <raikv/key_ctx.h>
-#endif
-
 #ifndef __rai__raikv__atom_h__
 #include <raikv/atom.h>
 #endif
@@ -14,16 +10,97 @@
 #include <raikv/rela_ts.h>
 #endif
 
+#ifndef __rai__raikv__key_hash_h__
+#include <raikv/key_hash.h>
+#endif
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* choice of hash function matters less as memory latency dominates access,
+ * especially when the hash computation is hidden within mem prefetching */
+#ifndef KV_DEFAULT_HASH
+//#define KV_DEFAULT_HASH kv_hash_murmur64
+//#define KV_DEFAULT_HASH_STR "murmur64"
+//#define KV_DEFAULT_HASH kv_hash_xxh64
+//#define KV_DEFAULT_HASH_STR "xxh64"
+//#define KV_DEFAULT_HASH kv_hash_cityhash64
+//#define KV_DEFAULT_HASH_STR "cityhash64"
+//#define KV_DEFAULT_HASH kv_hash_citymur128
+//#define KV_DEFAULT_HASH_STR "citymur128"
+//#define KV_DEFAULT_HASH kv_hash_spooky128
+//#define KV_DEFAULT_HASH_STR "spooky128"
+#define KV_DEFAULT_HASH kv_hash_aes128
+#define KV_DEFAULT_HASH_STR "aes128"
+#endif
+
+typedef struct kv_key_frag_s {
+  uint16_t keylen;
+  union {
+    char buf[ 4 /* KEY_FRAG_SIZE-2 */]; /* sized to fit into HashEntry */
+    struct {
+      uint16_t b1, b2;
+    } x;
+  } u;
+} kv_key_frag_t;
+
+#ifdef __cplusplus
+} /* extern "C" */
+#endif
+
 #ifdef __cplusplus
 namespace rai {
 namespace kv {
+
+/* high bit in hash that signifies entity is not present
+   (not in the main ht[] index, that doesn't have tombstones) */
+static const uint64_t ZOMBIE64     = (uint64_t) 0x80000000 << 32,
+                      /*EMPTY_HASH   = 0, -- unused hash for empty */
+                      DROPPED_HASH = 1; /* unused hash for drops */
+
+static const size_t KEY_FRAG_SIZE = 6; /* must fit in HashEntry % 8 */
+
+/* KeyFragment is used everywhere internally, but externally KeyBufT<N>
+ * provides more key buffer space, since keylen=N could be large */
+struct KeyFragment : public kv_key_frag_s {
+
+  bool frag_equals( const KeyFragment &k ) const {
+    const uint32_t  j = this->keylen;
+    bool           eq = ( j == k.keylen );
+    if ( eq ) {
+      const uint8_t *p1 = (const uint8_t *) this->u.buf;
+      const uint8_t *p2 = (const uint8_t *) k.u.buf;
+      uint32_t i = 0;
+      while ( i + 4 <= j ) {
+        /* presuming keys are eq since hash is eq */
+        eq &= *(const uint32_t *) &p1[ i ] == *(const uint32_t *) &p2[ i ];
+        i += 4;
+      }
+      if ( ( j & 2 ) != 0 ) {
+        eq &= *(const uint16_t *) &p1[ i ] == *(const uint16_t *) &p2[ i ];
+        i += 2;
+      }
+      if ( ( j & 1 ) != 0 )
+        eq &= ( p1[ i ] == p2[ i ] );
+    }
+    return eq;
+  }
+  /* 127 bit hash */
+  void hash( uint64_t &seed,  uint64_t &seed2,
+             kv_hash128_func_t func = KV_DEFAULT_HASH ) {
+    func( this->u.buf, this->keylen, &seed, &seed2 );
+    if ( (seed &= ~ZOMBIE64) <= DROPPED_HASH) /* clear tombstone */
+      seed = DROPPED_HASH + 1; /* zero & one are reserved for empty, dropped */
+  }
+};
 
 /* flags attached to hash entry and msg value */
 enum KeyValueFlags {
   FL_NO_ENTRY        =   0x00, /* initialize */
   FL_ALIGNMENT       =   0x03, /* X=[0->3], data alignment: 2 << X, 2 -> 16 */
 #define FL_CUCKOO_SHIFT 2
-  FL_CUCKOO_INC      =   0x0f << FL_CUCKOO_SHIFT, /* X=[0->f], cuckoo hash num*/
+  FL_CUCKOO_INC      =   0x3c, /* 0x0f << FL_CUCKOO_SHIFT, X=[0->f], hash num */
   FL_SEGMENT_VALUE   =   0x40, /* value is in segment */
   FL_UPDATED         =   0x80, /* was updated recently, useful for persistence */
   FL_IMMEDIATE_VALUE =  0x100, /* has immediate data, no segment data used */
@@ -34,6 +111,15 @@ enum KeyValueFlags {
   FL_UPDATE_STAMP    = 0x2000, /* has update time stamp */
   FL_MOVED           = 0x4000, /* cuckoo move */
   FL_BUSY            = 0x8000  /* msg is busy */
+};
+
+struct ValueGeom {
+  /* a pointer to the value stored with a key, segment max 1 << 16 */
+  uint32_t segment;
+  uint64_t size, offset; /* off/size max 1 << ( 24 + table alignment(def=6) ) */
+  uint64_t serial;
+  void zero( void ) { this->segment = 0; this->size =
+                      this->offset = this->serial = 0; }
 };
 
 struct ValuePtr { /* packed 128 bit pointer with seg & off & size & serial */

@@ -161,8 +161,8 @@ main( int argc, char *argv[] )
 #endif
     if ( precount > 0 ) {
       kba  = KeyBufAligned::new_array( precount );
-      kctx = KeyCtx::new_array( map, ctx_id, NULL, precount );
-      mctx = MsgCtx::new_array( map, ctx_id, NULL, precount );
+      kctx = KeyCtx::new_array( *map, ctx_id, NULL, precount );
+      mctx = MsgCtx::new_array( *map, ctx_id, NULL, precount );
     }
     t1 = current_realtime_ns();
     cur = t1;

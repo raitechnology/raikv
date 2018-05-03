@@ -230,8 +230,7 @@ HashTab::update_load( void )
   this->hdr.last_entry_count = total_add - total_drop;
   this->hdr.ht_load          = (float) ht_load;
   this->hdr.value_load       = (float) value_load;
-  this->hdr.load_percent     = (uint8_t) ( max_load * 100.0 /
-                                           (double) this->hdr.critical_load );
+  this->hdr.load_percent     = (uint8_t) ( max_load * 100.0 + 0.5 );
 }
 
 MemDeltaCounters *

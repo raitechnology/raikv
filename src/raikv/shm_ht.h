@@ -142,13 +142,11 @@ struct FileHdr {
   /* spin locks using the lockq[] bits in the header, cacheline[ 13 ] at off 3 */
   bool ht_spin_trylock( const uint64_t id ) {
     volatile uint64_t &ptr = this->lockq[ ( id >> 6 ) % LOCKQ_SIZE ];
-    uint64_t set = (uint64_t) 1 << ( id & 63 ),
-             old_val, new_val;
-    if ( ( ptr & set ) == 0 ) {
-      old_val = ptr;
-      new_val = old_val | set;
+    uint64_t set     = (uint64_t) 1 << ( id & 63 ),
+             old_val = ptr,
+             new_val = old_val | set;
+    if ( ( old_val & set ) == 0 )
       return kv_sync_cmpxchg( &ptr, old_val, new_val );
-    }
     return false;
   }
   void ht_spin_lock( const uint64_t id ) {
@@ -156,9 +154,8 @@ struct FileHdr {
     uint64_t set = (uint64_t) 1 << ( id & 63 ),
              old_val, new_val;
     for (;;) {
-      while ( ( ptr & set ) != 0 )
+      while ( ( (old_val = ptr) & set ) != 0 )
         kv_sync_pause();
-      old_val = ptr;
       new_val = old_val | set;
       if ( kv_sync_cmpxchg( &ptr, old_val, new_val ) )
         return;
@@ -194,8 +191,10 @@ struct ThrCtxHdr {
   rand::xoroshiro128plus rng;       /* rand state initialized on creation */
 
   uint64_t               mcs_used,  /* bit mask of used locks (64 > MCS_CNT=53)*/
-                         seg_pref;  /* insert segment pref, bits from rng */
-  /* 16(int32) + 128(stat) + 16(rng) + 16(uint64) = 176 */
+                         seg_pref,  /* insert segment pref, bits from rng */
+                         pad1,
+                         pad2;
+  /* 16(int32) + 128(stat) + 16(rng) + 24(uint64) = 184 */
 };
 
 struct ThrCtxEntry : public ThrCtxHdr {
@@ -263,6 +262,13 @@ struct ThrCtxOwner { /* closure for MCSLock to find the owner of a lock */
   ThrMCSLock& owner( const uint64_t mcs_id ) {
     return this->ctx[ mcs_id >> ThrCtxEntry::MCS_SHIFT ].get_mcs_lock( mcs_id );
   }
+  bool is_active( uint64_t mcs_id ) {
+    uint32_t ctx_id = ( mcs_id >> ThrCtxEntry::MCS_SHIFT );
+    if ( ctx_id >= MAX_CTX_ID )
+      return false;
+    return ( this->ctx[ ctx_id ].mcs_used &
+             ( (uint64_t) 1 << ( mcs_id & ThrCtxEntry::MCS_MASK ) ) ) != 0;
+  }
 };
 
 struct HashHdr : public FileHdr {
@@ -288,9 +294,15 @@ public:
     return (HashEntry *) (void *)
       &((uint8_t *) ht_base)[ i * (uint64_t) hash_entry_size ];
   }
-  HashEntry *get_entry( uint64_t i,  uint32_t hash_entry_size ) {
+  HashEntry *get_entry( uint64_t i,  uint32_t hash_entry_size ) const {
     return get_entry( &((uint8_t *) (void *) this)[ HT_HDR_SIZE + HT_CTX_SIZE ],
                       i, hash_entry_size );
+  }
+  uint64_t get_entry_pos( const HashEntry *entry,
+                          uint32_t hash_entry_size ) const {
+    const uint8_t *start =
+      &((uint8_t *) (void *) this)[ HT_HDR_SIZE + HT_CTX_SIZE ];
+    return ( (const uint8_t *) (const void *) entry - start ) / hash_entry_size;
   }
   HashEntry *get_entry( uint64_t i ) {
     return this->get_entry( i, this->hdr.hash_entry_size );

@@ -94,22 +94,44 @@ struct CuckooPosition {
   /* start a new search */
   void start( void ) { this->buckets_off = 0; this->inc = 0; }
   /* go to next position, use alternate hashes when no more buckets  */
-  KeyStatus incr( uint64_t &pos,  const uint64_t chains,  bool &is_next_hash ) {
-    if ( ++this->buckets_off != this->kctx.cuckoo_buckets ) {
-      if ( ++pos == this->kctx.ht_size )
-        pos = 0;
+  KeyStatus acquire_incr( uint64_t &pos,  const uint64_t chains,
+                          bool &is_next_hash,  const bool have_drop ) {
+    if ( ++pos == this->kctx.ht_size )
+      pos = 0;
+    if ( ++this->buckets_off != this->kctx.cuckoo_buckets )
       return KEY_OK;
-    }
     is_next_hash = true;
-    return this->next_hash( pos, false );
+    KeyStatus status = this->next_hash( pos, false );
+    if ( status != KEY_PATH_SEARCH )
+      return status;
+    if ( this->trylock_cuckoo_path() ) {
+      if ( have_drop ) {
+        this->unlock_cuckoo_path();
+        return KEY_USE_DROP;
+      }
+      return KEY_PATH_SEARCH;
+    }
+    return KEY_BUSY;
+  }
+  KeyStatus acquire_incr_single_thread( uint64_t &pos,  const uint64_t chains,
+                                        const bool have_drop ) {
+    if ( ++pos == this->kctx.ht_size )
+      pos = 0;
+    if ( ++this->buckets_off != this->kctx.cuckoo_buckets )
+      return KEY_OK;
+    KeyStatus status = this->next_hash( pos, false );
+    if ( status != KEY_PATH_SEARCH )
+      return status;
+    if ( have_drop )
+      return KEY_USE_DROP;
+    return KEY_PATH_SEARCH;
   }
   /* the find() function uses this version */
   KeyStatus find_incr( uint64_t &pos,  const uint64_t chains ) {
-    if ( ++this->buckets_off != this->kctx.cuckoo_buckets ) {
-      if ( ++pos == this->kctx.ht_size )
-        pos = 0;
+    if ( ++pos == this->kctx.ht_size )
+      pos = 0;
+    if ( ++this->buckets_off != this->kctx.cuckoo_buckets )
       return KEY_OK;
-    }
     return this->next_hash( pos, true );
   }
   bool trylock_cuckoo_path( void ) { /* lock for cuckoo path search */
@@ -119,6 +141,8 @@ struct CuckooPosition {
     this->kctx.ht.hdr.ht_spin_unlock( this->kctx.key );
   }
   KeyStatus next_hash( uint64_t &pos,  const bool is_find );
+
+  void restore_inc( uint64_t pos );
 };
 
 struct CuckooAltHash {

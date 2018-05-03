@@ -16,20 +16,27 @@ struct LinearPosition {
   KeyCtx &kctx;
   LinearPosition( KeyCtx &kc ) : kctx( kc ) {}
 
-  KeyStatus incr( uint64_t &pos,  const uint64_t chains,  bool &is_next_hash ) {
+  KeyStatus acquire_incr( uint64_t &pos,  const uint64_t chains,
+                          bool &is_next_hash,  const bool have_drop ) {
+    return this->find_incr( pos, chains );
+  }
+
+  KeyStatus acquire_incr_single_thread( uint64_t &pos,  const uint64_t chains,
+                                        const bool have_drop ) {
     return this->find_incr( pos, chains );
   }
 
   KeyStatus find_incr( uint64_t &pos,  const uint64_t chains ) {
-    if ( chains != this->kctx.max_chains ) {
-      if ( ++pos == this->kctx.ht_size )
-        pos = 0;
+    if ( ++pos == this->kctx.ht_size )
+      pos = 0;
+    if ( chains != this->kctx.max_chains )
       return KEY_OK;
-    }
     if ( chains == this->kctx.ht_size )
       return KEY_HT_FULL;
     return KEY_MAX_CHAINS;
   }
+
+  void restore_inc( uint64_t pos ) {}
 };
 }
 }
@@ -43,6 +50,15 @@ KeyCtx::acquire_linear_probe( const uint64_t k,  const uint64_t start_pos )
   LinearPosition lp( *this );
 
   return this->acquire<LinearPosition, true>( k, start_pos, lp );
+}
+
+KeyStatus
+KeyCtx::acquire_linear_probe_single_thread( const uint64_t k,
+                                            const uint64_t start_pos )
+{
+  LinearPosition lp( *this );
+
+  return this->acquire_single_thread<LinearPosition>( k, start_pos, lp );
 }
 
 /* similar to acquire() but bail if can't acquire without getting in line */
@@ -62,6 +78,15 @@ KeyCtx::find_linear_probe( const uint64_t k,  const uint64_t start_pos,
   LinearPosition lp( *this );
 
   return this->find<LinearPosition>( k, start_pos, spin_wait, lp );
+}
+
+KeyStatus
+KeyCtx::find_linear_probe_single_thread( const uint64_t k,
+                                         const uint64_t start_pos )
+{
+  LinearPosition lp( *this );
+
+  return this->find_single_thread<LinearPosition>( k, start_pos, lp );
 }
 
 /* 32b aligned hash entry fetch, zero if slot is empty */
@@ -143,7 +168,7 @@ KeyCtx::fetch_position( const uint64_t i,  const uint64_t spin_wait )
     }
   }
 }
-
+#if 0
 /* remove slot from table and mark msg free
  * this must walk to the end of the chain and find the last element that could
  * replace the dropped entry and move it
@@ -182,7 +207,7 @@ continue_from_save:;
   cur_mcs_id = ctx.next_mcs_lock();
   for (;;) {
     el = this->ht.get_entry( i, this->hash_entry_size );
-    h  = ctx.get_mcs_lock( cur_mcs_id ).acquire( el->hash, ZOMBIE64,
+    h  = ctx.get_mcs_lock( cur_mcs_id ).acquire( &el->hash, ZOMBIE64,
                                                  cur_mcs_id, spin, closure );
     if ( h == 0 )
       break;
@@ -209,7 +234,7 @@ continue_from_save:;
       /* the new save position is closer to the end of the chain */
       if ( save_h != 0 ) {
         /* release old match, found a better one */
-        ctx.get_mcs_lock( save_mcs_id ).release( save->hash, 0, ZOMBIE64,
+        ctx.get_mcs_lock( save_mcs_id ).release( &save->hash, 0, ZOMBIE64,
                                                  save_mcs_id, spin, closure );
         /* swap mcs_id */
         tmp_mcs_id  = save_mcs_id;
@@ -225,7 +250,7 @@ continue_from_save:;
       save     = el;
     }
     else { /* the position does not fit as a replacement */
-      ctx.get_mcs_lock( cur_mcs_id ).release( el->hash, h, ZOMBIE64,
+      ctx.get_mcs_lock( cur_mcs_id ).release( &el->hash, h, ZOMBIE64,
                                               cur_mcs_id, spin, closure );
     }
     if ( ++i == this->ht_size )
@@ -252,12 +277,12 @@ continue_from_save:;
     save_h = 0;
   }
   /* release base entry, with new hash, if any */
-  ctx.get_mcs_lock( base_mcs_id ).release( base->hash, save_h, ZOMBIE64,
+  ctx.get_mcs_lock( base_mcs_id ).release( &base->hash, save_h, ZOMBIE64,
                                            base_mcs_id, spin, closure );
   ctx.release_mcs_lock( base_mcs_id );
 
   /* end of chain is a zero, release that */
-  ctx.get_mcs_lock( cur_mcs_id ).release( el->hash, 0, ZOMBIE64,
+  ctx.get_mcs_lock( cur_mcs_id ).release( &el->hash, 0, ZOMBIE64,
                                           cur_mcs_id, spin, closure );
   ctx.release_mcs_lock( cur_mcs_id );
 
@@ -276,7 +301,7 @@ continue_from_save:;
       goto continue_from_save;
     }
     /* save is at the end of the chain, zero hash, it moved */
-    ctx.get_mcs_lock( save_mcs_id ).release( save->hash, 0, ZOMBIE64,
+    ctx.get_mcs_lock( save_mcs_id ).release( &save->hash, 0, ZOMBIE64,
                                              save_mcs_id, spin, closure );
     ctx.release_mcs_lock( save_mcs_id );
   }
@@ -287,4 +312,4 @@ continue_from_save:;
   //ctx.incr_drop();  tombstone does it
   return KEY_OK;
 }
-
+#endif

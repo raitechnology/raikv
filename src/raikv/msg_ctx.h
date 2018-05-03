@@ -210,8 +210,8 @@ struct MsgCtx {
   void         * prefetch_ptr;
   ValueGeom      geom;    /* value location */
 
-  MsgCtx( HashTab *t,  uint32_t id );
-  MsgCtx( HashTab *t,  uint32_t id,  uint32_t sz );
+  MsgCtx( HashTab &t,  uint32_t id );
+  MsgCtx( HashTab &t,  uint32_t id,  uint32_t sz );
   ~MsgCtx() {}
   /* placement new to deal with broken c++ new[], for example:
    * MsgCtxBuf kctxbuf[ 8 ];
@@ -221,7 +221,7 @@ struct MsgCtx {
    * if ( kctx == NULL ) fatal( "no memory" );
    * delete kctx; // same as free( kctx )
    */
-  static MsgCtx * new_array( HashTab *t,  uint32_t id,  void *b,  size_t bsz );
+  static MsgCtx * new_array( HashTab &t,  uint32_t id,  void *b,  size_t bsz );
 
   void * operator new( size_t sz, void *ptr ) { return ptr; }
   /* no allocated objects within this structure */

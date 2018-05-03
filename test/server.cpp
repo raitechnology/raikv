@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <signal.h>
 #include <fcntl.h>
 #include <math.h>
 #include <ctype.h>
@@ -51,8 +52,8 @@ print_ops( HashTab &map,  HashCounters &ops,  HashCounters &tot,
          mstring( (double) ops.rd / ival, buf2, 1000 ),
          mstring( (double) ops.wr / ival, buf3, 1000 ),
          mstring( (double) ops.spins / ival, buf4, 1000 ),
-         (uint32_t) ( map.hdr.ht_load * 100.0 ),
-         (uint32_t) ( map.hdr.value_load * 100.0 ),
+         (uint32_t) ( map.hdr.ht_load * 100.0 + 0.5 ),
+         (uint32_t) ( map.hdr.value_load * 100.0 + 0.5 ),
          mstring( tot.add - tot.drop, buf5, 1000 ),
          mstring( (double) chg.move_msgs / ival, buf6, 1000 ),
          mstring( (double) ops.htevict / ival, buf7, 1000 ),
@@ -86,6 +87,63 @@ print_mem( HashTab &map,  HashCounters &ops,  MemCounters &chg,
          mstring( tot.evict_size, buf7, 1024 ) );
 }
 #endif
+
+void
+check_thread_ctx( HashTab &map )
+{
+  uint32_t hash_entry_size = map.hdr.hash_entry_size;
+  for ( uint32_t ctx_id = 1; ctx_id < MAX_CTX_ID; ctx_id++ ) {
+    uint32_t pid = map.ctx[ ctx_id ].ctx_pid;
+    if ( pid == 0 ||
+         map.ctx[ ctx_id ].ctx_id == KV_NO_CTX_ID ||
+         ::kill( pid, 0 ) == 0 )
+      continue;
+
+    uint64_t used, recovered = 0;
+    if ( (used = map.ctx[ ctx_id ].mcs_used) != 0 ) {
+      for ( uint32_t id = 0; id < 64; id++ ) {
+        if ( ( used & ( (uint64_t) 1 << id ) ) == 0 )
+          continue;
+        uint64_t mcs_id = ( ctx_id << ThrCtxEntry::MCS_SHIFT ) | id;
+        ThrMCSLock &mcs = map.ctx[ ctx_id ].get_mcs_lock( mcs_id );
+        MCSStatus status;
+        printf(
+        "ctx %u: pid %u, mcs %u, val 0x%lx, lock 0x%lx, next 0x%lx, link %lu\n",
+                 ctx_id, pid, id, mcs.val.val, mcs.lock.val, mcs.next.val,
+                 mcs.lock_id );
+        if ( mcs.lock_id != 0 ) {
+          HashEntry *el = map.get_entry( mcs.lock_id - 1,
+                                         map.hdr.hash_entry_size );
+          ThrCtxOwner  closure( map.ctx );
+          status = mcs.recover_lock( el->hash, ZOMBIE64, mcs_id, closure );
+          if ( status == MCS_OK ) {
+            ValueCtr &ctr = el->value_ctr( hash_entry_size );
+            if ( ctr.seal == 0 || el->seal != ctr.seriallo ) {
+              ctr.seal = 1; /* these are lost with the context thread */
+              el->seal = ctr.seriallo;
+            }
+            status = mcs.recover_unlock( el->hash, ZOMBIE64, mcs_id, closure );
+            if ( status == MCS_OK ) {
+              printf( "mcs_id %u:%u recovered\n", ctx_id, id );
+              recovered |= ( (uint64_t) 1 << id );
+            }
+          }
+          if ( status != MCS_OK ) {
+            printf( "mcs_id %u:%u status %s\n", ctx_id, id,
+                    status == MCS_WAIT ? "MCS_WAIT" : "MCS_INACTIVE" );
+          }
+        }
+      }
+      map.ctx[ ctx_id ].mcs_used &= ~recovered;
+    }
+    if ( used != recovered ) {
+      printf( "ctx %u still has locks\n", ctx_id );
+    }
+    else {
+      map.detach_ctx( ctx_id );
+    }
+  }
+}
 
 int
 main( int argc, char *argv[] )
@@ -191,25 +249,20 @@ main( int argc, char *argv[] )
   MemCounters  chg;
   MemCounters  mtot;
   char         junk[ 8 ];
-  ssize_t      j   = 0;
+  ssize_t      j;
   uint32_t     ctr = 0;
   double       mono = 0,
                ival = 0,
                tmp  = 0;
-  bool         first_time = true;
 
   sighndl.install();
   fcntl( 0, F_SETFL, fcntl( 0, F_GETFL, 0 ) | O_NONBLOCK );
-  for (;;) {
-    if ( first_time ) {
-      map->update_load();
-      mono = current_monotonic_coarse_s();
-      ival = (double) ( map->hdr.current_stamp - map->hdr.create_stamp ) /
-             NANOSF;
-      first_time = false;
-      j = 1;
-    }
-    else {
+  map->update_load();
+  mono = current_monotonic_coarse_s();
+  ival = (double) ( map->hdr.current_stamp - map->hdr.create_stamp ) /
+         NANOSF;
+  for ( j = 1; ; ) {
+    if ( j == 0 ) {
       for (;;) {
         usleep( 50 * 1000 );
         if ( sighndl.signaled )
@@ -222,16 +275,17 @@ main( int argc, char *argv[] )
           break;
         }
       }
+      check_thread_ctx( *map );
       map->update_load();
     }
     bool b = ( mstats != NULL && map->get_mem_deltas( mstats, chg, mtot ) );
     b |= ( map->get_ht_deltas( stats, ops, tot ) );
     if ( j > 0 ) {
       print_map_geom( map, MAX_CTX_ID );
-      j   = 0;
       b   = true;
       ctr = 0;
     }
+    j = 0;
     if ( b )
       print_ops( *map, ops, tot, chg, mtot, ival, ctr );
 #if 0
