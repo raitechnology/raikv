@@ -2,13 +2,9 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdint.h>
-#include <inttypes.h>
 
 #include <raikv/shm_ht.h>
-/* Most of this is derived from Google sources,
- *
- * Copyright (c) 2011 Google, Inc.
- * Permission is hereby granted, free of charge, to any person obtaining a copy
+/* Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to
  * deal in the Software without restriction, including without limitation the
  * rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
@@ -21,9 +17,9 @@
  * THE SOFTWARE IS PROVIDED "AS IS", yada yada
  *
  * MurmurHash, by Austin Appleby
- * xxh64, by Yann Collet
  * CityHash, by Geoff Pike and Jyrki Alakuijala
  * SpookyHash, by Bob Jenkins, C version Andi Kleen
+ * aes128, falkhash derivative, by gamozolabs
  */
 
 uint32_t
@@ -122,116 +118,107 @@ kv_hash_murmur64( const void *p, size_t sz, uint64_t seed )
 {
   return MurmurHash64A( p, sz, seed );
 }
+
+
+static inline uint64_t
+MH_rotl64(uint64_t x, int r) { return ((x << r) | (x >> (64 - r))); }
+
+static inline uint64_t
+MH_fmix64 ( uint64_t k )
+{
+  k ^= k >> 33;
+  k *= _U64(0xff51afd7,0xed558ccd);
+  k ^= k >> 33;
+  k *= _U64(0xc4ceb9fe,0x1a85ec53);
+  k ^= k >> 33;
+
+  return k;
+}
+
+static inline void
+MurmurHash3_x64_128 ( const void * key, const size_t len, uint64_t *x1,
+                      uint64_t *x2 )
+{
+  const size_t nblocks = len / 16;
+
+  uint64_t h1 = *x1;
+  uint64_t h2 = *x2;
+
+  const uint64_t c1 = _U64(0x87c37b91,0x114253d5);
+  const uint64_t c2 = _U64(0x4cf5ad43,0x2745937f);
+
+  //----------
+  // body
+  const uint64_t * blocks = (const uint64_t *) key;
+  size_t i;
+
+  for(i = 0; i < nblocks; i++)
+  {
+    uint64_t k1 = blocks[i*2+0];
+    uint64_t k2 = blocks[i*2+1];
+
+    k1 *= c1; k1  = MH_rotl64(k1,31); k1 *= c2; h1 ^= k1;
+
+    h1 = MH_rotl64(h1,27); h1 += h2; h1 = h1*5+0x52dce729;
+
+    k2 *= c2; k2  = MH_rotl64(k2,33); k2 *= c1; h2 ^= k2;
+
+    h2 = MH_rotl64(h2,31); h2 += h1; h2 = h2*5+0x38495ab5;
+  }
+
+  //----------
+  // tail
+  const uint8_t * tail = &((const uint8_t*) key)[ nblocks*16 ];
+
+  uint64_t k1 = 0;
+  uint64_t k2 = 0;
+
+  switch(len & 15)
+  {
+  case 15: k2 ^= ((uint64_t)tail[14]) << 48;
+  case 14: k2 ^= ((uint64_t)tail[13]) << 40;
+  case 13: k2 ^= ((uint64_t)tail[12]) << 32;
+  case 12: k2 ^= ((uint64_t)tail[11]) << 24;
+  case 11: k2 ^= ((uint64_t)tail[10]) << 16;
+  case 10: k2 ^= ((uint64_t)tail[ 9]) << 8;
+  case  9: k2 ^= ((uint64_t)tail[ 8]) << 0;
+           k2 *= c2; k2  = MH_rotl64(k2,33); k2 *= c1; h2 ^= k2;
+
+  case  8: k1 ^= ((uint64_t)tail[ 7]) << 56;
+  case  7: k1 ^= ((uint64_t)tail[ 6]) << 48;
+  case  6: k1 ^= ((uint64_t)tail[ 5]) << 40;
+  case  5: k1 ^= ((uint64_t)tail[ 4]) << 32;
+  case  4: k1 ^= ((uint64_t)tail[ 3]) << 24;
+  case  3: k1 ^= ((uint64_t)tail[ 2]) << 16;
+  case  2: k1 ^= ((uint64_t)tail[ 1]) << 8;
+  case  1: k1 ^= ((uint64_t)tail[ 0]) << 0;
+           k1 *= c1; k1  = MH_rotl64(k1,31); k1 *= c2; h1 ^= k1;
+  };
+
+  //----------
+  // finalization
+
+  h1 ^= len; h2 ^= len;
+
+  h1 += h2;
+  h2 += h1;
+
+  h1 = MH_fmix64(h1);
+  h2 = MH_fmix64(h2);
+
+  h1 += h2;
+  h2 += h1;
+
+  *x1 = h1;
+  *x2 = h2;
+}
+
+void
+kv_hash_murmur128( const void *p, size_t sz, uint64_t *h1, uint64_t *h2 )
+{
+  MurmurHash3_x64_128 ( p, sz, h1, h2 );
+}
 #endif /* USE_KV_MURMUR_HASH */
-
-#ifdef USE_KV_XXH_HASH
-static inline uint64_t
-XXH_rotl64(uint64_t x, int r) { return ((x << r) | (x >> (64 - r))); }
-
-static const uint64_t PRIME64_1 = _U64( 0x9e3779b1, 0x85ebca87 );
-static const uint64_t PRIME64_2 = _U64( 0xc2b2ae3d, 0x27d4eb4f );
-static const uint64_t PRIME64_3 = _U64( 0x165667b1, 0x9e3779f9 );
-static const uint64_t PRIME64_4 = _U64( 0x85ebca77, 0xc2b2ae63 );
-static const uint64_t PRIME64_5 = _U64( 0x27d4eb2f, 0x165667c5 );
-
-static inline uint64_t
-XXH64_round(uint64_t acc, uint64_t input)
-{
-    acc += input * PRIME64_2;
-    acc  = XXH_rotl64(acc, 31);
-    acc *= PRIME64_1;
-    return acc;
-}
-
-static inline uint64_t
-XXH64_mergeRound(uint64_t acc, uint64_t val)
-{
-    val  = XXH64_round(0, val);
-    acc ^= val;
-    acc  = acc * PRIME64_1 + PRIME64_4;
-    return acc;
-}
-
-static inline uint64_t
-XXH_get64bits(const uint8_t *p)
-{
-    return *(uint64_t *) p;
-}
-
-static inline uint64_t
-XXH_get32bits(const uint8_t *p)
-{
-    return (uint64_t) *(uint32_t *) p;
-}
-
-static inline uint64_t
-XXH64_hash(const void* input, size_t len, uint64_t seed)
-{
-    const uint8_t* p = (const uint8_t*)input;
-    const uint8_t* bEnd = p + len;
-    uint64_t h64;
-
-    if (len>=32) {
-        const uint8_t* const limit = bEnd - 32;
-        uint64_t v1 = seed + PRIME64_1 + PRIME64_2;
-        uint64_t v2 = seed + PRIME64_2;
-        uint64_t v3 = seed + 0;
-        uint64_t v4 = seed - PRIME64_1;
-
-        do {
-            v1 = XXH64_round(v1, XXH_get64bits(p)); p+=8;
-            v2 = XXH64_round(v2, XXH_get64bits(p)); p+=8;
-            v3 = XXH64_round(v3, XXH_get64bits(p)); p+=8;
-            v4 = XXH64_round(v4, XXH_get64bits(p)); p+=8;
-        } while (p<=limit);
-
-        h64 = XXH_rotl64(v1, 1) + XXH_rotl64(v2, 7) +
-              XXH_rotl64(v3, 12) + XXH_rotl64(v4, 18);
-        h64 = XXH64_mergeRound(h64, v1);
-        h64 = XXH64_mergeRound(h64, v2);
-        h64 = XXH64_mergeRound(h64, v3);
-        h64 = XXH64_mergeRound(h64, v4);
-
-    } else {
-        h64  = seed + PRIME64_5;
-    }
-
-    h64 += (uint64_t) len;
-
-    while (p+8<=bEnd) {
-        uint64_t const k1 = XXH64_round(0, XXH_get64bits(p));
-        h64 ^= k1;
-        h64  = XXH_rotl64(h64,27) * PRIME64_1 + PRIME64_4;
-        p+=8;
-    }
-
-    if (p+4<=bEnd) {
-        h64 ^= (uint64_t)(XXH_get32bits(p)) * PRIME64_1;
-        h64 = XXH_rotl64(h64, 23) * PRIME64_2 + PRIME64_3;
-        p+=4;
-    }
-
-    while (p<bEnd) {
-        h64 ^= (*p) * PRIME64_5;
-        h64 = XXH_rotl64(h64, 11) * PRIME64_1;
-        p++;
-    }
-
-    h64 ^= h64 >> 33;
-    h64 *= PRIME64_2;
-    h64 ^= h64 >> 29;
-    h64 *= PRIME64_3;
-    h64 ^= h64 >> 32;
-
-    return h64;
-}
-
-uint64_t
-kv_hash_xxh64( const void *p, size_t sz, uint64_t seed )
-{
-  return XXH64_hash( p, sz, seed );
-}
-#endif /* USE_KV_XXH_HASH */
 
 #ifdef USE_KV_CITY_HASH
 static inline uint64_t Fetch64(const void *p) {
@@ -859,80 +846,80 @@ kv_hash_spooky128( const void *p, size_t sz, uint64_t *h1, uint64_t *h2 )
 #include <immintrin.h>
 #include <wmmintrin.h>
 
-/* This is a simple mix of city and aes. When used with kv hashing, it has
- * collision properties close to cityhash but has more hash bits and the
- * speed is similar
-
-cityhash w/ints @ 90%
-90% 2+4: 0:55987(49.0), 1:16308(63.3), 2:9342(71.5), 3:7306(77.8),
-114.7ns  4:9445(86.1), 5:6041(91.4), 6:4987(95.8), 7:4840 max=7
-
-cityhash w/hungarian wiki tokens @ 80%
-80% 2+4: 0:18425429(56.5), 1:5254684(72.7), 2:2662151(80.8), 3:1703292(86.1),
-         4:1947581(92.1), 5:1123486(95.5), 6:807750(98.0), 7:659065 max=7
-
-aes w/ints @ 90%
-90% 2+4: 0:55655(48.7), 1:16289(63.0), 2:9551(71.3), 3:7452(77.8),
-112.3ns  4:9461(86.1), 5:5922(91.3), 6:5027(95.7), 7:4899 max=7
-
-aes w/hungarian wiki tokens @ 80%
-80% 2+4: 0:18422163(56.5), 1:5258965(72.7), 2:2664351(80.9), 3:1702533(86.1),
-         4:1946539(92.1), 5:1121497(95.5), 6:806933(98.0), 7:660457 max=7
-*/
-#define ROT64( x, y ) ( ( x << y ) | ( x >> ( 64 - y ) ) )
-#define KCONST _U64( 0x9ae16a3b, 0x2f90404f )
+/* based on falkhash (https://github.com/gamozolabs/falkhash)
+ * 3 rounds of AES, similar to go internal:
+ * https://github.com/golang/go/blob/master/src/runtime/asm_amd64.s#L886 */
 static void
-hash_aes128( const void *p, const size_t sz, uint64_t *h1, uint64_t *h2 )
+hash_aes128( const void *p, size_t sz, uint64_t *x1, uint64_t *x2 )
 {
-  __m128i m, digest = _mm_set_epi64x( *h1, *h2 );
-  const uint8_t *e = &((const uint8_t *) p)[ sz ];
+  __m128i data[ 8 ], hash, seed = _mm_set_epi64x( *x1 + sz, *x2 );
+  size_t i = 0;
 
-  for ( const uint8_t *b = (const uint8_t *) p; b < e; b += 16 ) {
-    uint64_t lo = 0, hi = 0, mul, c, d;
-    switch ( e - b ) {
-      default:
-        hi = *(uint64_t *) (void *) &b[ 8 ];
-        lo = *(uint64_t *) (void *) &b[ 0 ];
-        break;
-      case 15: hi |= ( (uint64_t) b[ 14 ] ) << 56;
-      case 14: lo |= ( (uint64_t) b[ 13 ] ) << 48;
-      case 13: hi |= ( (uint64_t) b[ 12 ] ) << 48;
-      case 12:
-        lo |= ( (uint64_t) *(const uint32_t *) (void *) &b[ 8 ] ) << 16;
-        hi |= ( (uint64_t) *(const uint32_t *) (void *) &b[ 4 ] ) << 16;
-        lo |= (uint64_t) *(const uint16_t *) (void *) &b[ 2 ];
-        hi |= (uint64_t) *(const uint16_t *) (void *) &b[ 0 ];
-        break;
-      case 11: hi |= ( (uint64_t) b[ 10 ] ) << 40;
-      case 10: lo |= ( (uint64_t) b[ 9 ] ) << 32;
-      case 9: hi |= ( (uint64_t) b[ 8 ] ) << 32;
-      case 8:
-        lo |= (uint64_t) *(const uint32_t *) (void *) &b[ 4 ];
-        hi |= (uint64_t) *(const uint32_t *) (void *) &b[ 0 ];
-        break;
-      case 7: hi |= ( (uint64_t) b[ 6 ] ) << 24;
-      case 6: lo |= ( (uint64_t) b[ 5 ] ) << 16;
-      case 5: hi |= ( (uint64_t) b[ 4 ] ) << 16;
-      case 4:
-        lo |= (uint64_t) *(const uint16_t *) (void *) &b[ 2 ];
-        hi |= (uint64_t) *(const uint16_t *) (void *) &b[ 0 ];
-        break;
-      case 3: hi |= ( (uint64_t) b[ 2 ] ) << 8;
-      case 2: lo |= ( (uint64_t) b[ 1 ] );
-      case 1: hi |= ( (uint64_t) b[ 0 ] );
-        break;
+  const uint8_t *e = &((const uint8_t *) p)[ sz ];
+  const uint8_t *b = (const uint8_t *) p;
+  hash = seed;
+  if ( b != e ) {
+    do {
+      uint64_t lo = 0, hi = 0;
+      switch ( e - b ) {
+	default:
+	  hi = *(uint64_t *) (void *) &b[ 8 ];
+	  lo = *(uint64_t *) (void *) &b[ 0 ];
+	  break;
+	case 15: hi |= ( (uint64_t) b[ 14 ] ) << 56;
+	case 14: lo |= ( (uint64_t) b[ 13 ] ) << 48;
+	case 13: hi |= ( (uint64_t) b[ 12 ] ) << 48;
+	case 12:
+	  lo |= ( (uint64_t) *(const uint32_t *) (void *) &b[ 8 ] ) << 16;
+	  hi |= ( (uint64_t) *(const uint32_t *) (void *) &b[ 4 ] ) << 16;
+	  lo |= (uint64_t) *(const uint16_t *) (void *) &b[ 2 ];
+	  hi |= (uint64_t) *(const uint16_t *) (void *) &b[ 0 ];
+	  break;
+	case 11: hi |= ( (uint64_t) b[ 10 ] ) << 40;
+	case 10: lo |= ( (uint64_t) b[ 9 ] ) << 32;
+	case 9: hi |= ( (uint64_t) b[ 8 ] ) << 32;
+	case 8:
+	  lo |= (uint64_t) *(const uint32_t *) (void *) &b[ 4 ];
+	  hi |= (uint64_t) *(const uint32_t *) (void *) &b[ 0 ];
+	  break;
+	case 7: hi |= ( (uint64_t) b[ 6 ] ) << 24;
+	case 6: lo |= ( (uint64_t) b[ 5 ] ) << 16;
+	case 5: hi |= ( (uint64_t) b[ 4 ] ) << 16;
+	case 4:
+	  lo |= (uint64_t) *(const uint16_t *) (void *) &b[ 2 ];
+	  hi |= (uint64_t) *(const uint16_t *) (void *) &b[ 0 ];
+	  break;
+	case 3: hi |= ( (uint64_t) b[ 2 ] ) << 8;
+	case 2: lo |= ( (uint64_t) b[ 1 ] );
+	case 1: hi |= ( (uint64_t) b[ 0 ] );
+	  break;
+      }
+      data[ i ] = _mm_xor_si128( _mm_set_epi64x( hi, lo ), seed );
+      if ( ++i == 8 ) {
+	while ( i > 1 ) {
+	  data[ 0 ] = _mm_aesenc_si128( data[ 0 ], data[ --i ] );
+	  data[ 0 ] = _mm_aesenc_si128( data[ 0 ], data[ i ] );
+        }
+	data[ 0 ] = _mm_aesenc_si128( data[ 0 ], seed );
+	hash = _mm_aesenc_si128( hash, data[ 0 ] );
+	i = 0;
+      }
+      b += 16;
+    } while ( b < e );
+    while ( i > 1 ) {
+      data[ 0 ] = _mm_aesenc_si128( data[ 0 ], data[ --i ] );
+      data[ 0 ] = _mm_aesenc_si128( data[ 0 ], data[ i ] );
     }
-    mul = KCONST + ( e - b ) * 2;
-    lo += KCONST;
-    c = ROT64( hi, 37 ) * mul + lo;
-    d = ( ROT64( lo, 25 ) + hi ) * mul;
-    m = _mm_set_epi64x( c, d );
-    m = _mm_xor_si128( m, digest );
-    m = _mm_aesenc_si128( m, digest );
-    digest = _mm_aesenclast_si128( m, digest );
   }
-  *h1 = _mm_extract_epi64( digest, 0 );
-  *h2 = _mm_extract_epi64( digest, 1 );
+  else {
+    data[ 0 ] = seed;
+  }
+  hash = _mm_aesenc_si128( hash, data[ 0 ] );
+  hash = _mm_aesenc_si128( hash, seed );
+  hash = _mm_aesenc_si128( hash, seed );
+  hash = _mm_aesenc_si128( hash, seed );
+  *x1 = _mm_extract_epi64( hash, 0 );
+  *x2 = _mm_extract_epi64( hash, 1 );
 }
 
 uint64_t

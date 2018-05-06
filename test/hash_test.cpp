@@ -108,7 +108,7 @@ main( int argc, char *argv[] )
   if ( argc == 1 ) {
 cmd_error:;
     fprintf( stderr, "%s (int|rand|incr) "
-             "(citymur|aes|spooky) (keylen)\n",
+             "(citymur|aes|spooky|murmur) (keylen)\n",
              argv[ 0 ] );
     return 1;
   }
@@ -122,36 +122,24 @@ cmd_error:;
   printf( "content=%s ", fill->name );
   if ( argc > 2 )
     name = argv[ 2 ];
-#ifdef USE_KV_CITY_HASH
-  if ( ::strcmp( name, "citymur" ) == 0 ) {
+#if defined( USE_KV_CITY_HASH )
+  if ( ::strcmp( name, "citymur" ) == 0 )
     func = kv_hash_citymur128;
-    printf( "hash=citymur64 " );
-  }
   else
 #endif
-#if 0 && defined( USE_KV_XXH_HASH )
-  if ( ::strcmp( name, "xxh" ) == 0 )
-    func = kv_hash_xxh64;
-  else
-#endif
-#if 0 && defined( USE_KV_CITY_HASH )
-  if ( ::strcmp( name, "city" ) == 0 )
-    func = kv_hash_cityhash64;
-  else
-#endif
-#ifdef USE_KV_AES_HASH
+#if defined( USE_KV_AES_HASH )
   if ( ::strcmp( name, "aes" ) == 0 )
     func = kv_hash_aes128;
   else
 #endif
-#ifdef USE_KV_SPOOKY_HASH
+#if defined( USE_KV_SPOOKY_HASH )
   if ( ::strcmp( name, "spooky" ) == 0 )
     func = kv_hash_spooky128;
   else
 #endif
-#if 0 && defined( USE_KV_MURMUR_HASH )
+#if defined( USE_KV_MURMUR_HASH )
   if ( ::strcmp( name, "murmur" ) == 0 )
-    func = kv_hash_murmur64;
+    func = kv_hash_murmur128;
 #endif
   if ( func == NULL ) {
     fprintf( stderr, "hash %s not available\n", name );
