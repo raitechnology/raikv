@@ -21,12 +21,12 @@ extern "C" {
 /* choice of hash function matters less as memory latency dominates access,
  * especially when the hash computation is hidden within mem prefetching */
 #ifndef KV_DEFAULT_HASH
-//#define KV_DEFAULT_HASH kv_hash_murmur128
-//#define KV_DEFAULT_HASH_STR "murmur128"
-//#define KV_DEFAULT_HASH kv_hash_citymur128
-//#define KV_DEFAULT_HASH_STR "citymur128"
-//#define KV_DEFAULT_HASH kv_hash_spooky128
-//#define KV_DEFAULT_HASH_STR "spooky128"
+/*#define KV_DEFAULT_HASH kv_hash_murmur128*/
+/*#define KV_DEFAULT_HASH_STR "murmur128"*/
+/*#define KV_DEFAULT_HASH kv_hash_citymur128*/
+/*#define KV_DEFAULT_HASH_STR "citymur128"*/
+/*#define KV_DEFAULT_HASH kv_hash_spooky128*/
+/*#define KV_DEFAULT_HASH_STR "spooky128"*/
 #define KV_DEFAULT_HASH kv_hash_aes128
 #define KV_DEFAULT_HASH_STR "aes128"
 #endif

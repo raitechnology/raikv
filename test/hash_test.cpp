@@ -107,8 +107,20 @@ main( int argc, char *argv[] )
 
   if ( argc == 1 ) {
 cmd_error:;
-    fprintf( stderr, "%s (int|rand|incr) "
-             "(citymur|aes|spooky|murmur) (keylen)\n",
+    fprintf( stderr, "%s (int rand incr) ("
+#if defined( USE_KV_CITY_HASH )
+             "citymur "
+#endif
+#if defined( USE_KV_AES_HASH )
+             "aes "
+#endif
+#if defined( USE_KV_SPOOKY_HASH )
+             "spooky "
+#endif
+#if defined( USE_KV_MURMUR_HASH )
+             "murmur"
+#endif
+             ") (keylen)\n",
              argv[ 0 ] );
     return 1;
   }

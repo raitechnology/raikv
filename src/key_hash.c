@@ -140,22 +140,24 @@ MurmurHash3_x64_128 ( const void * key, const size_t len, uint64_t *x1,
                       uint64_t *x2 )
 {
   const size_t nblocks = len / 16;
+  const uint8_t * tail = &((const uint8_t*) key)[ nblocks*16 ];
 
   uint64_t h1 = *x1;
   uint64_t h2 = *x2;
+  uint64_t k1, k2;
 
   const uint64_t c1 = _U64(0x87c37b91,0x114253d5);
   const uint64_t c2 = _U64(0x4cf5ad43,0x2745937f);
 
-  //----------
-  // body
+  /*----------
+  /  body   */
   const uint64_t * blocks = (const uint64_t *) key;
   size_t i;
 
   for(i = 0; i < nblocks; i++)
   {
-    uint64_t k1 = blocks[i*2+0];
-    uint64_t k2 = blocks[i*2+1];
+    k1 = blocks[i*2+0];
+    k2 = blocks[i*2+1];
 
     k1 *= c1; k1  = MH_rotl64(k1,31); k1 *= c2; h1 ^= k1;
 
@@ -166,12 +168,10 @@ MurmurHash3_x64_128 ( const void * key, const size_t len, uint64_t *x1,
     h2 = MH_rotl64(h2,31); h2 += h1; h2 = h2*5+0x38495ab5;
   }
 
-  //----------
-  // tail
-  const uint8_t * tail = &((const uint8_t*) key)[ nblocks*16 ];
-
-  uint64_t k1 = 0;
-  uint64_t k2 = 0;
+  /*----------
+  /  tail   */
+  k1 = 0;
+  k2 = 0;
 
   switch(len & 15)
   {
@@ -195,9 +195,8 @@ MurmurHash3_x64_128 ( const void * key, const size_t len, uint64_t *x1,
            k1 *= c1; k1  = MH_rotl64(k1,31); k1 *= c2; h1 ^= k1;
   };
 
-  //----------
-  // finalization
-
+  /*----------
+  /  finalization */
   h1 ^= len; h2 ^= len;
 
   h1 += h2;
@@ -471,14 +470,14 @@ kv_hash_cityhash64( const void *p, size_t sz, uint64_t seed )
 #endif /* USE_KV_CITY_HASH */
 
 #ifdef USE_KV_SPOOKY_HASH
-// A C version of Bob Jenkins' spooky hash
+/* A C version of Bob Jenkins' spooky hash
 //   (via Andi Kleen https://github.com/andikleen)
 //
 // Spooky Hash
 // A 128-bit noncryptographic hash, for checksums and table lookup
 // By Bob Jenkins. Bob's version was under Public Domain
 // The C version is under the BSD license
-
+*/
 #define ALLOW_UNALIGNED_READS 1
 
 #define SC_NUMVARS        12
@@ -493,11 +492,12 @@ struct spooky_state
     unsigned char m_remainder;
 };
 
-// SC_CONST: a constant which:
+/* SC_CONST: a constant which:
 //  * is not zero
 //  * is odd
 //  * is a not-very-regular mix of 1's and 0's
 //  * does not need any other special mathematical properties
+*/
 #define SC_CONST _U64( 0xdeadbeef, 0xdeadbeef )
 
 static inline uint64_t rot64(uint64_t x, int k)
@@ -505,7 +505,7 @@ static inline uint64_t rot64(uint64_t x, int k)
     return (x << k) | (x >> (64 - k));
 }
 
-//
+/*
 // This is used if the input is 96 bytes long or longer.
 //
 // The internal state is fully overwritten every 96 bytes.
@@ -517,7 +517,7 @@ static inline uint64_t rot64(uint64_t x, int k)
 //   And the base value is random
 //   When run forward or backwards one Mix
 // I tried 3 pairs of each; they all differed by at least 212 bits.
-//
+*/
 static inline void mix
 (
     const uint64_t *data,
@@ -540,7 +540,7 @@ static inline void mix
     *s11 += data[11];    *s1 ^= *s9;     *s10 ^= *s11;   *s11 = rot64(*s11, 46);    *s10 += *s0;
 }
 
-//
+/*
 // Mix all 12 inputs together so that h0, h1 are a hash of them all.
 //
 // For two inputs differing in just the input bits
@@ -555,7 +555,7 @@ static inline void mix
 // This does not rely on the last Mix() call having already mixed some.
 // Two iterations was almost good enough for a 64-bit result, but a
 // 128-bit result is reported, so End() does three iterations.
-//
+*/
 static inline void endPartial
 (
     uint64_t *h0, uint64_t *h1, uint64_t *h2,  uint64_t *h3,
@@ -589,7 +589,7 @@ static inline void end
     endPartial(h0, h1, h2, h3, h4, h5, h6, h7, h8, h9, h10, h11);
 }
 
-//
+/*
 // The goal is for each bit of the input to expand into 128 bits of
 //   apparent entropy before it is fully overwritten.
 // n trials both set and cleared at least m bits of h0 h1 h2 h3
@@ -603,7 +603,7 @@ static inline void end
 // for all 1-bit and 2-bit diffs
 // with diffs defined by either xor or subtraction
 // with a base of all zeros plus a counter, or plus another bit, or random
-//
+*/
 static inline void short_mix
 (
     uint64_t *h0,
@@ -626,7 +626,7 @@ static inline void short_mix
     *h1 = rot64(*h1, 36);   *h1 += *h2;  *h3 ^= *h1;
 }
 
-//
+/*
 // Mix all 4 inputs together so that h0, h1 are a hash of them all.
 //
 // For two inputs differing in just the input bits
@@ -637,7 +637,7 @@ static inline void short_mix
 // with probability 50 +- .3% (it is probably better than that)
 // For every pair of input bits,
 // with probability 50 +- .75% (the worst case is approximately that)
-//
+*/
 static inline void short_end
 (
     uint64_t *h0,
@@ -695,7 +695,7 @@ static void spooky_shorthash
     {
         const uint64_t *endp = u.p64 + (length/32)*4;
 
-        // handle all complete sets of 32 bytes
+        /* handle all complete sets of 32 bytes */
         for (; u.p64 < endp; u.p64 += 4)
         {
             c += u.p64[0];
@@ -705,7 +705,7 @@ static void spooky_shorthash
             b += u.p64[3];
         }
 
-        // Handle the case of 16+ remaining bytes.
+        /* Handle the case of 16+ remaining bytes. */
         if (remainder >= 16)
         {
             c += u.p64[0];
@@ -716,7 +716,7 @@ static void spooky_shorthash
         }
     }
 
-    // Handle the last 0..15 bytes, and its length
+    /* Handle the last 0..15 bytes, and its length */
     d += ((uint64_t)length) << 56;
     switch (remainder)
     {
@@ -796,7 +796,7 @@ static void spooky_hash128
     u.p8 = (const uint8_t *)message;
     endp = u.p64 + (length/SC_BLOCKSIZE)*SC_NUMVARS;
 
-    // handle all whole blocks of SC_BLOCKSIZE bytes
+    /* handle all whole blocks of SC_BLOCKSIZE bytes */
     if (ALLOW_UNALIGNED_READS || (u.i & 0x7) == 0)
     {
         while (u.p64 < endp)
@@ -815,13 +815,13 @@ static void spooky_hash128
         }
     }
 
-    // handle the last partial block of SC_BLOCKSIZE bytes
+    /* handle the last partial block of SC_BLOCKSIZE bytes */
     remainder = (length - ((const uint8_t *)endp-(const uint8_t *)message));
     memcpy(buf, endp, remainder);
     memset(((uint8_t *)buf)+remainder, 0, SC_BLOCKSIZE-remainder);
     ((uint8_t *)buf)[SC_BLOCKSIZE-1] = remainder;
 
-    // do some final mixing
+    /* do some final mixing */
     end(&h0, &h1, &h2, &h3, &h4, &h5, &h6, &h7, &h8, &h9, &h10, &h11);
     *hash1 = h0;
     *hash2 = h1;
