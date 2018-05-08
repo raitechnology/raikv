@@ -1,6 +1,7 @@
 # dist
 /dist
 /export
+/rpmbuild
 # misc
 /notes
 /doc

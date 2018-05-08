@@ -266,7 +266,10 @@ main( int argc, char *argv[] )
             ptr = realloc( ptr, sz * 2 );
             maxsz = sz * 2;
           }
-          fread( ptr, 1, sz, fp );
+          if ( fread( ptr, 1, sz, fp ) != sz ) {
+            printf( "truncated msg\n" );
+            break;
+          }
         }
         ::strcpy( sav, buf );
       }
