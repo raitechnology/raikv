@@ -3,9 +3,11 @@ lsb_dist     := $(shell if [ -x /usr/bin/lsb_release ] ; then lsb_release -is ; 
 lsb_dist_ver := $(shell if [ -x /usr/bin/lsb_release ] ; then lsb_release -rs | sed 's/[.].*//' ; fi)
 uname_m      := $(shell uname -m)
 
-short_dist := $(patsubst CentOS,RH,$(patsubst RedHat,RH,\
-                $(patsubst Fedora,FC,$(patsubst Ubuntu,UB,\
-		  $(patsubst Debian,DEB,$(patsubst SUSE,SS,$(lsb_dist)))))))
+short_dist_lc := $(patsubst CentOS,rh,$(patsubst RedHat,rh,\
+                   $(patsubst Fedora,fc,$(patsubst Ubuntu,ub,\
+		     $(patsubst Debian,deb,$(patsubst SUSE,ss,$(lsb_dist)))))))
+short_dist    := $(shell echo $(short_dist_lc) | tr a-z A-Z)
+rpm_os        := $(short_dist_lc)$(lsb_dist_ver).$(uname_m)
 
 # this is where the targets are compiled
 build_dir ?= $(short_dist)$(lsb_dist_ver)_$(uname_m)$(port_extra)
@@ -62,16 +64,17 @@ all_depends :=
 major_num   := 1
 minor_num   := 0
 patch_num   := 0
-build_num   := 1
+build_num   := 13
 version     := $(major_num).$(minor_num).$(patch_num)
-build_date  := $(shell date '+%a %b %d %Y')
+ver_build   := $(version)-$(build_num)
+defines     += -DKV_VER=$(ver_build)
 
 # first target everything, target all: is at the end, after all_* are defined
 .PHONY: everything
 everything: all
 
-libraikv_files := key_ctx ht_linear ht_cuckoo key_hash \
-		  msg_ctx ht_stats ht_init util rela_ts radix_sort
+libraikv_files := key_ctx ht_linear ht_cuckoo key_hash msg_ctx ht_stats \
+                  ht_init scratch_mem util rela_ts radix_sort print
 libraikv_objs  := $(addprefix $(objd)/, $(addsuffix .o, $(libraikv_files)))
 libraikv_dbjs  := $(addprefix $(objd)/, $(addsuffix .fpic.o, $(libraikv_files)))
 libraikv_deps  := $(addprefix $(dependd)/, $(addsuffix .d, $(libraikv_files))) \
@@ -85,8 +88,8 @@ $(libd)/libraikv.so: $(libraikv_dbjs)
 all_libs    += $(libd)/libraikv.a $(libd)/libraikv.so
 all_depends += $(libraikv_deps)
 
-kv_test_objs = $(objd)/test.o $(objd)/common.o
-kv_test_deps = $(dependd)/test.d $(dependd)/common.d
+kv_test_objs = $(objd)/test.o
+kv_test_deps = $(dependd)/test.d
 kv_test_libs = $(libd)/libraikv.a
 #kv_test_lnk  = -lraikv
 kv_test_lnk  = $(kv_test_libs)
@@ -100,15 +103,15 @@ hash_test_lnk  = -lraikv
 
 $(bind)/hash_test: $(hash_test_objs) $(hash_test_libs)
 
-ping_objs = $(objd)/ping.o $(objd)/common.o
-ping_deps = $(dependd)/ping.d $(dependd)/common.d
+ping_objs = $(objd)/ping.o
+ping_deps = $(dependd)/ping.d
 ping_libs = $(libd)/libraikv.so
 ping_lnk  = -lraikv
 
 $(bind)/ping: $(ping_objs) $(ping_libs)
 
-kv_cli_objs = $(objd)/cli.o $(objd)/common.o
-kv_cli_deps = $(dependd)/cli.d $(dependd)/common.d
+kv_cli_objs = $(objd)/cli.o
+kv_cli_deps = $(dependd)/cli.d
 kv_cli_libs = $(libd)/libraikv.so
 kv_cli_lnk  = -lraikv
 
@@ -121,22 +124,22 @@ mcs_test_lnk  = -lraikv
 
 $(bind)/mcs_test: $(mcs_test_objs) $(mcs_test_libs)
 
-kv_server_objs = $(objd)/server.o $(objd)/common.o
-kv_server_deps = $(dependd)/server.d $(dependd)/common.d
+kv_server_objs = $(objd)/server.o
+kv_server_deps = $(dependd)/server.d
 kv_server_libs = $(libd)/libraikv.so
 kv_server_lnk  = -lraikv
 
 $(bind)/kv_server: $(kv_server_objs) $(kv_server_libs)
 
-load_objs = $(objd)/load.o $(objd)/common.o
-load_deps = $(dependd)/load.d $(dependd)/common.d
+load_objs = $(objd)/load.o
+load_deps = $(dependd)/load.d
 load_libs = $(libd)/libraikv.so
 load_lnk  = -lraikv
 
 $(bind)/load: $(load_objs) $(load_libs)
 
-ctest_objs = $(objd)/ctest.o $(objd)/common.o
-ctest_deps = $(dependd)/ctest.d $(dependd)/common.d
+ctest_objs = $(objd)/ctest.o
+ctest_deps = $(dependd)/ctest.d
 ctest_libs = $(libd)/libraikv.so
 ctest_lnk  = -lraikv
 
@@ -180,19 +183,41 @@ $(dependd)/depend.make: $(dependd) $(all_depends)
 	@echo "# depend file" > $(dependd)/depend.make
 	@cat $(all_depends) >> $(dependd)/depend.make
 
-.PHONE: dist_bins
+.PHONY: dist_bins
 dist_bins: $(all_libs) $(all_dlls) $(bind)/kv_cli $(bind)/kv_server $(bind)/kv_test
 
-.PHONE: dist_rpm
+.PHONY: dist_rpm
 dist_rpm:
 	mkdir -p rpmbuild/{RPMS,SRPMS,BUILD,SOURCES,SPECS}
 	sed -e "s/99999/${build_num}/" \
-	    -e "s/999.999/${version}/" \
-	    -e "s/Sat Jan 01 2000/${build_date}/" < rpm/raikv.spec > rpmbuild/SPECS/raikv.spec
+	    -e "s/999.999/${version}/" < rpm/raikv.spec > rpmbuild/SPECS/raikv.spec
 	mkdir -p rpmbuild/SOURCES/raikv-${version}
 	ln -sf ../../../src ../../../test ../../../include ../../../GNUmakefile rpmbuild/SOURCES/raikv-${version}/
-	( cd rpmbuild/SOURCES ; tar chzf raikv-${version}.tar.gz raikv-${version} )
-	( cd rpmbuild ; rpmbuild --define "-topdir `pwd`" -ba SPECS/raikv.spec )
+	( cd rpmbuild/SOURCES && tar chzf raikv-${ver_build}.tar.gz raikv-${version} && rm -r -f raikv-${version} )
+	( cd rpmbuild && rpmbuild --define "-topdir `pwd`" -ba SPECS/raikv.spec )
+
+.PHONY: local_repo_update
+local_repo_update: dist_rpm
+	createrepo --update `pwd`/rpmbuild/RPMS/${uname_m}
+	@echo "# Use this to update:"
+	@echo "sudo dnf -y update raikv"
+	@echo "sudo dnf -y debuginfo-install raikv-debuginfo"
+	@echo "sudo dnf -y update raikv-debugsource"
+
+.PHONY: local_repo_create
+local_repo_create: dist_rpm
+	createrepo -v `pwd`/rpmbuild/RPMS/${uname_m}
+	@echo "# Create this file: /etc/yum.repos.d/raikv.repo"
+	@echo "[raikv]"
+	@echo "name=My Local Repository"
+	@echo "baseurl=file://`pwd`/rpmbuild/RPMS/${uname_m}"
+	@echo "metadata_expire=1"
+	@echo "gpgcheck=0"
+	@echo "enabled=1"
+	@echo "# Use this to install:"
+	@echo "sudo dnf -y install raikv"
+	@echo "sudo dnf -y debuginfo-install raikv-debuginfo"
+	@echo "sudo dnf -y install raikv-debugsource"
 
 # dependencies made by 'make depend'
 -include $(dependd)/depend.make

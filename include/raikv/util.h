@@ -33,6 +33,8 @@ void kv_sighndl_install( kv_signal_handler_t *sh );
 #define kv_unlikely(x) (__builtin_expect((x),0))
 #define _U64( x, y ) ( ( ( (uint64_t) (uint32_t) x ) << 32 ) | \
                            (uint64_t) (uint32_t) y )
+#define kv_stringify(S) kv_str(S)
+#define kv_str(S) #S
 #ifdef __cplusplus
 }
 #endif

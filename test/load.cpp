@@ -17,15 +17,13 @@ HashTabGeom geom;
 HashTab   * map;
 uint32_t    ctx_id = MAX_CTX_ID;
 
-extern void print_map_geom( HashTab *map,  uint32_t ctx_id );
-
 static void
 shm_attach( const char *mn )
 {
   map = HashTab::attach_map( mn, 0, geom );
   if ( map != NULL ) {
     ctx_id = map->attach_ctx( 1000 /*::getpid()*/ );
-    print_map_geom( map, ctx_id );
+    fputs( print_map_geom( map, ctx_id ), stdout );
   }
 }
 
@@ -47,7 +45,7 @@ uint64_t
 do_load( KeyCtx *kctx,  MsgCtx *mctx,  uint64_t count,  bool use_pref,
          uint64_t cur_time )
 {
-  KeyCtxAlloc8k wrk;
+  WorkAlloc8k wrk;
   KeyStatus status;
   uint64_t loaded = 0, i = 0;
   do {
@@ -70,7 +68,7 @@ uint64_t x_seg_values, x_immed_values, x_no_value, x_key_count, x_drops;
 static void
 compute_key_count( void )
 {
-  KeyCtxAlloc8k wrk;
+  WorkAlloc8k wrk;
   KeyCtx        kctx( map, ctx_id );
   KeyStatus     status;
   x_seg_values = 0; x_immed_values = 0; x_no_value = 0;
@@ -104,6 +102,7 @@ main( int argc, char *argv[] )
 
   if ( argc <= 2 ) {
   cmd_error:;
+    fprintf( stderr, "raikv version: %s\n", kv_stringify( KV_VER ) );
     fprintf( stderr,
      "%s (map) (file)\n"
      "  map             -- name of map file (prefix w/ file:, sysv:, posix:)\n"

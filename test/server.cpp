@@ -12,7 +12,6 @@
 
 using namespace rai;
 using namespace kv;
-extern void print_map_geom( HashTab * map,  uint32_t ctx_id );
 
 char *
 mstring( double f,  char *buf,  int64_t k )
@@ -166,6 +165,7 @@ main( int argc, char *argv[] )
 
   if ( argc <= 1 ) {
   cmd_error:;
+    fprintf( stderr, "raikv version: %s\n", kv_stringify( KV_VER ) );
     fprintf( stderr,
      "%s (map) [MB] [ratio] [max entry size]\n"
      "  map            -- name of map file (prefix w/ file:, sysv:, posix:)\n"
@@ -281,7 +281,7 @@ main( int argc, char *argv[] )
     bool b = ( mstats != NULL && map->get_mem_deltas( mstats, chg, mtot ) );
     b |= ( map->get_ht_deltas( stats, ops, tot ) );
     if ( j > 0 ) {
-      print_map_geom( map, MAX_CTX_ID );
+      fputs( print_map_geom( map, MAX_CTX_ID ), stdout );
       b   = true;
       ctr = 0;
     }

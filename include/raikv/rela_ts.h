@@ -2,9 +2,7 @@
 #define __rai__raikv__rela_ts_h__
 
 /* include include stdint.h */
-#ifndef __rai__raikv__util_h__
 #include <raikv/util.h>
-#endif
 
 #ifdef __cplusplus
 namespace rai {

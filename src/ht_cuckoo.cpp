@@ -90,7 +90,7 @@ CuckooAltHash::find_cuckoo_path( CuckooPosition &cp )
   const uint64_t     ht_size   = kctx.ht_size;
   KeyCtx             to_kctx( kctx.ht, kctx.ctx_id ),
                      fr_kctx( kctx.ht, kctx.ctx_id );
-  KeyCtxAllocT<1024> wrk, wrk2;
+  WorkAllocT<1024>   wrk, wrk2;
   CuckooVisit        node[ node_size ],
                    * vis;
   uint32_t           stk[ stk_size ];

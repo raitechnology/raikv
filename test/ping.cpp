@@ -16,7 +16,6 @@ using namespace kv;
 HashTabGeom geom;
 HashTab   * map;
 uint32_t    ctx_id = MAX_CTX_ID;
-extern void print_map_geom( HashTab *map,  uint32_t ctx_id );
 
 static void
 shm_attach( const char *mn )
@@ -24,7 +23,7 @@ shm_attach( const char *mn )
   map = HashTab::attach_map( mn, 0, geom );
   if ( map != NULL ) {
     ctx_id = map->attach_ctx( ::getpid() );
-    print_map_geom( map, ctx_id );
+    fputs( print_map_geom( map, ctx_id ), stdout );
   }
 }
 
@@ -75,7 +74,7 @@ main( int argc, char *argv[] )
 {
   SignalHandler sighndl;
   KeyBuf        pingkb, pongkb;
-  KeyCtxAlloc8k wrk;
+  WorkAlloc8k   wrk;
   uint64_t      size;
   uint64_t      last_serial = 0, mbar = 0, spin_times;
   uint64_t      last_count = 0, count = 0, nsdiff = 0, diff, t, last = 0;
@@ -102,6 +101,7 @@ main( int argc, char *argv[] )
 #endif
   if ( argc <= 2 ) {
   cmd_error:;
+    fprintf( stderr, "raikv version: %s\n", kv_stringify( KV_VER ) );
     fprintf( stderr,
      "%s (map) (ping|pong) (pause|none|spin)\n"
      "  map             -- name of map file (prefix w/ file:, sysv:, posix:)\n"

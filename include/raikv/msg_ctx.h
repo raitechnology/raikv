@@ -2,21 +2,10 @@
 #define __rai__raikv__msg_ctx_h__
 
 /* also include stdint.h, string.h */
-#ifndef __rai__raikv__key_ctx_h__
 #include <raikv/key_ctx.h>
-#endif
-
-#ifndef __rai__raikv__hash_entry_h__
 #include <raikv/hash_entry.h>
-#endif
-
-#ifndef __rai__raikv__ht_stats_h__
 #include <raikv/ht_stats.h>
-#endif
-
-#ifndef __rai__raikv__atom_h__
 #include <raikv/atom.h>
-#endif
 
 #ifdef __cplusplus
 namespace rai {

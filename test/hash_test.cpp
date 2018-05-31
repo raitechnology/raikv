@@ -107,6 +107,7 @@ main( int argc, char *argv[] )
 
   if ( argc == 1 ) {
 cmd_error:;
+    fprintf( stderr, "raikv version: %s\n", kv_stringify( KV_VER ) );
     fprintf( stderr, "%s (int rand incr) ("
 #if defined( USE_KV_CITY_HASH )
              "citymur "

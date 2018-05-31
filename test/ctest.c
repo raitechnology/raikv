@@ -33,8 +33,8 @@ typedef struct {
 
   char buf[ 64 * 1024 ];
   xh_t xh[ 16 * 1024 ];
-  kv_key_ctx_t   * ctx[ CTX_COUNT ];
-  kv_key_alloc_t * wrk;
+  kv_key_ctx_t    * ctx[ CTX_COUNT ];
+  kv_work_alloc_t * wrk;
 
   kv_atom_uint64_t ready;
   kv_atom_uint8_t  done,
@@ -317,6 +317,7 @@ main( int argc,  char *argv[] )
 
   if ( argc < 2 ) {
   cmd_error:;
+    fprintf( stderr, "raikv version: %s\n", kv_stringify( KV_VER ) );
     fprintf( stderr, "%s map [num-threads] [testing]\n", argv[ 0 ] );
     return 1;
   }
@@ -331,7 +332,7 @@ main( int argc,  char *argv[] )
   ht = kv_attach_map( mn, 0, &geom );
   if ( ht == NULL )
     perror( mn );
-  print_map_geom_c( ht, KV_MAX_CTX_ID );
+  fputs( kv_print_map_geom( ht, KV_MAX_CTX_ID, NULL, 0 ), stdout );
 
   process_input_data( num_thr );
 

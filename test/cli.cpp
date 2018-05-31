@@ -17,7 +17,6 @@ using namespace kv;
 HashTabGeom geom;
 HashTab   * map;
 uint32_t    ctx_id = MAX_CTX_ID, my_pid, no_pid = 666;
-extern void print_map_geom( HashTab * map,  uint32_t ctx_id );
 
 //static uint64_t max( uint64_t x,  uint64_t y ) { return ( x > y ? x : y ); }
 static void print_stats( uint32_t c = ctx_id );
@@ -61,7 +60,7 @@ shm_attach( const char *mn )
   map = HashTab::attach_map( mn, 0, geom );
   if ( map != NULL ) {
     ctx_id = map->attach_ctx( my_pid = ::getpid() );
-    print_map_geom( map, ctx_id );
+    fputs( print_map_geom( map, ctx_id ), stdout );
   }
 }
 
@@ -279,12 +278,12 @@ dump_hex( void *ptr,  uint64_t size )
 static void
 dump_value( const char *key )
 {
-  KeyCtxAlloc8k wrk;
-  KeyBuf    kb;
-  KeyCtx    kctx( *map, ctx_id, &kb );
-  void    * ptr;
-  uint64_t  size, h1, h2;
-  KeyStatus status;
+  WorkAlloc8k wrk;
+  KeyBuf      kb;
+  KeyCtx      kctx( *map, ctx_id, &kb );
+  void      * ptr;
+  uint64_t    size, h1, h2;
+  KeyStatus   status;
 
   kb.set_string( key );
   h1 = map->hdr.hash_key_seed;
@@ -664,7 +663,7 @@ validate_ht( HashTab *map )
   KeyFragment * kp;
   KeyCtx        kctx( *map, ctx_id, &kb ),
                 kctx2( *map, ctx_id, &kb2 );
-  KeyCtxAlloc8k wrk, wrk2;
+  WorkAlloc8k   wrk, wrk2;
   uint64_t      h1, h2;
   char          buf[ 1024 ];
   KeyStatus     status;
@@ -725,7 +724,7 @@ cli( void )
   } kld;
   KeyBuf        kb;
   KeyCtx        kctx( *map, ctx_id, &kb );
-  KeyCtxAlloc8k wrk;
+  WorkAlloc8k   wrk;
   char          buf[ 16 * 1024 ], cmd[ 16 ], key[ 8192 ], *data;
   char          fl[ 32 ], upd[ 64 ], exp[ 64 ], xbuf[ 32 ], tmp = 0;
   void        * ptr;

@@ -7,7 +7,7 @@ Summary:	Rai key value cache
 Group:		Rai
 License:	BSD
 URL:		https://github.com/raitechnology/%{name}
-Source0:	%{name}-%{version}.tar.gz
+Source0:	%{name}-%{version}-99999.tar.gz
 BuildRoot:	${_tmppath}
 BuildArch:      x86_64
 Prefix:	        /usr
@@ -53,5 +53,5 @@ rm -f /etc/ld.so.conf.d/raikv.conf
 ldconfig
 
 %changelog
-* Sat Jan 01 2000 <support@raitechnology.com>
-- See website
+* Tue May 08 2018 <support@raitechnology.com>
+- Test RPM build

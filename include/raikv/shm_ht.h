@@ -2,25 +2,11 @@
 #define __rai__raikv__shm_ht_h__
 
 /* also include stdint.h, string.h */
-#ifndef __rai__raikv__atom_h__
 #include <raikv/atom.h>
-#endif
-
-#ifndef __rai__raikv__util_h__
 #include <raikv/util.h>
-#endif
-
-#ifndef __rai__raikv__ht_stats_h__
 #include <raikv/ht_stats.h>
-#endif
-
-#ifndef __rai__raikv__hash_entry_h__
 #include <raikv/hash_entry.h>
-#endif
-
-#ifndef __rai__raikv__msg_ctx_h__
 #include <raikv/msg_ctx.h>
-#endif
 
 #ifdef __cplusplus
 extern "C" {
@@ -354,6 +340,8 @@ public:
   }
 };
 
+char *print_map_geom( HashTab *map,  uint32_t ctx_id, char *buf = 0,
+                      size_t buflen = 0 );
 } /* namespace kv */
 } /* namespace rai */
 #endif /* __cplusplus */
@@ -378,6 +366,8 @@ void kv_detach_ctx( kv_hash_tab_t *ht,  uint32_t ctx_id );
 /* total number of hash slots */
 uint64_t kv_map_get_size( kv_hash_tab_t *ht );
 
+char *kv_print_map_geom( kv_hash_tab_t *kv,  uint32_t ctx_id,  char *buf,
+                         size_t buflen );
 #ifdef __cplusplus
 }
 #endif

@@ -2,17 +2,9 @@
 #define __rai__raikv__hash_entry_h__
 
 /* also include stdint.h, string.h */
-#ifndef __rai__raikv__atom_h__
 #include <raikv/atom.h>
-#endif
-
-#ifndef __rai__raikv__rela_ts_h__
 #include <raikv/rela_ts.h>
-#endif
-
-#ifndef __rai__raikv__key_hash_h__
 #include <raikv/key_hash.h>
-#endif
 
 #ifdef __cplusplus
 extern "C" {

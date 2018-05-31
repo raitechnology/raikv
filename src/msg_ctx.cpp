@@ -67,13 +67,13 @@ MsgCtx::prefetch_segment( uint64_t size )
 KeyStatus
 MsgCtx::alloc_segment( void *res,  uint64_t size,  uint8_t alignment )
 {
-  ThrCtx           & ctx       = this->ht.ctx[ this->ctx_id ];
-  KeyCtx             mv_kctx( this->ht, this->ctx_id );
-  KeyCtxAllocT<1024> wrk;
-  const uint64_t     seg_size  = this->ht.hdr.seg_size();
-  const uint32_t     nsegs     = this->ht.hdr.nsegs,
-                     algn_shft = this->ht.hdr.seg_align_shift,
-                     hdr_size  = MsgHdr::hdr_size( *this->kbuf );
+  ThrCtx         & ctx       = this->ht.ctx[ this->ctx_id ];
+  KeyCtx           mv_kctx( this->ht, this->ctx_id );
+  WorkAllocT<1024> wrk;
+  const uint64_t   seg_size  = this->ht.hdr.seg_size();
+  const uint32_t   nsegs     = this->ht.hdr.nsegs,
+                   algn_shft = this->ht.hdr.seg_align_shift,
+                   hdr_size  = MsgHdr::hdr_size( *this->kbuf );
 
   if ( nsegs == 0 )
     return KEY_TOO_BIG;

@@ -81,53 +81,10 @@ KeyCtx::new_array( HashTab &t,  uint32_t id,  void *b,  size_t bsz )
   return (KeyCtx *) b;
 }
 
-namespace rai {
-namespace kv {
-struct AllocList {
-  AllocList * next;
-  void      * ptr;
-};
-}
-}
-
-void *
-KeyCtxAlloc::alloc_slow( size_t sz )
-{
-  /* alloc() overflow of static mem, need dynamic */
-  sz = align<size_t>( sz + sizeof( AllocList ), sizeof( CacheLine ) );
-  if ( this->big_alloc == NULL ) {
-    this->big_alloc = kv_key_ctx_big_alloc;
-    this->big_free  = kv_key_ctx_big_free;
-  }
-  if ( this->closure == NULL )
-    this->closure = this;
-  void *p = this->big_alloc( this->closure, sz );
-  if ( p == NULL )
-    return NULL;
-  /* tail of mem ptr maintains list of alloced items */
-  AllocList * x = (AllocList *) &((uint8_t *) p)[ sz - sizeof( AllocList ) ];
-  x->next   = (AllocList *) this->big; /* list of items to free */
-  x->ptr    = p;
-  this->big = (void *) x; 
-  return p;
-}
-
-void
-KeyCtxAlloc::release( void )
-{
-  AllocList * next;
-  for ( AllocList *x = (AllocList *) this->big; x != NULL; x = next ) {
-    next = x->next;
-    this->big_free( this->closure, x->ptr );
-  }
-  this->big = NULL;
-}
-
 /* acquire lock for a key, if KEY_OK, set entry at &ht[ key % ht_size ] */
 KeyStatus
-KeyCtx::acquire( KeyCtxAlloc *a )
+KeyCtx::acquire( void )
 {
-  this->init_work( a ); /* buffer used for copying hash entry & data */
   this->init_acquire();
   if ( this->test( KEYCTX_IS_SINGLE_THREAD ) == 0 ) {
     if ( this->cuckoo_buckets <= 1 )
@@ -142,9 +99,8 @@ KeyCtx::acquire( KeyCtxAlloc *a )
 
 /* try to acquire lock for a key without waiting */
 KeyStatus
-KeyCtx::try_acquire( KeyCtxAlloc *a )
+KeyCtx::try_acquire( void )
 {
-  this->init_work( a ); /* buffer used for copying hash entry & data */
   this->init_acquire();
   if ( this->test( KEYCTX_IS_SINGLE_THREAD ) == 0 ) {
     if ( this->cuckoo_buckets <= 1 )
@@ -159,9 +115,8 @@ KeyCtx::try_acquire( KeyCtxAlloc *a )
 
 /* if find locates key, returns KEY_OK, sets entry at &ht[ key % ht_size ] */
 KeyStatus
-KeyCtx::find( KeyCtxAlloc *a,  const uint64_t spin_wait )
+KeyCtx::find( const uint64_t spin_wait )
 {
-  this->init_work( a ); /* buffer used for copying hash entry & data */
   this->init_find();
   if ( this->test( KEYCTX_IS_SINGLE_THREAD ) == 0 ) {
     if ( this->cuckoo_buckets <= 1 )
@@ -851,43 +806,6 @@ kv_key_status_description( kv_key_status_t status )
   return "unknown";
 }
 
-void *
-kv_key_ctx_big_alloc( void *closure,  size_t item_size ) /* KeyCtx::big_alloc*/
-{
-  return ::malloc( item_size );
-}
-
-void
-kv_key_ctx_big_free( void *closure,  void *item )
-{
-  return ::free( item );
-}
-
-kv_key_alloc_t *
-kv_create_ctx_alloc( size_t sz,  kv_alloc_func_t ba,  kv_free_func_t bf,
-                     void *closure )
-{
-  size_t off = align<size_t>( sizeof( KeyCtxAlloc ), sizeof( CacheLine ) );
-  size_t sz2 = align<size_t>( off + sz, sizeof( CacheLine ) );
-  void * ptr =
-#ifdef _ISOC11_SOURCE
-    ::aligned_alloc( sizeof( CacheLine ), sz2 ); /* >= RH7 */
-#else
-    ::malloc( sz2 ); /* RH5, RH6 */
-#endif
-  if ( ptr == NULL )
-    return NULL;
-  new ( ptr ) KeyCtxAlloc( (CacheLine *) &((uint8_t *) ptr)[ off ],
-                           sz2 - off, ba, bf, closure );
-  return (kv_key_alloc_t *) ptr;
-}
-
-void
-kv_release_ctx_alloc( kv_key_alloc_t *ctx_alloc )
-{
-  delete reinterpret_cast<KeyCtxAlloc *>( ctx_alloc );
-}
-
 kv_key_frag_t *
 kv_make_key_frag( uint16_t sz,  size_t avail_in,  void *in,  void *out )
 {
@@ -969,17 +887,17 @@ kv_prefetch( kv_key_ctx_t *kctx,  uint64_t cnt )
 }
 
 kv_key_status_t
-kv_acquire( kv_key_ctx_t *kctx,  kv_key_alloc_t *a )
+kv_acquire( kv_key_ctx_t *kctx,  kv_work_alloc_t *a )
 {
   return reinterpret_cast<KeyCtx *>( kctx )->acquire(
-           reinterpret_cast<KeyCtxAlloc *>( a ) );
+           reinterpret_cast<ScratchMem *>( a ) );
 }
 
 kv_key_status_t
-kv_try_acquire( kv_key_ctx_t *kctx,  kv_key_alloc_t *a )
+kv_try_acquire( kv_key_ctx_t *kctx,  kv_work_alloc_t *a )
 {
   return reinterpret_cast<KeyCtx *>( kctx )->try_acquire(
-           reinterpret_cast<KeyCtxAlloc *>( a ) );
+           reinterpret_cast<ScratchMem *>( a ) );
 }
 #if 0
 kv_key_status_t
@@ -1001,18 +919,18 @@ kv_release( kv_key_ctx_t *kctx )
 }
 
 kv_key_status_t
-kv_find( kv_key_ctx_t *kctx,  kv_key_alloc_t *a,  const uint64_t spin_wait )
+kv_find( kv_key_ctx_t *kctx,  kv_work_alloc_t *a,  const uint64_t spin_wait )
 {
   return reinterpret_cast<KeyCtx *>( kctx )->find(
-           reinterpret_cast<KeyCtxAlloc *>( a ), spin_wait );
+           reinterpret_cast<ScratchMem *>( a ), spin_wait );
 }
 
 kv_key_status_t
-kv_fetch( kv_key_ctx_t *kctx,  kv_key_alloc_t *a,
+kv_fetch( kv_key_ctx_t *kctx,  kv_work_alloc_t *a,
           const uint64_t pos,  const uint64_t spin_wait )
 {
   return reinterpret_cast<KeyCtx *>( kctx )->fetch(
-           reinterpret_cast<KeyCtxAlloc *>( a ), pos, spin_wait );
+           reinterpret_cast<ScratchMem *>( a ), pos, spin_wait );
 }
 
 kv_key_status_t

@@ -371,7 +371,7 @@ rai::kv::int64_to_string( int64_t v,  char *buf )
 {
   size_t len = 0;
   if ( v < 0 ) { len++; *buf++ = '-'; v = -v; }
-  return uint64_to_string( (uint64_t) v, buf );
+  return len + uint64_to_string( (uint64_t) v, buf );
 }
 
 uint64_t
@@ -417,8 +417,11 @@ rai::kv::string_to_uint64( const char *b,  size_t len )
 int64_t
 rai::kv::string_to_int64( const char *b,  size_t len )
 {
-  int64_t n = 1;
-  if ( b[ 0 ] == '-' ) { n = -1; b++; len -= 1; }
-  return n * (int64_t) string_to_uint64( b, len );
+  uint64_t x;
+  bool     is_neg = false;
+  if ( b[ 0 ] == '-' ) { is_neg = true; b++; len -= 1; }
+  x = string_to_uint64( b, len );
+  if ( is_neg ) return -x;
+  return x;
 }
 

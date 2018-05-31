@@ -11,7 +11,6 @@
 
 using namespace rai;
 using namespace kv;
-extern void print_map_geom( HashTab * map,  uint32_t ctx_id );
 
 void
 incr_key( KeyBuf &kb )
@@ -55,7 +54,7 @@ test_one( HashTab &map,  uint32_t ctx_id,  kv_hash128_func_t func,
           HashDeltaCounters *stats,  HashCounters &ops,  HashCounters &tot,
           uint64_t test_count,  bool use_find,  bool use_single )
 {
-  KeyCtxAlloc8k wrk;
+  WorkAlloc8k wrk;
   KeyBuf kb;
   double mono, ival, tmp;
   uint64_t i, h1, h2, k;
@@ -104,7 +103,7 @@ test_rand( HashTab &map,  uint32_t ctx_id,  kv_hash128_func_t func,
            HashCounters &tot,  uint64_t test_count,  bool use_find,
            uint32_t use_prefetch,  bool use_single )
 {
-  KeyCtxAlloc8k wrk;
+  WorkAlloc8k wrk;
   KeyBuf kb;
   double mono, ival, tmp;
   void *p;
@@ -189,7 +188,7 @@ test_incr( HashTab &map,  uint32_t ctx_id,  kv_hash128_func_t func,
            HashCounters &tot,  uint64_t test_count,  bool use_find,
            uint32_t use_prefetch,  bool use_single )
 {
-  KeyCtxAlloc8k wrk;
+  WorkAlloc8k wrk;
   KeyBuf kb;
   double mono, ival, tmp;
   void *p;
@@ -288,7 +287,7 @@ test_int( HashTab &map,  uint32_t ctx_id,  kv_hash128_func_t func,
           HashCounters &tot,  uint64_t test_count,  bool use_find,
           uint32_t use_prefetch,  bool use_single )
 {
-  KeyCtxAlloc8k wrk;
+  WorkAlloc8k wrk;
   KeyBuf kb, ukb;
   double mono, ival, tmp;
   void *p;
@@ -398,6 +397,7 @@ main( int argc, char *argv[] )
 
   if ( argc <= 2 ) {
   cmd_error:;
+    fprintf( stderr, "raikv version: %s\n", kv_stringify( KV_VER ) );
     fprintf( stderr,
      "%s (map) (rand|incr|int|cli) [pct] [prefetch] [ins|find]\n"
      "  map           -- name of map file (prefix w/ file:, sysv:, posix:)\n"
@@ -433,7 +433,7 @@ main( int argc, char *argv[] )
     printf( "no more ctx available\n" );
     return 3;
   }
-  print_map_geom( map, ctx_id );
+  fputs( print_map_geom( map, ctx_id ), stdout );
   kv_hash128_func_t func = KV_DEFAULT_HASH;
 
   const uint64_t test_count = (
@@ -451,7 +451,7 @@ main( int argc, char *argv[] )
   printf( "use find: %s\n", use_find ? "yes" : "no" );
   printf( "use single: %s\n", use_single ? "yes" : "no" );
 
-  KeyCtxAlloc8k wrk;
+  WorkAlloc8k wrk;
   if ( ::strcmp( oper, "one" ) == 0 ) {
     test_one( *map, ctx_id, func, stats, ops, tot, test_count, use_find,
               use_single );

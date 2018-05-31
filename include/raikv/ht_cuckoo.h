@@ -1,9 +1,7 @@
 #ifndef __rai__raikv__ht_cuckoo_h__
 #define __rai__raikv__ht_cuckoo_h__
 
-#ifndef __rai__raikv__key_ctx_h__
 #include <raikv/key_ctx.h>
-#endif
 
 namespace rai {
 namespace kv {

@@ -1,13 +1,9 @@
 #ifndef __rai__raikv__key_ctx_h__
 #define __rai__raikv__key_ctx_h__
 
-#ifndef __rai__raikv__util_h__
 #include <raikv/util.h>
-#endif
-
-#ifndef __rai__raikv__hash_entry_h__
 #include <raikv/hash_entry.h>
-#endif
+#include <raikv/work.h>
 
 /* also include stdint.h, string.h */
 #ifdef __cplusplus
@@ -39,12 +35,6 @@ typedef enum kv_key_status_e {
 const char *kv_key_status_string( kv_key_status_t status );
 const char *kv_key_status_description( kv_key_status_t status );
 
-typedef void *(*kv_alloc_func_t)( void *closure,  size_t item_size );
-typedef void (*kv_free_func_t)( void *closure,  void *item );
-/* KeyCtx::big_alloc */
-extern void *kv_key_ctx_big_alloc( void *closure,  size_t item_size );
-extern void kv_key_ctx_big_free( void *closure,  void *item );
-
 #ifdef __cplusplus
 } /* extern "C" */
 #endif
@@ -59,63 +49,11 @@ struct HashTab;
 struct MsgHdr;
 struct MsgCtx;
 
-struct CacheLine {
-  uint8_t line[ 64 ];
-} __attribute__((__aligned__(64)));
-
-struct KeyCtxAlloc {
-  CacheLine  * wrk;   /* stack / static mem */
-  size_t       off;
-  const size_t len;
-  void       * big;
-
-  void * operator new( size_t sz, void *ptr ) { return ptr; }
-  void operator delete( void *ptr ) { ::free( ptr ); }
-
-  KeyCtxAlloc( CacheLine *w,  size_t sz,
-               kv_alloc_func_t ba = 0/*kv_key_ctx_big_alloc*/,
-               kv_free_func_t bf = 0/*kv_key_ctx_big_free*/,  void *cl = 0 )
-    : wrk( w ), off( 0 ), len( sz ), big( 0 ),
-      big_alloc( ba ), big_free( bf ), closure( cl ) {}
-
-  /* fast allocate memory for copy operations in find() */
-  void *alloc( size_t sz ) {
-    CacheLine *cur = &this->wrk[ this->off / sizeof( CacheLine ) ];
-    sz = align<size_t>( sz, sizeof( CacheLine ) );
-    if ( (this->off += sz) > this->len )
-      return this->alloc_slow( sz );
-    return cur;
-  }
-  void *alloc_slow( size_t sz ); /* call big_alloc() */
-  /* fast reset of allocs in last operation, called at start of find() */
-  void reset( void ) {
-    this->off = 0;
-    if ( this->big != NULL )
-      this->release();
-  }
-  void release( void ); /* call big_free() */
-  /* large sizes are virtualized allocs for client buffer pools,
-   * virtual functions can add as much as 10ns to the fast path */
-  kv_alloc_func_t big_alloc; /* not using virtual since that requires libstd++*/
-  kv_free_func_t big_free;
-  void *closure;
-};
-
-template <uint32_t SPC>
-struct KeyCtxAllocT : public KeyCtxAlloc {
-  CacheLine spc[ SPC / sizeof( CacheLine ) ];
-
-  KeyCtxAllocT() : KeyCtxAlloc( this->spc, sizeof( this->spc ) ) {}
-  ~KeyCtxAllocT() {
-    this->reset();
-  }
-};
-
 /* a context to put and get hash entry values */
 /* Example:
    KeyBuf kbuf( "hello world" );
    KeyCtx kctx( ht, ctx_id, &kbuf );
-   KeyCtxAlloc8k wrk;
+   WorkAlloc8k wrk;
    void *data;
    uint64_t sz;
    uint64_t h1 = map->hdr.hash_key_seed,
@@ -168,7 +106,7 @@ struct KeyCtx {
   HashEntry    * entry;   /* the entry after lookup, may be empty entry if NF*/
   MsgHdr       * msg;     /* the msg header indexed by geom */
   ValueGeom      geom;    /* values decoded from HashEntry */
-  KeyCtxAlloc  * wrk;     /* temp work allocation */
+  ScratchMem   * wrk;     /* temp work allocation */
 
   uint16_t test( uint16_t fl ) const { return ( this->flags & fl ); }
   void set( uint16_t fl )            { this->flags |= fl; }
@@ -201,11 +139,15 @@ struct KeyCtx {
   /* set key and hash by using set_key() then b.hash() to compute hash value */
   void set_key_hash( KeyFragment &b );
   /* used for find() operations where data is copied from ht to local buffers */
-  void init_work( KeyCtxAlloc *a ) {
+  void init_work( ScratchMem *a ) {
     if ( a != NULL ) {
       this->wrk = a;
       a->reset();
     }
+  }
+  /* bypass the work reset, keep already alloced data */
+  void set_work( ScratchMem *a ) {
+    this->wrk = a;
   }
   /* if hash entry is new, initialize with new serial, otherwise increment */
   void next_serial( uint64_t serial_mask ) {
@@ -233,9 +175,17 @@ struct KeyCtx {
   /* use __builtin_prefetch() on hash element using this->start as a base */
   void prefetch( uint64_t cnt = 2 ) const;
   /* acquire lock for a key, if KEY_OK, set entry at &ht[ key % ht_size ] */
-  KeyStatus acquire( KeyCtxAlloc *a );
+  KeyStatus acquire( ScratchMem *a ) {
+    this->init_work( a );
+    return this->acquire();
+  }
+  KeyStatus acquire( void );
   /* try to acquire lock for a key without waiting */
-  KeyStatus try_acquire( KeyCtxAlloc *a );
+  KeyStatus try_acquire( ScratchMem *a ) {
+    this->init_work( a );
+    return this->try_acquire();
+  }
+  KeyStatus try_acquire( void );
 
   void init_acquire( void ) {
     this->chains     = 0; /* count of chains */
@@ -279,7 +229,11 @@ struct KeyCtx {
     this->set( KEYCTX_IS_READ_ONLY );
   }
   /* if find locates key, returns KEY_OK, sets entry at &ht[ key % ht_size ] */
-  KeyStatus find( KeyCtxAlloc *a,  const uint64_t spin_wait = 0 );
+  KeyStatus find( ScratchMem *a,  const uint64_t spin_wait = 0 ) {
+    this->init_work( a );
+    return this->find( spin_wait );
+  }
+  KeyStatus find( const uint64_t spin_wait = 0 );
   /* templated for ht find search */
   template <class Position>
   KeyStatus find( const uint64_t k,  uint64_t i,  const uint64_t spin_wait,
@@ -297,9 +251,12 @@ struct KeyCtx {
   KeyStatus find_cuckoo_single_thread( const uint64_t k,
                                        const uint64_t start_pos );
   /* get item at ht[ i ] */
-  KeyStatus fetch( KeyCtxAlloc *a,  const uint64_t i,
+  KeyStatus fetch( ScratchMem *a,  const uint64_t i,
                    const uint64_t spin_wait = 0 ) {
     this->init_work( a ); /* buffer used for copying hash entry & data */
+    return this->fetch( i, spin_wait );
+  }
+  KeyStatus fetch( const uint64_t i,  const uint64_t spin_wait ) {
     this->init_find();
     return this->fetch_position( i, spin_wait );
   }
@@ -363,18 +320,11 @@ extern "C" {
 struct kv_hash_tab_s;
 struct kv_key_ctx_s;
 struct kv_msg_ctx_s;
-struct kv_key_alloc_s;
 struct kv_key_frag_s;
 
-typedef struct kv_hash_tab_s  kv_hash_tab_t;
-typedef struct kv_key_ctx_s   kv_key_ctx_t;
-typedef struct kv_msg_ctx_s   kv_msg_ctx_t;
-typedef struct kv_key_alloc_s kv_key_alloc_t;
-
-/* kv_key_alloc_t alloc = kc_create_ctx_alloc( 8 * 1024, NULL, NULL, NULL ); */
-kv_key_alloc_t *kv_create_ctx_alloc( size_t sz,  kv_alloc_func_t ba,
-                                     kv_free_func_t bf,  void *closure );
-void kv_release_ctx_alloc( kv_key_alloc_t *ctx_alloc );
+typedef struct kv_hash_tab_s kv_hash_tab_t;
+typedef struct kv_key_ctx_s  kv_key_ctx_t;
+typedef struct kv_msg_ctx_s  kv_msg_ctx_t;
 
 /* uint16_t buf[ 1024 ];
  * void *in = (void *) buf, *out;
@@ -414,15 +364,15 @@ void kv_prefetch( kv_key_ctx_t *kctx,  uint64_t cnt );
  * }
  * kv_release( kctx );
  */
-kv_key_status_t kv_acquire( kv_key_ctx_t *kctx,  kv_key_alloc_t *a );
-kv_key_status_t kv_try_acquire( kv_key_ctx_t *kctx,  kv_key_alloc_t *a );
+kv_key_status_t kv_acquire( kv_key_ctx_t *kctx,  kv_work_alloc_t *a );
+kv_key_status_t kv_try_acquire( kv_key_ctx_t *kctx,  kv_work_alloc_t *a );
 /*kv_key_status_t kv_drop( kv_key_ctx_t *kctx );*/
 kv_key_status_t kv_tombstone( kv_key_ctx_t *kctx );
 void kv_release( kv_key_ctx_t *kctx );
 
-kv_key_status_t kv_find( kv_key_ctx_t *kctx,  kv_key_alloc_t *a,
+kv_key_status_t kv_find( kv_key_ctx_t *kctx,  kv_work_alloc_t *a,
                          const uint64_t spin_wait );
-kv_key_status_t kv_fetch( kv_key_ctx_t *kctx,  kv_key_alloc_t *a,
+kv_key_status_t kv_fetch( kv_key_ctx_t *kctx,  kv_work_alloc_t *a,
                           const uint64_t pos,  const uint64_t spin_wait );
 kv_key_status_t kv_value( kv_key_ctx_t *kctx,  void *ptr,  uint64_t *size );
 

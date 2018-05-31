@@ -2,10 +2,7 @@
 #define __rai__raikv__key_buf_h__
 
 /* also include stdint.h, string.h */
-
-#ifndef __rai__raikv__key_ctx_h__
 #include <raikv/key_ctx.h>
-#endif
 
 #ifdef __cplusplus
 namespace rai {
@@ -98,8 +95,8 @@ struct KeyBufAligned {
   }
 };
 
-/* simple version of the KeyCtxAlloc defining 8k stack space usage */
-typedef struct KeyCtxAllocT<8192> KeyCtxAlloc8k;
+/* simple version of the WorkAlloc defining 8k stack space usage */
+typedef struct WorkAllocT<8192> WorkAlloc8k;
 
 }
 }
