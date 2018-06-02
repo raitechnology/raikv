@@ -38,8 +38,8 @@ default_cflags := -ggdb
 else
 default_cflags := -ggdb -O3
 endif
-# rpmbuild uses RPM_OPT_FLAGS
 CFLAGS ?= $(default_cflags)
+# rpmbuild uses RPM_OPT_FLAGS, which uses the -fstack-protector-strong flag
 #RPM_OPT_FLAGS ?= $(default_cflags)
 #CFLAGS ?= $(RPM_OPT_FLAGS)
 cflags := $(gcc_wflags) $(CFLAGS) $(arch_cflags)
@@ -64,7 +64,7 @@ all_depends :=
 major_num   := 1
 minor_num   := 0
 patch_num   := 0
-build_num   := 13
+build_num   := 15
 version     := $(major_num).$(minor_num).$(patch_num)
 ver_build   := $(version)-$(build_num)
 defines     += -DKV_VER=$(ver_build)
@@ -152,12 +152,19 @@ rela_test_lnk  = -lraikv
 
 $(bind)/rela_test: $(rela_test_objs) $(rela_test_libs)
 
+pq_test_objs = $(objd)/pq_test.o
+pq_test_deps = $(dependd)/pq_test.d
+
+$(bind)/pq_test: $(pq_test_objs) $(pq_test_libs)
+
 all_exes    += $(bind)/kv_test $(bind)/hash_test $(bind)/ping \
                $(bind)/kv_cli $(bind)/mcs_test $(bind)/kv_server \
-	       $(bind)/load $(bind)/rela_test $(bind)/ctest
+	       $(bind)/load $(bind)/rela_test $(bind)/ctest \
+	       $(bind)/pq_test
 all_depends += $(kv_test_deps) $(hash_test_deps) $(ping_deps) \
                $(kv_cli_deps) $(mcs_test_deps) $(kv_server_deps) \
-	       $(load_deps) $(rela_test_deps) $(ctest_deps)
+	       $(load_deps) $(rela_test_deps) $(ctest_deps) \
+	       $(pq_test_deps)
 
 all_dirs := $(bind) $(libd) $(objd) $(dependd)
 

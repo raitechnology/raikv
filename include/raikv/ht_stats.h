@@ -69,7 +69,7 @@ struct HashDeltaCounters {
   HashCounters last, delta;
 
   HashDeltaCounters() {}
-  void zero( void ) { ::memset( this, 0, sizeof( *this ) ); }
+  void zero( void ) { this->last.zero(); this->delta.zero(); }
 
   void get_ht_delta( const HashCounters &stat );
 };

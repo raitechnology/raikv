@@ -102,7 +102,7 @@ HashTab::initialize( const char *map_name,  const HashTabGeom &geom )
   assert( sizeof( ThrCtx ) * MAX_CTX_ID == HT_CTX_SIZE );
 
   ::memset( &this->hdr, 0, HT_HDR_SIZE );
-  ::memset( &this->ctx[ 0 ], 0, HT_CTX_SIZE );
+  ::memset( (void *) &this->ctx[ 0 ], 0, HT_CTX_SIZE );
 
   /* sig is set later, it indicates the mapping type (malloc, posix, sysv) */
   ::strcpy( this->hdr.name, map_name ); /* length checked before calling */
