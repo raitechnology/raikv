@@ -648,7 +648,7 @@ sprintf_stamps( KeyCtx &kctx,  char *upd,  char *exp )
 static KeyStatus
 print_key_data( KeyCtx &kctx,  const char *what,  uint64_t sz )
 {
-  char fl[ 32 ], upd[ 64 ], exp[ 64 ];
+  char fl[ 128 ], upd[ 64 ], exp[ 64 ];
 
   sprintf_stamps( kctx, upd, exp );
   if ( kctx.msg != NULL ) {
@@ -755,7 +755,7 @@ cli( void )
   KeyCtx        kctx( *map, ctx_id, &kb );
   WorkAlloc8k   wrk;
   char          buf[ 16 * 1024 ], cmd[ 16 ], key[ 8192 ], *data;
-  char          fl[ 32 ], upd[ 64 ], exp[ 64 ], xbuf[ 32 ], tmp = 0;
+  char          fl[ 128 ], upd[ 64 ], exp[ 64 ], xbuf[ 32 ], tmp = 0;
   void        * ptr;
   FILE        * fp,
               * infp = stdin;
