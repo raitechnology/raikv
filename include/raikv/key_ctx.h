@@ -174,6 +174,12 @@ struct KeyCtx {
   bool frag_equals( const HashEntry &el ) const;
   /* use __builtin_prefetch() on hash element using this->start as a base */
   void prefetch( uint64_t cnt = 2 ) const;
+  uint8_t get_type( void ) {
+    return this->entry->value_ctr( this->hash_entry_size ).type;
+  }
+  void set_type( uint8_t type ) {
+    this->entry->value_ctr( this->hash_entry_size ).type = type;
+  }
   /* acquire lock for a key, if KEY_OK, set entry at &ht[ key % ht_size ] */
   KeyStatus acquire( ScratchMem *a ) {
     this->init_work( a );
@@ -271,16 +277,26 @@ struct KeyCtx {
   KeyStatus value( void *ptr,  uint64_t &size );
   /* copy update & expire timestamps into hash entry */
   void update_stamps( void );
+
+  struct CopyData {
+    void    * data;
+    uint64_t  size;
+    MsgHdr  * msg;
+    ValueGeom geom;
+  };
   /* update the hash entry */
-  KeyStatus update_entry( void *res,  uint64_t size,  uint8_t alignment );
+  KeyStatus update_entry( void *res,  uint64_t size,  uint8_t alignment,
+                          HashEntry &el,  CopyData *copy );
   /* allocate memory for hash, releases data that may be allocated, alignment
    * is a size -- sizeof( int64_t ) for example */
-  KeyStatus alloc( void *res,  uint64_t size,  uint8_t alignment = 8 );
+  KeyStatus alloc( void *res,  uint64_t size,  bool copy = false,
+                   uint8_t alignment = 8 );
   /* copy value segment location to hash entry */
   KeyStatus load( MsgCtx &msg_ctx );
   /* resizes memory, could return already alloced memory if fits,
    * does not copy data to newly allocated space (maybe it should) */
-  KeyStatus resize( void *res,  uint64_t size,  uint8_t alignment = 8 );
+  KeyStatus resize( void *res,  uint64_t size,  bool copy = false,
+                    uint8_t alignment = 8 );
   /* release the data used by entry */
   KeyStatus release_data( void );
   /* release the data used by dropped entry when chain == max_chains */

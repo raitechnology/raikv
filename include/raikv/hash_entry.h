@@ -144,7 +144,8 @@ struct ValuePtr { /* packed 128 bit pointer with seg & off & size & serial */
 
 struct ValueCtr { /* packed 64 bit immediate size & serial & seal */
   static const uint64_t SERIAL_MASK = ( (uint64_t) 1 << 48 ) - 1;
-  uint32_t size     : 15, /* size of immediate or number of values */
+  uint32_t size     : 10, /* size of immediate or number of values */
+           type     : 5,  /* object type */
            seal     : 1,  /* seal check, data is valid */
            serialhi : 16, /* update serial */
            seriallo;

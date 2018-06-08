@@ -481,9 +481,9 @@ KeyCtx::update_stamps( void )
 }
 
 KeyStatus
-KeyCtx::update_entry( void *res,  uint64_t size,  uint8_t alignment )
+KeyCtx::update_entry( void *res,  uint64_t size,  uint8_t alignment,
+                      HashEntry &el,  CopyData *copy )
 {
-  HashEntry    & el       = *this->entry;
   KeyFragment  & kb       = *this->kbuf;
   const uint32_t hdr_size = HashEntry::hdr_size( kb );
   uint8_t      * hdr_end  = &((uint8_t *) (void *) &el)[ hdr_size ];
@@ -491,6 +491,19 @@ KeyCtx::update_entry( void *res,  uint64_t size,  uint8_t alignment )
   uint8_t      * trail    = (uint8_t *) (void *) &ctr;
   const bool     has_ts   = ( this->update_ns | this->expire_ns ) != 0;
 
+  if ( copy != NULL ) {
+    if ( el.test( FL_IMMEDIATE_VALUE | FL_DROPPED ) == FL_IMMEDIATE_VALUE &&
+         ctr.size > 0 ) {
+      uint32_t sav_size = ctr.size;
+      void * sav = ( ( el.test( FL_PART_KEY ) == 0 ) ? el.ptr( hdr_size ) :
+                                                el.ptr( sizeof( HashEntry ) ) );
+      sav = this->copy_data( sav, sav_size );
+      if ( sav == NULL )
+        return KEY_ALLOC_FAILED;
+      copy->data = sav;
+      copy->size = sav_size;
+    }
+  }
   if ( has_ts || el.test( FL_EXPIRE_STAMP | FL_UPDATE_STAMP ) ) {
     if ( has_ts )
       this->update_stamps();
@@ -525,44 +538,65 @@ KeyCtx::update_entry( void *res,  uint64_t size,  uint8_t alignment )
       el.clear( FL_IMMEDIATE_VALUE | FL_IMMEDIATE_KEY | FL_DROPPED );
       el.set( FL_PART_KEY | FL_UPDATED );
     }
+    ctr.size = 0;
+    return KEY_SEG_VALUE;
   }
   /* key doesn't fit and no segment data, check if value fits */
-  else {
-    hdr_end = &((uint8_t *) (void *) &el)[ sizeof( HashEntry ) ];
-    if ( &hdr_end[ size ] > trail ) {
-      this->ht.ctx[ this->ctx_id ].incr_afail();
-      return KEY_ALLOC_FAILED;
-    }
-    /* only part of the key fits */
-    if ( el.test( FL_PART_KEY ) == 0 ) {
-      uint32_t check = kv_crc_c( kb.u.buf, kb.keylen, 0 );
-      el.key.keylen = kb.keylen;
-      el.key.u.x.b1 = (uint16_t) ( check >> 16 );
-      el.key.u.x.b2 = (uint16_t) check;
-    }
-    el.clear( FL_IMMEDIATE_KEY | FL_DROPPED );
-    el.set( FL_PART_KEY | FL_IMMEDIATE_VALUE | FL_UPDATED );
-    ctr.size = size;
-    *(void **) res = (void *) hdr_end;
-    return KEY_OK;
+  hdr_end = &((uint8_t *) (void *) &el)[ sizeof( HashEntry ) ];
+  if ( &hdr_end[ size ] > trail ) {
+    this->ht.ctx[ this->ctx_id ].incr_afail();
+    return KEY_ALLOC_FAILED;
   }
-  ctr.size = 0;
-  return KEY_SEG_VALUE;
+  /* only part of the key fits */
+  if ( el.test( FL_PART_KEY ) == 0 ) {
+    uint32_t check = kv_crc_c( kb.u.buf, kb.keylen, 0 );
+    el.key.keylen = kb.keylen;
+    el.key.u.x.b1 = (uint16_t) ( check >> 16 );
+    el.key.u.x.b2 = (uint16_t) check;
+  }
+  el.clear( FL_IMMEDIATE_KEY | FL_DROPPED );
+  el.set( FL_PART_KEY | FL_IMMEDIATE_VALUE | FL_UPDATED );
+  ctr.size = size;
+  *(void **) res = (void *) hdr_end;
+  return KEY_OK;
 }
 
 /* return a contiguous memory space for data attached to the Key ht[] entry */
 KeyStatus
-KeyCtx::alloc( void *res,  uint64_t size,  uint8_t alignment )
+KeyCtx::alloc( void *res,  uint64_t size,  bool copy,  uint8_t alignment )
 {
   if ( this->test( KEYCTX_IS_READ_ONLY ) )
     return KEY_WRITE_ILLEGAL;
   HashEntry & el = *this->entry;
-  /* if something is already allocated, release it */
-  if ( el.test( FL_SEGMENT_VALUE ) )
-    this->release_data();
+  CopyData cp, *cpp = NULL;
+
+  /* if something is already allocated, copy or release it */
+  if ( el.test( FL_SEGMENT_VALUE ) ) {
+    if ( ! copy )
+      this->release_data();
+    else {
+      KeyStatus mstatus;
+      if ( this->msg == NULL &&
+           ( (mstatus = this->attach_msg( ATTACH_WRITE )) != KEY_OK ) )
+        return mstatus;
+      cpp     = &cp;
+      cp.data = NULL;
+      cp.size = 0;
+      cp.msg  = this->msg;
+      cp.geom = this->geom;
+      this->msg = NULL;
+      el.clear( FL_SEGMENT_VALUE );
+    }
+  }
+  else if ( copy ) {
+    cpp     = &cp;
+    cp.data = NULL;
+    cp.size = 0;
+    cp.msg  = NULL;
+  }
 
   KeyStatus status;
-  status = this->update_entry( res, size, alignment );
+  status = this->update_entry( res, size, alignment, el, cpp );
   this->next_serial( ValueCtr::SERIAL_MASK );
 
   if ( status == KEY_SEG_VALUE ) {
@@ -583,6 +617,28 @@ KeyCtx::alloc( void *res,  uint64_t size,  uint8_t alignment )
       this->ht.ctx[ this->ctx_id ].incr_afail();
     }
   }
+  if ( cpp != NULL ) {
+    if ( status == KEY_OK ) {
+      if ( cp.msg != NULL ) {
+        cp.data = cp.msg->ptr( cp.msg->hdr_size() );
+        cp.size = cp.msg->msg_size;
+      }
+      if ( cp.data != NULL ) {
+        if ( cp.size > size )
+          cp.size = size;
+        if ( cp.size > 0 )
+          ::memcpy( *(void **) res, cp.data, cp.size );
+      }
+    }
+    if ( cp.msg != NULL ) {
+      /* release segment data */
+      Segment &seg = this->ht.segment( cp.geom.segment );
+      cp.msg->release();
+      /* clear hash entry geometry */
+      seg.msg_count  -= 1;
+      seg.avail_size += cp.geom.size;
+    }
+  }
   return status;
 }
 
@@ -591,12 +647,12 @@ KeyCtx::load( MsgCtx &msg_ctx )
 {
   if ( this->test( KEYCTX_IS_READ_ONLY ) )
     return KEY_WRITE_ILLEGAL;
-  HashEntry & el = *this->entry;
 
+  HashEntry & el = *this->entry;
   if ( el.test( FL_SEGMENT_VALUE ) )
     this->release_data();
 
-  this->update_entry( NULL, 0, 0 );
+  this->update_entry( NULL, 0, 0, el, NULL );
   this->next_serial( ValueCtr::SERIAL_MASK );
 
   el.set( FL_SEGMENT_VALUE );
@@ -610,7 +666,7 @@ KeyCtx::load( MsgCtx &msg_ctx )
 }
 
 KeyStatus
-KeyCtx::resize( void *res,  uint64_t size,  uint8_t alignment )
+KeyCtx::resize( void *res,  uint64_t size,  bool copy,  uint8_t alignment )
 {
   if ( this->test( KEYCTX_IS_READ_ONLY ) )
     return KEY_WRITE_ILLEGAL;
@@ -630,7 +686,7 @@ KeyCtx::resize( void *res,  uint64_t size,  uint8_t alignment )
       const bool has_ts = ( this->update_ns | this->expire_ns ) != 0;
       if ( has_ts ) {
         if ( el.test( FL_EXPIRE_STAMP | FL_UPDATE_STAMP ) == 0 )
-          goto needs_new_layout;
+          goto needs_new_layout; /* XXX fix this, does not need to reallocate */
         this->update_stamps();
       }
       this->next_serial( ValueCtr::SERIAL_MASK );
@@ -643,7 +699,7 @@ KeyCtx::resize( void *res,  uint64_t size,  uint8_t alignment )
   }
 needs_new_layout:;
   /* reallocate, could do better if key already copied */
-  return this->alloc( res, size, alignment );
+  return this->alloc( res, size, copy, alignment );
 }
 
 /* get the value associated with the key */
