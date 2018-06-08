@@ -411,7 +411,7 @@ copy_fl( char *buf,  const char *s )
 }
 
 static char *
-flags_string( uint16_t fl,  char *buf )
+flags_string( uint16_t fl,  uint8_t type,  char *buf )
 {
   char *s = buf;
   *buf++ = (char) ( fl & FL_ALIGNMENT ) + '0';
@@ -435,6 +435,35 @@ flags_string( uint16_t fl,  char *buf )
     buf = copy_fl( buf, "-Mved" );
   if ( ( fl & FL_BUSY ) != 0 )
     buf = copy_fl( buf, "-Busy" );
+  if ( type != 0 ) {
+    buf = copy_fl( buf, "," );
+    switch ( type ) {
+      default: buf = copy_fl( buf, "MD_NODATA" );    break;
+      case 1:  buf = copy_fl( buf, "MD_MESSAGE" );   break;
+      case 2:  buf = copy_fl( buf, "MD_STRING" );    break;
+      case 3:  buf = copy_fl( buf, "MD_OPAQUE" );    break;
+      case 4:  buf = copy_fl( buf, "MD_BOOLEAN" );   break;
+      case 5:  buf = copy_fl( buf, "MD_INT" );       break;
+      case 6:  buf = copy_fl( buf, "MD_UINT" );      break;
+      case 7:  buf = copy_fl( buf, "MD_REAL" );      break;
+      case 8:  buf = copy_fl( buf, "MD_ARRAY" );     break;
+      case 9:  buf = copy_fl( buf, "MD_PARTIAL" );   break;
+      case 10: buf = copy_fl( buf, "MD_IPDATA" );    break;
+      case 11: buf = copy_fl( buf, "MD_SUBJECT" );   break;
+      case 12: buf = copy_fl( buf, "MD_ENUM" );      break;
+      case 13: buf = copy_fl( buf, "MD_TIME" );      break;
+      case 14: buf = copy_fl( buf, "MD_DATE" );      break;
+      case 15: buf = copy_fl( buf, "MD_DATETIME" );  break;
+      case 16: buf = copy_fl( buf, "MD_STAMP" );     break;
+      case 17: buf = copy_fl( buf, "MD_DECIMAL" );   break;
+      case 18: buf = copy_fl( buf, "MD_LIST" );      break;
+      case 19: buf = copy_fl( buf, "MD_HASH" );      break;
+      case 20: buf = copy_fl( buf, "MD_SET" );       break;
+      case 21: buf = copy_fl( buf, "MD_SORTEDSET" ); break;
+      case 22: buf = copy_fl( buf, "MD_STREAM" );    break;
+      case 23: buf = copy_fl( buf, "MD_GEO" );       break;
+    }
+  }
   *buf = '\0';
   return s;
 }
@@ -628,7 +657,7 @@ print_key_data( KeyCtx &kctx,  const char *what,  uint64_t sz )
             "(%s seg=%u:sz=%lu:off=%lu:cnt=%lu) %s\n",
             kctx.pos, kctx.key, kctx.key2, kctx.chains, kctx.serial -
             ( kctx.key & ValueCtr::SERIAL_MASK ), kctx.inc, sz, upd, exp,
-            flags_string( kctx.entry->flags, fl ),
+            flags_string( kctx.entry->flags, kctx.get_type(), fl ),
             geom.segment, geom.size, geom.offset,
             geom.serial - ( kctx.key & ValueCtr::SERIAL_MASK ), what );
   }
@@ -636,7 +665,7 @@ print_key_data( KeyCtx &kctx,  const char *what,  uint64_t sz )
     xprintf( 0, "[%lu] [h=%08lx:%08lx:chn=%lu:cnt=%lu:inc=%u:sz=%lu%s%s] (%s) %s\n",
             kctx.pos, kctx.key, kctx.key2, kctx.chains, kctx.serial -
             ( kctx.key & ValueCtr::SERIAL_MASK ), kctx.inc, sz, upd, exp,
-            flags_string( kctx.entry->flags, fl ), what );
+            flags_string( kctx.entry->flags, kctx.get_type(), fl ), what );
   }
   return KEY_OK;
 }
@@ -988,7 +1017,7 @@ cli( void )
                   xprintf( 0,
                            "[%lu]+%u.%lu %s (%s seg=%u:sz=%lu:off=%lu%s%s)\n",
                            kld.pos, kctx.inc, pos_off, key,
-                           flags_string( kctx.entry->flags, fl ),
+                           flags_string( kctx.entry->flags, kctx.get_type(), fl ),
                            geom.segment, geom.size, geom.offset, upd, exp );
                   print_count++;
                 }
@@ -1007,7 +1036,8 @@ cli( void )
                   sprintf_stamps( kctx, upd, exp );
                   xprintf( 0, "[%lu]+%u.%lu %s (%s %s%s)\n",
                            kld.pos, kctx.inc, pos_off, key,
-                          flags_string( kctx.entry->flags, fl ), upd, exp );
+                      flags_string( kctx.entry->flags, kctx.get_type(), fl ),
+                      upd, exp );
                   print_count++;
                 }
               }
