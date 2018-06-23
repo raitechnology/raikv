@@ -48,21 +48,36 @@ struct MsgHdr {
     ctr.seal = 0;
   }
   /* update serial and set seal, allowing readers to access */
-  void seal( uint64_t serial,  uint16_t flags ) {
+  void seal( uint64_t serial,  uint8_t type,  uint16_t flags ) {
     ValueCtr &ctr = this->value_ctr();
     ctr.set_serial( serial );
     ctr.size = 1;
+    ctr.type = type;
     ctr.seal = 1;
     this->flags = flags; /* clears FL_BUSY */
   }
   /* check that the message has same serial as hash_entry and is not unsealed */
-  bool check_seal( uint64_t h,  uint64_t h2,  uint64_t serial,  uint32_t sz ) {
-    const ValueCtr &ctr = this->value_ctr();
-    return this->size == sz && this->hash == h && this->hash2 == h2 &&
-           this->test( FL_BUSY ) == 0 && ctr.get_serial() == serial && ctr.seal == 1;
+  bool check_seal( uint64_t h,  uint64_t h2,  uint64_t serial,
+                   uint32_t sz ) volatile {
+    const bool hdr_sealed = ( this->size == sz ) &
+                            ( this->hash == h ) &
+                            ( this->hash2 == h2 ) &
+                            ( ( this->flags & FL_BUSY ) == 0 );
+    if ( hdr_sealed ) { /* size is correct, it is safe to dereference */
+      /* check serial number */
+      volatile ValueCtr &ctr = *(volatile ValueCtr *) (void *)
+               &((uint8_t *) (void *) this)[ sz - sizeof( ValueCtr ) ];
+      uint32_t seriallo = (uint32_t) serial,
+               serialhi = (uint16_t) ( serial >> 32 );
+      return ( ctr.seriallo == seriallo ) &
+             ( ctr.serialhi == serialhi ) &
+             ( ctr.seal == 1 );
+    }
+    return false;
   }
   /* set the header flags, unseal() to prevent msg from going anywhere */
-  void init( uint16_t fl,  uint64_t h,  uint64_t h2,  uint32_t sz,  uint32_t msz ) {
+  void init( uint16_t fl,  uint64_t h,  uint64_t h2,  uint32_t sz,
+             uint32_t msz ) {
     this->size     = sz;
     this->msg_size = msz;
     this->hash     = h;
@@ -82,18 +97,18 @@ struct MsgHdr {
   }
   /* no longer need the memory, mark freed */
   void release( void ) {
-    this->seal( 0, 0 );
+    this->seal( 0, 0, 0 );
     this->hash = ZOMBIE64;
   }
   /* the serial and seal are at the end of the msg data */
-  ValueCtr &value_ctr( void ) {
+  ValueCtr &value_ctr( void ) const {
     return *(ValueCtr *) this->ptr( this->size - sizeof( ValueCtr ) );
   }
-  RelativeStamp &rela_stamp( void ) {
+  RelativeStamp &rela_stamp( void ) const {
     return *(RelativeStamp *) this->ptr( this->size -
                              ( sizeof( ValueCtr ) + sizeof( RelativeStamp ) ) );
   }
-  void *ptr( uint32_t off ) {
+  void *ptr( uint32_t off ) const {
     return &((uint8_t *) (void *) this)[ off ];
   }
   bool is_expired( const HashTab &ht );

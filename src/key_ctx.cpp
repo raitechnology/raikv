@@ -18,9 +18,12 @@ KeyCtx::KeyCtx( HashTab &t, uint32_t id, KeyFragment *b )
   , ht_size( t.hdr.ht_size )
   , cuckoo_buckets( t.hdr.cuckoo_buckets )
   , cuckoo_arity( t.hdr.cuckoo_arity )
+  , seg_align_shift( t.hdr.seg_align_shift )
   , inc( 0 )
   , drop_flags( 0 )
   , flags( KEYCTX_IS_READ_ONLY )
+  , entry( 0 )
+  , msg( 0 )
   , max_chains( t.hdr.ht_size )
 {
   ::memset( &this->chains, 0,
@@ -36,9 +39,12 @@ KeyCtx::KeyCtx( HashTab &t, uint32_t id, KeyFragment &b )
   , ht_size( t.hdr.ht_size )
   , cuckoo_buckets( t.hdr.cuckoo_buckets )
   , cuckoo_arity( t.hdr.cuckoo_arity )
+  , seg_align_shift( t.hdr.seg_align_shift )
   , inc( 0 )
   , drop_flags( 0 )
   , flags( KEYCTX_IS_READ_ONLY )
+  , entry( 0 )
+  , msg( 0 )
   , max_chains( t.hdr.ht_size )
 {
   ::memset( &this->chains, 0,
@@ -139,6 +145,7 @@ KeyCtx::tombstone( void )
       return status;
     this->serial = 0;
     this->entry->set( FL_DROPPED );
+    this->entry->clear( FL_EXPIRE_STAMP | FL_UPDATE_STAMP );
     ctx.incr_drop();
   }
   return KEY_OK;
@@ -150,13 +157,6 @@ KeyCtx::frag_equals( const HashEntry &el ) const
   KeyFragment &kb = *this->kbuf;
   if ( el.test( FL_IMMEDIATE_KEY ) )
     return el.key.frag_equals( kb );
-
-  /* 95 bits of hash, 1 billion keys birthday paradox:
-     k^2 / 2N = ( 1e9 * 1e9 ) / ( 2 << 95 ) =
-     probability of a collision is 1 / 80 billion,
-     where all keys are the same length, since keylen is compared
-     and large enough to overflow HashEntry(64b) or keylen > 32b
-     ... may need to use HashEntry(128b) if 512bit SHA hashes are the keys */
   return ( el.key.keylen == kb.keylen ) &&
          ( kv_crc_c( kb.u.buf, kb.keylen, 0 ) ==
                     ( ( (uint32_t) el.key.u.x.b1 << 16 ) |
@@ -188,30 +188,43 @@ KeyCtx::get_key( KeyFragment *&b )
       b = NULL;
     return KEY_TOMBSTONE;
   }
-  if ( ! this->entry->test( FL_IMMEDIATE_KEY ) ) {
-    if ( this->entry->test( FL_SEGMENT_VALUE ) ) {
-      if ( this->msg == NULL &&
-           (mstatus = this->attach_msg( ATTACH_READ )) != KEY_OK )
-        return mstatus;
+  if ( this->entry->test( FL_IMMEDIATE_KEY ) ) {
+    b = &this->entry->key;
+    return KEY_OK;
+  }
+  if ( this->entry->test( FL_SEGMENT_VALUE ) ) {
+    if ( this->msg == NULL &&
+         (mstatus = this->attach_msg( ATTACH_READ )) != KEY_OK )
+      return mstatus;
+    /* copy key */
+    if ( this->test( KEYCTX_NO_COPY_ON_READ ) ) {
+      uint16_t keylen = this->msg->key.keylen;
+      if ( this->is_msg_valid() ) {
+        b = (KeyFragment *) this->wrk->alloc( sizeof( KeyFragment ) + keylen );
+        b->keylen = keylen;
+        ::memcpy( b->u.buf, this->msg->key.u.buf, keylen );
+        if ( this->is_msg_valid() )
+          return KEY_OK;
+      }
+      return KEY_MUTATED;
+    }
+    /* key already copied */
+    else {
       b = &this->msg->key;
     }
-    else {
-      b = NULL;
-      if ( this->entry->test( FL_PART_KEY ) )
-        return KEY_PART_ONLY;
-      return KEY_NOT_FOUND;
-    }
+    return KEY_OK;
   }
-  else
-    b = &this->entry->key;
-  return KEY_OK;
+  b = NULL;
+  if ( this->entry->test( FL_PART_KEY ) )
+    return KEY_PART_ONLY;
+  return KEY_NOT_FOUND;
 }
 
 void
 KeyCtx::prefetch( uint64_t cnt ) const
 {
   /* I believe rw is ignored, locality may have moderate effects, but it is
-   * hard to measure accurately since memory systems have lots of noise */
+   * hard to measure accurately */
   static const int rw = 1;       /* 0 is prepare for write, 1 is read */
   static const int locality = 2; /* 0 is non, 1 is low, 2 is moderate, 3 high*/
   const uint8_t * p = (uint8_t *) (void *)
@@ -273,8 +286,6 @@ done:;
   this->msg       = NULL;
   this->drop_key  = 0;
   this->set( KEYCTX_IS_READ_ONLY );
-  /*this->update_ns = 0;
-  this->expire_ns = 0;*/
 }
 
 void
@@ -319,8 +330,6 @@ done:;
   this->msg       = NULL;
   this->drop_key  = 0;
   this->set( KEYCTX_IS_READ_ONLY );
-  /*this->update_ns = 0;
-  this->expire_ns = 0;*/
 }
 
 KeyStatus
@@ -332,28 +341,32 @@ KeyCtx::attach_msg( AttachType upd )
     if ( upd == ATTACH_WRITE ) /* no can do */
       return KEY_WRITE_ILLEGAL;
     this->entry->get_value_geom( this->hash_entry_size, this->geom,
-                                 this->ht.hdr.seg_align_shift );
-    /* copy msg data into buffer */
-    if ( (p = this->copy_data( 
-            this->ht.seg_data( this->geom.segment, this->geom.offset ),
-            this->geom.size )) == NULL )
-      return KEY_ALLOC_FAILED;
-    /* check that msg is valid */
-    this->msg = (MsgHdr *) p;
-    if ( ! this->msg->check_seal( this->key, this->key2, this->geom.serial,
-                                  this->geom.size ) ) {
-      this->msg = NULL;
-      return KEY_MUTATED;
+                                 this->seg_align_shift );
+    if ( this->test( KEYCTX_NO_COPY_ON_READ ) ) {
+      p = this->ht.seg_data( this->geom.segment, this->geom.offset );
+      this->msg = (MsgHdr *) p;
+    }
+    else {
+      /* copy msg data into buffer */
+      if ( (p = this->copy_data( 
+              this->ht.seg_data( this->geom.segment, this->geom.offset ),
+              this->geom.size )) == NULL )
+        return KEY_ALLOC_FAILED;
+      /* check that msg is valid */
+      this->msg = (MsgHdr *) p;
+      if ( ! this->is_msg_valid() ) {
+        this->msg = NULL;
+        return KEY_MUTATED;
+      }
     }
   }
   else {
     /* locked, exclusive access to message */
     this->entry->get_value_geom( this->hash_entry_size, this->geom,
-                                 this->ht.hdr.seg_align_shift );
+                                 this->seg_align_shift );
     this->msg = (MsgHdr *) this->ht.seg_data( this->geom.segment,
                                               this->geom.offset );
-    if ( ! this->msg->check_seal( this->key, this->key2, this->geom.serial,
-                                  this->geom.size ) ) {
+    if ( ! this->is_msg_valid() ) {
       this->msg = NULL;
       return KEY_MUTATED;
     }
@@ -361,6 +374,33 @@ KeyCtx::attach_msg( AttachType upd )
     this->msg->unseal();
   }
   return KEY_OK;
+}
+
+KeyStatus
+KeyCtx::get_msg_size( uint64_t &sz )
+{
+  KeyStatus mstatus;
+  if ( this->msg == NULL &&
+       (mstatus = this->attach_msg( ATTACH_READ )) != KEY_OK )
+    return mstatus;
+  if ( this->test( KEYCTX_IS_READ_ONLY ) ) {
+    /* attach msg, no seal check */
+    sz = this->msg->msg_size;
+    if ( this->test( KEYCTX_NO_COPY_ON_READ ) && ! this->is_msg_valid() )
+      return KEY_MUTATED;
+  }
+  /* attach and unseal msg */
+  else {
+    sz = this->msg->msg_size;
+  }
+  return KEY_OK;
+}
+
+bool
+KeyCtx::is_msg_valid( void )
+{
+  return this->msg->check_seal( this->key, this->key2, this->geom.serial,
+                                this->geom.size );
 }
 
 /* release the data in the segment for GC */
@@ -409,7 +449,7 @@ KeyCtx::release_evict( void )
     case FL_SEGMENT_VALUE: {
       MsgHdr * tmp;
       el.get_value_geom( this->hash_entry_size, this->geom,
-                         this->ht.hdr.seg_align_shift );
+                         this->seg_align_shift );
       tmp = (MsgHdr *) this->ht.seg_data( this->geom.segment,
                                           this->geom.offset );
       if ( ! tmp->check_seal( this->drop_key, this->drop_key2,
@@ -447,68 +487,26 @@ KeyCtx::seal_msg( void )
 {
   if ( this->msg == NULL && this->attach_msg( ATTACH_WRITE ) != KEY_OK )
     return;
-  const bool has_ts = ( this->update_ns | this->expire_ns ) != 0;
-  if ( has_ts ) {
+  if ( this->entry->test( FL_EXPIRE_STAMP | FL_UPDATE_STAMP ) ) {
     RelativeStamp & rs = this->entry->rela_stamp( this->hash_entry_size );
     this->msg->rela_stamp().u.stamp = rs.u.stamp;
   }
-  this->msg->seal( this->serial, this->entry->flags );
-}
-
-void
-KeyCtx::update_stamps( void )
-{
-  HashEntry     & el = *this->entry;
-  RelativeStamp & rs = el.rela_stamp( this->hash_entry_size );
-  uint64_t        exp_ns,
-                  upd_ns;
-
-  if ( this->get_expire_time( exp_ns ) == KEY_OK ) {
-    uint16_t fl = FL_EXPIRE_STAMP;
-    if ( this->get_update_time( upd_ns ) == KEY_OK ) {
-      rs.set( this->ht.hdr.create_stamp, this->ht.hdr.current_stamp,
-              exp_ns, upd_ns );
-      fl |= FL_UPDATE_STAMP;
-    }
-    else {
-      rs.u.stamp = exp_ns;
-    }
-    el.set( fl );
-  }
-  else if ( this->get_update_time( rs.u.stamp ) == KEY_OK ) {
-    el.set( FL_UPDATE_STAMP );
-  }
+  this->msg->seal( this->serial, this->get_type(), this->entry->flags );
 }
 
 KeyStatus
 KeyCtx::update_entry( void *res,  uint64_t size,  uint8_t alignment,
-                      HashEntry &el,  CopyData *copy )
+                      HashEntry &el )
 {
   KeyFragment  & kb       = *this->kbuf;
   const uint32_t hdr_size = HashEntry::hdr_size( kb );
   uint8_t      * hdr_end  = &((uint8_t *) (void *) &el)[ hdr_size ];
   ValueCtr     & ctr      = el.value_ctr( this->hash_entry_size );
   uint8_t      * trail    = (uint8_t *) (void *) &ctr;
-  const bool     has_ts   = ( this->update_ns | this->expire_ns ) != 0;
 
-  if ( copy != NULL ) {
-    if ( el.test( FL_IMMEDIATE_VALUE | FL_DROPPED ) == FL_IMMEDIATE_VALUE &&
-         ctr.size > 0 ) {
-      uint32_t sav_size = ctr.size;
-      void * sav = ( ( el.test( FL_PART_KEY ) == 0 ) ? el.ptr( hdr_size ) :
-                                                el.ptr( sizeof( HashEntry ) ) );
-      sav = this->copy_data( sav, sav_size );
-      if ( sav == NULL )
-        return KEY_ALLOC_FAILED;
-      copy->data = sav;
-      copy->size = sav_size;
-    }
-  }
-  if ( has_ts || el.test( FL_EXPIRE_STAMP | FL_UPDATE_STAMP ) ) {
-    if ( has_ts )
-      this->update_stamps();
+  if ( el.test( FL_EXPIRE_STAMP | FL_UPDATE_STAMP ) )
     trail -= sizeof( RelativeStamp );
-  }
+
   /* if both key + value fit in the hash entry */
   if ( res != NULL && &hdr_end[ size ] <= trail ) {
     if ( el.test( FL_IMMEDIATE_KEY ) == 0 )
@@ -569,6 +567,7 @@ KeyCtx::alloc( void *res,  uint64_t size,  bool copy,  uint8_t alignment )
     return KEY_WRITE_ILLEGAL;
   HashEntry & el = *this->entry;
   CopyData cp, *cpp = NULL;
+  KeyStatus status;
 
   /* if something is already allocated, copy or release it */
   if ( el.test( FL_SEGMENT_VALUE ) ) {
@@ -589,15 +588,21 @@ KeyCtx::alloc( void *res,  uint64_t size,  bool copy,  uint8_t alignment )
     }
   }
   else if ( copy ) {
-    cpp     = &cp;
-    cp.data = NULL;
-    cp.size = 0;
-    cp.msg  = NULL;
+    cp.msg = NULL;
+    if ( el.test( FL_IMMEDIATE_VALUE | FL_DROPPED ) == FL_IMMEDIATE_VALUE ) {
+      ValueCtr & ctr = el.value_ctr( this->hash_entry_size );
+      cpp     = &cp;
+      cp.data = this->copy_data( el.immediate_value(), ctr.size );
+      cp.size = ctr.size;
+      if ( cp.data == NULL )
+        return KEY_ALLOC_FAILED;
+    }
+    else {
+      cp.data = NULL;
+      cp.size = 0;
+    }
   }
-
-  KeyStatus status;
-  status = this->update_entry( res, size, alignment, el, cpp );
-  this->next_serial( ValueCtr::SERIAL_MASK );
+  status = this->update_entry( res, size, alignment, el );
 
   if ( status == KEY_SEG_VALUE ) {
     /* allocate mem from a segment */
@@ -609,7 +614,7 @@ KeyCtx::alloc( void *res,  uint64_t size,  bool copy,  uint8_t alignment )
       msg_ctx.geom.serial = this->serial;
       this->geom = msg_ctx.geom;
       el.set_value_geom( this->hash_entry_size, msg_ctx.geom,
-                         this->ht.hdr.seg_align_shift );
+                         this->seg_align_shift );
       el.value_ctr( this->hash_entry_size ).size = 1;
       this->msg = msg_ctx.msg;
     }
@@ -652,13 +657,12 @@ KeyCtx::load( MsgCtx &msg_ctx )
   if ( el.test( FL_SEGMENT_VALUE ) )
     this->release_data();
 
-  this->update_entry( NULL, 0, 0, el, NULL );
-  this->next_serial( ValueCtr::SERIAL_MASK );
+  this->update_entry( NULL, 0, 0, el );
 
   el.set( FL_SEGMENT_VALUE );
   msg_ctx.geom.serial = this->serial;
   el.set_value_geom( this->hash_entry_size, msg_ctx.geom,
-                     this->ht.hdr.seg_align_shift );
+                     this->seg_align_shift );
   el.value_ctr( this->hash_entry_size ).size = 1;
   this->msg = msg_ctx.msg;
 
@@ -672,34 +676,50 @@ KeyCtx::resize( void *res,  uint64_t size,  bool copy,  uint8_t alignment )
     return KEY_WRITE_ILLEGAL;
 
   HashEntry & el = *this->entry;
-  /* check if resize fits within current segment mem */
-  if ( el.test( FL_SEGMENT_VALUE ) ) {
-    KeyStatus mstatus;
-    if ( this->msg == NULL &&
-         (mstatus = this->attach_msg( ATTACH_WRITE )) != KEY_OK )
-      return mstatus;
 
-    uint32_t hdr_size   = MsgHdr::hdr_size( this->msg->key );
-    uint64_t alloc_size = MsgHdr::alloc_size( hdr_size, size,
-                                              this->ht.hdr.seg_align() );
-    if ( alloc_size == this->msg->size ) {
-      const bool has_ts = ( this->update_ns | this->expire_ns ) != 0;
-      if ( has_ts ) {
-        if ( el.test( FL_EXPIRE_STAMP | FL_UPDATE_STAMP ) == 0 )
-          goto needs_new_layout; /* XXX fix this, does not need to reallocate */
-        this->update_stamps();
+  switch ( el.test( FL_SEGMENT_VALUE | FL_IMMEDIATE_VALUE ) ) {
+    case FL_IMMEDIATE_VALUE: {
+      uint8_t  * value = el.immediate_value(),
+               * trail = (uint8_t *) el.ptr( this->hash_entry_size );
+      trail -= sizeof( ValueCtr );
+      if ( el.test( FL_EXPIRE_STAMP | FL_UPDATE_STAMP ) )
+        trail -= sizeof( RelativeStamp );
+      if ( &value[ size ] <= trail ) {
+        el.value_ctr( this->hash_entry_size ).size = size;
+        this->next_serial( ValueCtr::SERIAL_MASK );
+        *(void **) res = (void *) value;
+        return KEY_OK;
       }
-      this->next_serial( ValueCtr::SERIAL_MASK );
-      this->geom.serial = el.value_ptr( this->hash_entry_size ).
-                             set_serial( this->serial );
-      this->msg->msg_size = size;
-      *(void **) res = this->msg->ptr( hdr_size );
-      return KEY_OK;
+      break;
     }
+    case FL_SEGMENT_VALUE: {
+      /* check if resize fits within current segment mem */
+      KeyStatus mstatus;
+      if ( this->msg == NULL &&
+           (mstatus = this->attach_msg( ATTACH_WRITE )) != KEY_OK )
+        return mstatus;
+
+      uint32_t hdr_size   = MsgHdr::hdr_size( this->msg->key );
+      uint64_t alloc_size = MsgHdr::alloc_size( hdr_size, size,
+                                                this->seg_align() );
+      if ( alloc_size == this->msg->size ) {
+        this->next_serial( ValueCtr::SERIAL_MASK );
+        this->geom.serial = el.value_ptr( this->hash_entry_size ).
+                               set_serial( this->serial );
+        this->msg->msg_size = size;
+        *(void **) res = this->msg->ptr( hdr_size );
+        return KEY_OK;
+      }
+      break;
+    }
+    default:
+      break;
   }
-needs_new_layout:;
   /* reallocate, could do better if key already copied */
-  return this->alloc( res, size, copy, alignment );
+  KeyStatus status = this->alloc( res, size, copy, alignment );
+  if ( status == KEY_OK )
+    this->next_serial( ValueCtr::SERIAL_MASK );
+  return status;
 }
 
 /* get the value associated with the key */
@@ -712,21 +732,26 @@ KeyCtx::value( void *data,  uint64_t &size )
   HashEntry & el = *this->entry;
 
   switch ( el.test( FL_SEGMENT_VALUE | FL_IMMEDIATE_VALUE ) ) {
+    case FL_IMMEDIATE_VALUE: {
+      /* size stashed at end */
+      size = el.value_ctr( this->hash_entry_size ).size;
+      /* data after hdr in hash entry */
+      *(void **) data = (void *) el.immediate_value();
+      return KEY_OK;
+    }
     case FL_SEGMENT_VALUE: {
       KeyStatus mstatus;
       if ( this->msg == NULL &&
            ( (mstatus = this->attach_msg( ATTACH_READ )) != KEY_OK ) )
         return mstatus;
-      /* data starts after hdr */
-      *(void **) data = this->msg->ptr( this->msg->hdr_size() );
+      uint64_t hdr_size = this->msg->hdr_size();
       size = this->msg->msg_size;
-      return KEY_OK;
-    }
-    case FL_IMMEDIATE_VALUE: {
-      /* size stashed at end,  XXX: fix if hash_entry_size > 256 */
-      size = el.value_ctr( this->hash_entry_size ).size;
-      /* data after hdr in hash entry */
-      *(void **) data = (void *) el.immediate_value();
+      if ( this->test( KEYCTX_NO_COPY_ON_READ ) ) {
+        if ( ! this->is_msg_valid() ) /* check that hdr and size are correct */
+          return KEY_MUTATED;
+      }
+      /* data starts after hdr */
+      *(void **) data = this->msg->ptr( hdr_size );
       return KEY_OK;
     }
     default:
@@ -735,77 +760,162 @@ KeyCtx::value( void *data,  uint64_t &size )
 }
 
 KeyStatus
-KeyCtx::get_update_time( uint64_t &update_time_ns )
+KeyCtx::update_stamps( uint64_t exp_ns,  uint64_t upd_ns )
 {
-  if ( this->update_ns != 0 ) {
-    update_time_ns = this->update_ns;
+  HashEntry     & el   = *this->entry;
+  RelativeStamp & rela = el.rela_stamp( this->hash_entry_size );
+
+  if ( ( exp_ns | upd_ns ) == 0 )
     return KEY_OK;
-  }
-  if ( this->entry != NULL ) {
-    switch ( this->entry->test( FL_EXPIRE_STAMP | FL_UPDATE_STAMP ) ) {
-
-      case FL_EXPIRE_STAMP:
-        if ( this->expire_ns == 0 )
-          this->entry->get_expire_stamp( this->hash_entry_size,
-                                         this->expire_ns );
-        break;
-
-      case FL_UPDATE_STAMP:
-        this->entry->get_update_stamp( this->hash_entry_size, this->update_ns );
-        update_time_ns = this->update_ns;
-        return KEY_OK;
-
-      case FL_UPDATE_STAMP | FL_EXPIRE_STAMP: {
-        uint64_t exp_ns;
-        this->entry->get_updexp_stamp( this->hash_entry_size,
-                                       this->ht.hdr.create_stamp,
-                                       this->ht.hdr.current_stamp,
-                                       exp_ns, this->update_ns );
-        update_time_ns = this->update_ns;
-        if ( this->expire_ns == 0 )
-          this->expire_ns = exp_ns;
-        return KEY_OK;
+  /* make room for rela stamp by moving value ptr up */
+  if ( el.test( FL_EXPIRE_STAMP | FL_UPDATE_STAMP ) == 0 ) {
+    uint32_t tl = this->hash_entry_size - sizeof( ValueCtr ),
+             hd = el.hdr_size2();
+    if ( el.test( FL_IMMEDIATE_VALUE ) )
+      hd += el.value_ctr( this->hash_entry_size ).size;
+    if ( el.test( FL_SEGMENT_VALUE ) )
+      tl -= sizeof( ValuePtr );
+    if ( hd + sizeof( RelativeStamp ) <= tl ) {
+      if ( el.test( FL_SEGMENT_VALUE ) ) {
+        ValuePtr * cur_ptr = (ValuePtr *) el.ptr( tl );
+        ValuePtr * new_ptr = (ValuePtr *) el.ptr( tl - sizeof( RelativeStamp ));
+        ::memmove( new_ptr, cur_ptr, sizeof( ValuePtr ) );
       }
     }
+    else { /* doesn't fit */
+      void *tmp = NULL;
+      ValueCtr &ctr = el.value_ctr( this->hash_entry_size );
+      KeyFragment *kb = this->kbuf;
+      uint16_t has_seg;
+      /* copy in case of null kbuf */
+      bool is_tmp_kb  = false;
+      if ( kb == NULL && el.test( FL_IMMEDIATE_KEY ) ) {
+        kb = (KeyFragment *) this->copy_data( &el.key, el.key.keylen + 2 );
+        if ( kb == NULL )
+          return KEY_ALLOC_FAILED;
+        this->kbuf = kb;
+        is_tmp_kb = true;
+      }
+      /* copy seg, it may be erased */
+      if ( (has_seg = el.test( FL_SEGMENT_VALUE )) != 0 )
+        el.get_value_geom( this->hash_entry_size, this->geom,
+                           this->seg_align_shift );
+      /* make room */
+      if ( exp_ns != 0 ) el.set( FL_EXPIRE_STAMP );
+      if ( upd_ns != 0 ) el.set( FL_UPDATE_STAMP );
+      KeyStatus status = this->alloc( &tmp, ctr.size, true, 8 );
+      if ( is_tmp_kb )
+        this->kbuf = NULL;
+      if ( status != KEY_OK )
+        return status;
+      if ( has_seg != 0 )
+        el.set_value_geom( this->hash_entry_size, this->geom,
+                           this->seg_align_shift );
+    }
   }
-  return KEY_NOT_FOUND;
+  /* insert stamps that are not zero */
+  if ( exp_ns != 0 || el.test( FL_EXPIRE_STAMP ) ) {
+    if ( upd_ns != 0 || el.test( FL_UPDATE_STAMP ) ) {
+      /* get the current stamps */
+      if ( exp_ns == 0 || upd_ns == 0 ) {
+        uint64_t old_exp_ns, old_upd_ns;
+        this->get_stamps( old_exp_ns, old_upd_ns );
+        if ( exp_ns == 0 ) exp_ns = old_exp_ns;
+        if ( upd_ns == 0 ) upd_ns = old_upd_ns;
+      }
+      /* two stamps now exist */
+      rela.set( this->ht.hdr.create_stamp, this->ht.hdr.current_stamp,
+                exp_ns, upd_ns );
+      el.set( FL_EXPIRE_STAMP | FL_UPDATE_STAMP );
+    }
+    /* only expire exists */
+    else {
+      rela.u.stamp = exp_ns;
+      el.set( FL_EXPIRE_STAMP );
+      el.clear( FL_UPDATE_STAMP );
+    }
+  }
+  /* only update exists */
+  else {
+    rela.u.stamp = upd_ns;
+    el.set( FL_UPDATE_STAMP );
+    el.clear( FL_EXPIRE_STAMP );
+  }
+  return KEY_OK;
 }
 
 KeyStatus
-KeyCtx::get_expire_time( uint64_t &expire_time_ns )
+KeyCtx::clear_stamps( bool clr_exp,  bool clr_upd )
 {
-  if ( this->expire_ns != 0 ) {
-    expire_time_ns = this->expire_ns;
-    return KEY_OK;
-  }
-  if ( this->entry != NULL ) {
-    switch ( this->entry->test( FL_EXPIRE_STAMP | FL_UPDATE_STAMP ) ) {
+  HashEntry     & el   = *this->entry;
+  RelativeStamp & rela = el.rela_stamp( this->hash_entry_size );
 
-      case FL_EXPIRE_STAMP:
-        this->entry->get_expire_stamp( this->hash_entry_size, this->expire_ns );
-        expire_time_ns = this->expire_ns;
+  switch ( el.test( FL_EXPIRE_STAMP | FL_UPDATE_STAMP ) ) {
+    case FL_EXPIRE_STAMP:
+      if ( ! clr_exp ) /* if update doesn't exist and expire is not cleared */
         return KEY_OK;
-
-      case FL_UPDATE_STAMP:
-        if ( this->update_ns == 0 )
-          this->entry->get_update_stamp( this->hash_entry_size,
-                                         this->update_ns );
-        break;
-
-      case FL_UPDATE_STAMP | FL_EXPIRE_STAMP: {
-        uint64_t upd_ns;
-        this->entry->get_updexp_stamp( this->hash_entry_size,
-                                       this->ht.hdr.create_stamp,
-                                       this->ht.hdr.current_stamp,
-                                       this->expire_ns, upd_ns );
-        expire_time_ns = this->expire_ns;
-        if ( this->update_ns == 0 )
-          this->update_ns = upd_ns;
+      break; /* clear all stamps */
+    case FL_UPDATE_STAMP:
+      if ( ! clr_upd ) /* if expire doesn't exist and update is not cleared */
+        return KEY_OK;
+      break; /* clear all stamps */
+    case FL_UPDATE_STAMP | FL_EXPIRE_STAMP: {
+      uint64_t exp_ns, upd_ns;
+      if ( clr_exp && clr_upd )
+        break; /* clear all stamps */
+      rela.get( this->ht.hdr.create_stamp, this->ht.hdr.current_stamp,
+                exp_ns, upd_ns );
+      /* only remove one stamp */
+      if ( clr_exp ) {
+        rela.u.stamp = upd_ns; /* update still exists */
+        el.clear( FL_EXPIRE_STAMP );
         return KEY_OK;
       }
+      rela.u.stamp = exp_ns; /* expire still exists */
+      el.clear( FL_UPDATE_STAMP );
+      return KEY_OK;
     }
+    default:
+      return KEY_OK;
   }
-  return KEY_NOT_FOUND;
+  /* move value ptr down */
+  if ( el.test( FL_SEGMENT_VALUE ) ) {
+    uint32_t tl = this->hash_entry_size - sizeof( ValueCtr );
+    ValuePtr * cur_ptr = (ValuePtr *) el.ptr( tl - sizeof( RelativeStamp ) );
+    ValuePtr * new_ptr = (ValuePtr *) el.ptr( tl );
+    ::memmove( new_ptr, cur_ptr, sizeof( ValuePtr ) );
+  }
+  /* both deleted */
+  el.clear( FL_EXPIRE_STAMP | FL_UPDATE_STAMP );
+  return KEY_OK;
+}
+
+KeyStatus
+KeyCtx::get_stamps( uint64_t &exp_ns,  uint64_t &upd_ns )
+{
+  HashEntry     & el   = *this->entry;
+  RelativeStamp & rela = el.rela_stamp( this->hash_entry_size );
+
+  switch ( el.test( FL_EXPIRE_STAMP | FL_UPDATE_STAMP ) ) {
+    case FL_EXPIRE_STAMP:
+      exp_ns = rela.u.stamp;
+      upd_ns = 0;
+      break;
+    case FL_UPDATE_STAMP:
+      exp_ns = 0;
+      upd_ns = rela.u.stamp;
+      break;
+    case FL_UPDATE_STAMP | FL_EXPIRE_STAMP: {
+      rela.get( this->ht.hdr.create_stamp, this->ht.hdr.current_stamp,
+                exp_ns, upd_ns );
+      break;
+    }
+    default:
+      exp_ns = 0;
+      upd_ns = 0;
+      break;
+  }
+  return KEY_OK;
 }
 
 extern "C" {
@@ -1019,17 +1129,15 @@ kv_release_data( kv_key_ctx_t *kctx )
 {
   return reinterpret_cast<KeyCtx *>( kctx )->release_data();
 }
-
+#if 0
 void
 kv_set_update_time( kv_key_ctx_t *kctx,  uint64_t update_time_ns )
 {
-  reinterpret_cast<KeyCtx *>( kctx )->update_ns = update_time_ns;
 }
 
 void
 kv_set_expire_time( kv_key_ctx_t *kctx,  uint64_t expire_time_ns )
 {
-  reinterpret_cast<KeyCtx *>( kctx )->expire_ns = expire_time_ns;
 }
 
 kv_key_status_t
@@ -1043,5 +1151,5 @@ kv_get_expire_time( kv_key_ctx_t *kctx,  uint64_t *expire_time_ns )
 {
   return reinterpret_cast<KeyCtx *>( kctx )->get_expire_time( *expire_time_ns );
 }
-
+#endif
 } /* extern "C" */

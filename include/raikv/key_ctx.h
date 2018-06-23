@@ -76,7 +76,8 @@ enum KeyCtxFlags {
   KEYCTX_IS_GC_ACQUIRE     = 2, /* if GC is trying to acquire for moving */
   KEYCTX_IS_CUCKOO_ACQUIRE = 4, /* if Cuckoo relocate is trying to make space */
   KEYCTX_IS_HT_EVICT       = 8, /* if chains == max_chains, is eviction */
-  KEYCTX_IS_SINGLE_THREAD  = 16 /* don't use thread synchronization */
+  KEYCTX_IS_SINGLE_THREAD  = 16,/* don't use thread synchronization */
+  KEYCTX_NO_COPY_ON_READ   = 32 /* don't copy message on read, use seal check */
 };
 
 struct KeyCtx {
@@ -86,10 +87,16 @@ struct KeyCtx {
                  hash_entry_size;
   const uint64_t ht_size;
   const uint16_t cuckoo_buckets; /* how many cuckoo buckets */
-  const uint8_t  cuckoo_arity;   /* how many cuckoo hash functions */
-  uint8_t        inc;        /* which hash function: 0 -> cuckoo_arity */
+  const uint8_t  cuckoo_arity,   /* how many cuckoo hash functions */
+                 seg_align_shift; /* alignment of segment data */
+  uint8_t        inc,        /* which hash function: 0 -> cuckoo_arity */
+                 pad;
   uint16_t       drop_flags, /* flags from dropped recycle entry */
-                 flags;      /* KeyCtxFlags */
+                 pad2,
+                 flags,      /* KeyCtxFlags */
+                 pad3[ 2 ];
+  HashEntry    * entry;   /* the entry after lookup, may be empty entry if NF*/
+  MsgHdr       * msg;     /* the msg header indexed by geom */
   uint64_t       max_chains, /* drop entries after accumulating max chains */
                  chains,     /* number of chains used to find/acquire */
                  start,   /* key % ht_size */
@@ -100,18 +107,16 @@ struct KeyCtx {
                  drop_key,/* the dropped key that is being recycled */
                  drop_key2,/* the dropped key2 */
                  mcs_id,  /* id of lock queue for above ht lock */
-                 serial,  /* serial number of the hash ent & message */
-                 update_ns, /* absolute ns time when updated, 0 is unset */
-                 expire_ns; /* absolute ns time when expires, 0 is unset */
-  HashEntry    * entry;   /* the entry after lookup, may be empty entry if NF*/
-  MsgHdr       * msg;     /* the msg header indexed by geom */
+                 serial;  /* serial number of the hash ent & message */
   ValueGeom      geom;    /* values decoded from HashEntry */
   ScratchMem   * wrk;     /* temp work allocation */
 
   uint16_t test( uint16_t fl ) const { return ( this->flags & fl ); }
   void set( uint16_t fl )            { this->flags |= fl; }
   void clear( uint16_t fl )          { this->flags &= ~fl; }
-
+  uint64_t seg_align( void ) const {
+    return (uint64_t) 1 << this->seg_align_shift;
+  }
   KeyCtx( HashTab &t,  uint32_t id,  KeyFragment &b );
   KeyCtx( HashTab &t,  uint32_t id,  KeyFragment *b = NULL );
   ~KeyCtx() {}
@@ -180,6 +185,20 @@ struct KeyCtx {
   void set_type( uint8_t type ) {
     this->entry->value_ctr( this->hash_entry_size ).type = type;
   }
+  KeyStatus get_size( uint64_t &sz ) {
+    if ( this->entry->test( FL_IMMEDIATE_VALUE ) ) {
+      sz = this->entry->value_ctr( this->hash_entry_size ).size;
+      return KEY_OK;
+    }
+    if ( this->entry->test( FL_SEGMENT_VALUE ) )
+      return this->get_msg_size( sz );
+    return KEY_NO_VALUE;
+  }
+  KeyStatus get_msg_size( uint64_t &sz );
+  bool is_msg_valid( void ); /* check that msg data is still valid */
+  KeyStatus validate_value( void ) {
+    return ( this->msg == NULL || this->is_msg_valid() ) ? KEY_OK : KEY_MUTATED;
+  }
   /* acquire lock for a key, if KEY_OK, set entry at &ht[ key % ht_size ] */
   KeyStatus acquire( ScratchMem *a ) {
     this->init_work( a );
@@ -194,11 +213,9 @@ struct KeyCtx {
   KeyStatus try_acquire( void );
 
   void init_acquire( void ) {
-    this->chains     = 0; /* count of chains */
-    this->drop_key   = 0;
-    this->update_ns  = 0; /* loaded on demand */
-    this->expire_ns  = 0;
-    this->msg        = NULL; 
+    this->chains    = 0; /* count of chains */
+    this->drop_key  = 0;
+    this->msg       = NULL; 
   }
   /* acquire using linear probing  */
   KeyStatus acquire_linear_probe( const uint64_t k,  const uint64_t start_pos );
@@ -228,10 +245,8 @@ struct KeyCtx {
   KeyStatus tombstone( void );
   /* start a new read only operation */
   void init_find( void ) {
-    this->chains    = 0; /* count of chains */
-    this->update_ns = 0; /* loaded on demand */
-    this->expire_ns = 0;
-    this->msg       = NULL;
+    this->chains = 0; /* count of chains */
+    this->msg    = NULL;
     this->set( KEYCTX_IS_READ_ONLY );
   }
   /* if find locates key, returns KEY_OK, sets entry at &ht[ key % ht_size ] */
@@ -269,14 +284,6 @@ struct KeyCtx {
   KeyStatus fetch_position( const uint64_t i,  const uint64_t spin_wait );
   /* exclusive access to a position */
   KeyStatus try_acquire_position( const uint64_t i );
-  /* value returns KEY_OK if has data and set ptrs to a reference, either
-   * immediate or segment ex: char *s; if ( kctx.get( &s, sz ) == KEY_OK )
-   * printf( "%s\n", s ); if find() is used, ptr will not reference data in the
-   * table, but copied data;  if acquire() is used, ptr will reference the shm
-   * table data */
-  KeyStatus value( void *ptr,  uint64_t &size );
-  /* copy update & expire timestamps into hash entry */
-  void update_stamps( void );
 
   struct CopyData {
     void    * data;
@@ -286,7 +293,7 @@ struct KeyCtx {
   };
   /* update the hash entry */
   KeyStatus update_entry( void *res,  uint64_t size,  uint8_t alignment,
-                          HashEntry &el,  CopyData *copy );
+                          HashEntry &el );
   /* allocate memory for hash, releases data that may be allocated, alignment
    * is a size -- sizeof( int64_t ) for example */
   KeyStatus alloc( void *res,  uint64_t size,  bool copy = false,
@@ -297,14 +304,22 @@ struct KeyCtx {
    * does not copy data to newly allocated space (maybe it should) */
   KeyStatus resize( void *res,  uint64_t size,  bool copy = false,
                     uint8_t alignment = 8 );
+  /* value returns KEY_OK if has data and set ptrs to a reference, either
+   * immediate or segment ex: char *s; if ( kctx.get( &s, sz ) == KEY_OK )
+   * printf( "%s\n", s ); if find() is used, ptr will not reference data in the
+   * table, but copied data;  if acquire() is used, ptr will reference the shm
+   * table data */
+  KeyStatus value( void *ptr,  uint64_t &size );
+  /* update timestamp if not zero */
+  KeyStatus update_stamps( uint64_t exp_ns,  uint64_t upd_ns );
+  /* clear one or both timestamps */
+  KeyStatus clear_stamps( bool clr_exp,  bool clr_upd );
+  /* get stamps, zero if don't exist */
+  KeyStatus get_stamps( uint64_t &exp_ns,  uint64_t &upd_ns );
   /* release the data used by entry */
   KeyStatus release_data( void );
   /* release the data used by dropped entry when chain == max_chains */
   KeyStatus release_evict( void );
-  /* get update time, returns KEY_NOT_FOUND when no update time is attached */
-  KeyStatus get_update_time( uint64_t &update_time_ns );
-  /* get expire time, returns KEY_NOT_FOUND when no expire time is attached */
-  KeyStatus get_expire_time( uint64_t &expire_time_ns );
   /* set msg field to the segment data */
   enum AttachType { ATTACH_READ = 0, ATTACH_WRITE = 1 };
   KeyStatus attach_msg( AttachType upd );
@@ -398,13 +413,6 @@ kv_key_status_t kv_load( kv_key_ctx_t *kctx,  kv_msg_ctx_t *mctx );
 kv_key_status_t kv_resize( kv_key_ctx_t *kctx,  void *ptr,  uint64_t size,
                            uint8_t alignment );
 kv_key_status_t kv_release_data( kv_key_ctx_t *kctx );
-
-void kv_set_update_time( kv_key_ctx_t *kctx,  uint64_t update_time_ns );
-void kv_set_expire_time( kv_key_ctx_t *kctx,  uint64_t expire_time_ns );
-kv_key_status_t kv_get_update_time( kv_key_ctx_t *kctx,
-                                    uint64_t *update_time_ns );
-kv_key_status_t kv_get_expire_time( kv_key_ctx_t *kctx,
-                                    uint64_t *expire_time_ns );
 #ifdef __cplusplus
 } /* extern "C" */
 #endif

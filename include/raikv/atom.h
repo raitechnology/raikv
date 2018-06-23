@@ -11,6 +11,9 @@ extern "C" {
 /* a compiler store fence */
 #define kv_sync_sfence() __asm__ __volatile__( "" ::: "memory" )
 
+/* use a pointer to force the compiler to calculate it */
+#define kv_escape( p ) __asm__ __volatile__ ( "" : : "g"(p) : "memory" );
+
 /* alias for pause instruction
  * https://software.intel.com/en-us/articles/benefitting-power-and-performance-sleep-loops */
 #define kv_sync_pause() __asm__ __volatile__( "pause":::"memory" )

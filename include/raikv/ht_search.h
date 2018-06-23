@@ -327,9 +327,15 @@ KeyCtx::find( const uint64_t k,  uint64_t i,  const uint64_t spin_wait,
       if ( kv_likely( h == k ) ) {
         if ( kv_likely( cpy->check_seal( this->hash_entry_size ) ) ) {
           if ( kv_likely( this->equals( *cpy ) ) ) {
-            ctx.incr_hit();
-            status = KEY_OK;
+            if ( kv_likely( cpy->test( FL_DROPPED ) == 0 ) ) {
+              ctx.incr_hit();
+              status = KEY_OK;
+            }
+            else {
         not_found:;
+              ctx.incr_miss();
+              status = KEY_NOT_FOUND;
+            }
             if ( this->chains > 0 )
               ctx.incr_chains( this->chains );
             if ( spin > 0 )
@@ -345,11 +351,8 @@ KeyCtx::find( const uint64_t k,  uint64_t i,  const uint64_t spin_wait,
         }
         /* seal is broken, copy again */
       }
-      else if ( h == 0 ) { /* check if it is an empty slot */
-        ctx.incr_miss();
-        status = KEY_NOT_FOUND;
+      else if ( h == 0 ) /* check if it is an empty slot */
         goto not_found;
-      }
       else if ( ( h & ZOMBIE64 ) == 0 ) /* h is not the key, get next elem */
         break;
       /* h has ZOMBIE64 set or seal is broken, spin and check hash again */
@@ -382,9 +385,15 @@ KeyCtx::find_single_thread( const uint64_t k,  uint64_t i,  Position &next )
     h = el.hash;
     if ( kv_likely( h == k ) ) { /* check if it is the key we're looking 4 */
       if ( kv_likely( this->equals( el ) ) ) {
-        ctx.incr_hit();
-        status = KEY_OK;
+        if ( kv_likely( el.test( FL_DROPPED ) == 0 ) ) {
+          ctx.incr_hit();
+          status = KEY_OK;
+        }
+        else {
     not_found:;
+          ctx.incr_miss();
+          status = KEY_NOT_FOUND;
+        }
         if ( this->chains > 0 )
           ctx.incr_chains( this->chains );
         ctx.incr_read();
@@ -395,11 +404,8 @@ KeyCtx::find_single_thread( const uint64_t k,  uint64_t i,  Position &next )
         return status;
       }
     }
-    else if ( h == 0 ) { /* check if it is an empty slot */
-      ctx.incr_miss();
-      status = KEY_NOT_FOUND;
+    else if ( h == 0 ) /* check if it is an empty slot */
       goto not_found;
-    }
     /* get next element in chain (i += 1) */
     if ( (status = next.find_incr( i, ++this->chains )) != KEY_OK )
       return status;

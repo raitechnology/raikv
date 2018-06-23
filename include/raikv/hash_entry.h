@@ -246,14 +246,11 @@ struct HashEntry {
     return (void *) &((uint8_t *) (void *) this)[ off ];
   }
   /* before value ctr, relative stamp */
-  ValuePtr &value_ptr( uint32_t hash_entry_size,  uint32_t idx = 0 ) {
+  ValuePtr &value_ptr( uint32_t hash_entry_size ) {
     return *(ValuePtr *) this->ptr( hash_entry_size -
-                                    ( sizeof( ValueCtr ) +
-                                      sizeof( ValuePtr ) * ( idx + 1 ) +
-                                      ( this->test( FL_EXPIRE_STAMP |
-                                                    FL_UPDATE_STAMP ) ?
-                                        sizeof( RelativeStamp ) : 0 )
-                                      ) );
+                          ( sizeof( ValueCtr ) + sizeof( ValuePtr ) +
+                            ( this->test( FL_EXPIRE_STAMP | FL_UPDATE_STAMP ) ?
+                              sizeof( RelativeStamp ) : 0 ) ) );
   }
   /* at the the end of the entry */
   ValueCtr &value_ctr( uint32_t hash_entry_size ) {
@@ -262,8 +259,7 @@ struct HashEntry {
   /* before value ctr */
   RelativeStamp &rela_stamp( uint32_t hash_entry_size ) {
     return *(RelativeStamp *) this->ptr( hash_entry_size -
-                                         ( sizeof( ValueCtr ) +
-                                           sizeof( RelativeStamp ) ) );
+                          ( sizeof( ValueCtr ) + sizeof( RelativeStamp ) ) );
   }
   /* expand geom bits into value geom */
   void get_value_geom( uint32_t hash_entry_size,  ValueGeom &geom,
@@ -274,17 +270,6 @@ struct HashEntry {
   void set_value_geom( uint32_t hash_entry_size,  const ValueGeom &geom,
                        uint32_t align_shift ) {
     this->value_ptr( hash_entry_size ).set( geom, align_shift );
-  }
-  void get_expire_stamp( uint32_t hash_entry_size,  uint64_t &expire_ns ) {
-    expire_ns = this->rela_stamp( hash_entry_size ).u.stamp;
-  }
-  void get_update_stamp( uint32_t hash_entry_size,  uint64_t &update_ns ) {
-    update_ns = this->rela_stamp( hash_entry_size ).u.stamp;
-  }
-  void get_updexp_stamp( uint32_t hash_entry_size,  uint64_t base,
-                         uint64_t clock,  uint64_t &expire_ns,
-                         uint64_t &update_ns ) {
-    this->rela_stamp( hash_entry_size ).get( base, clock, expire_ns, update_ns);
   }
 };
 

@@ -420,7 +420,7 @@ flags_string( uint16_t fl,  uint8_t type,  char *buf )
   if ( ( fl & FL_UPDATED ) != 0 )
     buf = copy_fl( buf, "-Upd" );
   if ( ( fl & FL_IMMEDIATE_VALUE ) != 0 )
-    buf = copy_fl( buf, "-Val" );
+    buf = copy_fl( buf, "-Ival" );
   if ( ( fl & FL_IMMEDIATE_KEY ) != 0 )
     buf = copy_fl( buf, "-Key" );
   if ( ( fl & FL_PART_KEY ) != 0 )
@@ -462,6 +462,11 @@ flags_string( uint16_t fl,  uint8_t type,  char *buf )
       case 21: buf = copy_fl( buf, "MD_SORTEDSET" ); break;
       case 22: buf = copy_fl( buf, "MD_STREAM" );    break;
       case 23: buf = copy_fl( buf, "MD_GEO" );       break;
+      case 24: buf = copy_fl( buf, "MD_HYPERLOGLOG");break;
+      case 25: buf = copy_fl( buf, "MD_PUBSUB" );    break;
+      case 26: buf = copy_fl( buf, "MD_SCRIPT" );    break;
+      case 27: buf = copy_fl( buf, "MD_SERVER" );    break;
+      case 28: buf = copy_fl( buf, "MD_TRANSACTION");break;
     }
   }
   *buf = '\0';
@@ -632,16 +637,18 @@ sprintf_rela_time( uint64_t ns,  uint64_t cur,  const char *what,
 static void
 sprintf_stamps( KeyCtx &kctx,  char *upd,  char *exp )
 {
-  uint64_t ns, cur = 0;
+  uint64_t exp_ns, upd_ns, cur = 0;
   upd[ 0 ] = '\0';
   exp[ 0 ] = '\0';
-  if ( kctx.get_update_time( ns ) == KEY_OK ) {
-    if ( cur == 0 ) cur = current_realtime_ns();
-    sprintf_rela_time( ns, cur, ":upd", upd, 64 );
-  }
-  if ( kctx.get_expire_time( ns ) == KEY_OK ) {
-    if ( cur == 0 ) cur = current_realtime_ns();
-    sprintf_rela_time( ns, cur, ":exp", exp, 64 );
+  if ( kctx.get_stamps( exp_ns, upd_ns ) == KEY_OK ) {
+    if ( upd_ns != 0 ) {
+      if ( cur == 0 ) cur = current_realtime_ns();
+      sprintf_rela_time( upd_ns, cur, ":upd", upd, 64 );
+    }
+    if ( exp_ns != 0 ) {
+      if ( cur == 0 ) cur = current_realtime_ns();
+      sprintf_rela_time( exp_ns, cur, ":exp", exp, 64 );
+    }
   }
 }
 
@@ -826,6 +833,7 @@ cli( void )
       case 'd': /* drop */
       case 'p': /* put */
       case 't': /* tombstone */
+      case 'u': /* update stamp */
         parse_key_string( kb, key );
         h1 = map->hdr.hash_key_seed;
         h2 = map->hdr.hash_key_seed2;
@@ -833,7 +841,13 @@ cli( void )
         kctx.set_hash( h1, h2 );
 
         if ( (status = kctx.acquire( &wrk )) <= KEY_IS_NEW ) {
-          kctx.expire_ns = exp_ns;
+          if ( exp_ns != 0 )
+            status = kctx.update_stamps( exp_ns, 0 );
+          else
+            status = kctx.clear_stamps( true, true );
+          if ( status != KEY_OK )
+            xprintf( 0, "stamps err: %d/%s\n", status,
+                     kv_key_status_description( status ) );
           /*kctx.update_ns = current_realtime_ns();*/
           /*map->hdr.current_stamp = kctx.update_ns;*/
           if ( cmd_char == 'p' ) {
@@ -841,9 +855,8 @@ cli( void )
               ::memcpy( ptr, data, sz + 1 );
               status = print_key_data( kctx, "put", sz + 1 );
             }
-            kctx.release();
           }
-          else {
+          else if ( cmd_char == 't' ) {
             const char *s = ( cmd_char == 'd' ? "drop" : "tomb" );
             if ( (status = print_key_data( kctx, s, 0 )) == KEY_OK ) {
               /*if ( cmd_char == 'd' )
@@ -851,8 +864,8 @@ cli( void )
               else*/
                 status = kctx.tombstone();
             }
-            kctx.release(); /* may not need release for drop() */
           }
+          kctx.release();
         }
         last_cmd = 0;
         if ( do_validate ) {
@@ -1148,8 +1161,9 @@ cli( void )
 
       default:
         xprintf( 0,
-        "acdfghijkmpqrstvx:\n"
+        "acdfghijkmpqrstuvx:\n"
         "put [+exp] key value  ; set key to value w/optional +expires\n"
+        "upd [+exp] key        ; update key +expires\n"
         "get key               ; print key value as string\n"
         "hex key               ; print hex dump of key value\n"
         "int key               ; print int value of key (sz 2^N)\n"
@@ -1164,8 +1178,8 @@ cli( void )
         "xamin seg#            ; dump segment data\n"
         "stats                 ; print stats\n"
         "contexts              ; print stats for all contexts\n"
-        "y                     ; scan for broken locks"
-        "z                     ; suspend pid (Z to unsuspend)"
+        "y                     ; scan for broken locks\n"
+        "z                     ; suspend pid (Z to unsuspend)\n"
         "read file             ; read input from file (R to read quietly)\n"
         "quit                  ; bye\n" );
         break;

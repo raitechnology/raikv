@@ -52,7 +52,7 @@ do_load( KeyCtx *kctx,  MsgCtx *mctx,  uint64_t count,  bool use_pref,
     /*if ( use_pref && i + 1 < count )
       kctx[ i + 1 ].prefetch( 1 );*/
     if ( (status = kctx[ i ].acquire( &wrk )) <= KEY_IS_NEW ) {
-      kctx[ i ].update_ns = cur_time;
+      kctx[ i ].update_stamps( 0, cur_time );
       status = kctx[ i ].load( mctx[ i ] );
       kctx[ i ].release();
     }

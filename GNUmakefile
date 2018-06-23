@@ -64,7 +64,7 @@ all_depends :=
 major_num   := 1
 minor_num   := 0
 patch_num   := 0
-build_num   := 16
+build_num   := 27
 version     := $(major_num).$(minor_num).$(patch_num)
 ver_build   := $(version)-$(build_num)
 defines     += -DKV_VER=$(ver_build)
@@ -200,16 +200,15 @@ dist_rpm:
 	    -e "s/999.999/${version}/" < rpm/raikv.spec > rpmbuild/SPECS/raikv.spec
 	mkdir -p rpmbuild/SOURCES/raikv-${version}
 	ln -sf ../../../src ../../../test ../../../include ../../../GNUmakefile rpmbuild/SOURCES/raikv-${version}/
-	( cd rpmbuild/SOURCES && tar chzf raikv-${ver_build}.tar.gz raikv-${version} && rm -r -f raikv-${version} )
+	( cd rpmbuild/SOURCES && tar chzf raikv-${ver_build}.tar.gz --exclude=".*.sw*" raikv-${version} && rm -r -f raikv-${version} )
 	( cd rpmbuild && rpmbuild --define "-topdir `pwd`" -ba SPECS/raikv.spec )
 
 .PHONY: local_repo_update
 local_repo_update: dist_rpm
 	createrepo --update `pwd`/rpmbuild/RPMS/${uname_m}
-	@echo "# Use this to update:"
-	@echo "sudo dnf -y update raikv"
-	@echo "sudo dnf -y debuginfo-install raikv-debuginfo"
-	@echo "sudo dnf -y update raikv-debugsource"
+	sudo dnf -y update raikv
+	sudo dnf -y debuginfo-install raikv-debuginfo
+	sudo dnf -y update raikv-debugsource
 
 .PHONY: local_repo_create
 local_repo_create: dist_rpm

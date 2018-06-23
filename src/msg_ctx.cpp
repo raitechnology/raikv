@@ -154,7 +154,8 @@ MsgCtx::alloc_segment( void *res,  uint64_t size,  uint8_t alignment )
                       mv_kctx.entry->set_value_geom( this->hash_entry_size,
                                                      mv_kctx.geom, algn_shft );
                       msg = (MsgHdr *) (void *) &segptr[ j ];
-                      msg->seal( mv_kctx.serial, mv_kctx.entry->flags );
+                      msg->seal( mv_kctx.serial, mv_kctx.get_type(),
+                                 mv_kctx.entry->flags );
                       /* advance both leading and trailing edge */
                       j += msgsize;
                       i += msgsize;
