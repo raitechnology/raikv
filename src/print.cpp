@@ -61,7 +61,7 @@ rai::kv::print_map_geom( HashTab *map,  uint32_t ctx_id,  char *buf,
 	  (double) ( map->hdr.ht_size *
 		     map->hdr.hash_entry_size ) / ( 1024.0 * 1024.0 ) );
   xnprintf( b, sz, "last_entry_count:     %lu\n", map->hdr.last_entry_count );
-  xnprintf( b, sz, "ht_mod:               ( ( hash & 0x%lx ) * 0x%lx ) >> %u (* %.9f)\n",
+  xnprintf( b, sz, "ht_mod:               ( ( hash & 0x%lx ) * 0x%lx ) >> %u (%.9f)\n",
           map->hdr.ht_mod_mask, map->hdr.ht_mod_fraction,
           map->hdr.ht_mod_shift,
           (double) map->hdr.ht_size / (double) map->hdr.ht_mod_mask );

@@ -35,9 +35,13 @@ typedef enum kv_facility_e {
 /* how big each thread context is */
 #define KV_HT_THR_CTX_SIZE  1024
 /* file hdr + segment data */
-#define KV_HT_HDR_SIZE      ( 128 * 1024 )
+#define KV_HT_HDR_SIZE      ( 192 * 1024 )
 /* how much space for thread contexts */
 #define KV_HT_CTX_SIZE      ( 128 * 1024 )
+/* space for db stats */
+#define KV_DB_HDR_SIZE      ( 64 * 1024 )
+/* max db count */
+#define KV_DB_COUNT         256
 /* the maximum thread context id */
 #define KV_MAX_CTX_ID       ( KV_HT_CTX_SIZE / KV_HT_THR_CTX_SIZE )
 
@@ -57,6 +61,8 @@ static const size_t HT_FILE_HDR_SIZE      = KV_HT_FILE_HDR_SIZE,
                     HT_HDR_SIZE           = KV_HT_HDR_SIZE,
                     /* ThrCtx[ 128 ] each 1024b containing ThrMCSLock[ 56 ] */
                     HT_CTX_SIZE           = KV_HT_CTX_SIZE,
+                    DB_HDR_SIZE           = KV_DB_HDR_SIZE,
+                    DB_COUNT              = KV_DB_COUNT,
                     /* ThrCtx[] size */
                     MAX_CTX_ID            = HT_CTX_SIZE / HT_THR_CTX_SIZE,
                     /* FileHdr::name[] size */
@@ -87,8 +93,8 @@ struct FileHdr {
 
              /* third 64b useful read only data, referenced a lot */
              ht_size,         /* calculated size of ht[] */
-             hash_key_seed,   /* dynamic seed of hash, make DoS harder */
-             hash_key_seed2,  /* dynamic seed of hash2 */
+             pad1,
+             pad2,
              ht_mod_mask,     /* mask of bits used for mod */
              ht_mod_fraction; /* fraction of mask used in ht */
   uint32_t   seg_size_val,    /* size of segment[] ( val << seg_align_shift ) */
@@ -178,8 +184,10 @@ struct ThrCtxHdr {
 
   uint64_t               mcs_used,  /* bit mask of used locks (64 > MCS_CNT=53)*/
                          seg_pref,  /* insert segment pref, bits from rng */
-                         pad1,
-                         pad2;
+                         pad;
+  uint32_t               ctx_seqno;
+  uint8_t                db_num,
+                         pad2[ 3 ];
   /* 16(int32) + 128(stat) + 16(rng) + 24(uint64) = 184 */
 };
 
@@ -193,6 +201,7 @@ struct ThrCtxEntry : public ThrCtxHdr {
   void zero( void ) {
     this->stat.zero();
     this->mcs_used = 0;
+    this->db_num = 0;
     ::memset( this->mcs, 0, sizeof( this->mcs ) );
   }
 };
@@ -220,8 +229,8 @@ struct ThrCtx : public ThrCtxEntry { /* each thread needs one of these */
   void incr_cuckret( uint64_t cnt = 1 ) { this->stat.cuckret += cnt; }
   void incr_cuckmax( uint64_t cnt = 1 ) { this->stat.cuckmax += cnt; }
 
-  bool get_ht_delta( HashDeltaCounters &stat ) const;
-
+  bool get_ht_thr_delta( HashDeltaCounters &stat,  uint8_t &db,
+                         uint32_t &seqno ) const;
   uint64_t next_mcs_lock( void ) {
     uint32_t id = ( this->mcs_used == 0 ) ? 0 :
                   ( 64 - __builtin_clzl( this->mcs_used ) );
@@ -257,16 +266,28 @@ struct ThrCtxOwner { /* closure for MCSLock to find the owner of a lock */
   }
 };
 
-struct HashHdr : public FileHdr {
-  static const uint32_t SHM_MAX_SEG_COUNT =
-    ( HT_HDR_SIZE - sizeof( FileHdr ) ) / sizeof( Segment );
+struct DBHdr {
+  struct { uint64_t hash1, hash2; } seed[ DB_COUNT ];
+  HashCounters stat[ DB_COUNT ];
+  uint8_t pad[ DB_HDR_SIZE -
+    ( ( sizeof( HashCounters ) + sizeof( uint64_t ) * 2 ) * DB_COUNT ) ];
+
+  void get_hash_seed( uint8_t db_num,  uint64_t &h1,  uint64_t &h2 ) const {
+    h1 = this->seed[ db_num ].hash1;
+    h2 = this->seed[ db_num ].hash2;
+  }
+};
+
+struct HashHdr : public FileHdr, public DBHdr {
+  static const uint32_t SHM_MAX_SEG_COUNT = ( HT_HDR_SIZE -
+    ( sizeof( FileHdr ) + sizeof( DBHdr ) ) ) / sizeof( Segment );
   Segment seg[ SHM_MAX_SEG_COUNT ];
 };
 
 struct HashTab {
   HashHdr hdr;
 #if __cplusplus > 201103L
-  static_assert( HT_HDR_SIZE == sizeof( HashHdr ), "ht hdr size" );
+  static_assert( HT_HDR_SIZE == sizeof( HashHdr ), "ht hdr size");
 #endif
   ThrCtx ctx[ MAX_CTX_ID ];
 #if __cplusplus > 201103L
@@ -316,18 +337,21 @@ public:
   static HashTab *attach_map( const char *map_name,  uint8_t facility,
                               HashTabGeom &geom ); /* return geom */
   /* a shared usage context for stats and signals */
-  uint32_t attach_ctx( uint32_t key );
+  uint32_t attach_ctx( uint32_t key,  uint8_t db_num );
+  /* sum ctx[0] and hdr.stats[db] stats and zero ctx[ctx_id] stats */
+  void retire_ht_thr_stats( uint32_t ctx_id );
   /* free the shared usage context */
   void detach_ctx( uint32_t ctx_id );
   /* calculate load of ht and set this->hdr.current_load */
   void update_load( void );
-  /* accumulate hash table stats and return true if changed
-   * stats[] should be sized by MAX_CTX_ID */
-  bool get_ht_deltas( HashDeltaCounters *stats,  HashCounters &ops,
-                      HashCounters &tot, uint32_t ctx_id = KV_NO_CTX_ID ) const;
+  /* accumulate stats just for ctx_id with delta change */
+  bool sum_ht_thr_delta( HashDeltaCounters &stats,  HashCounters &ops,
+                         HashCounters &tot,  uint32_t ctx_id ) const;
+  /* accumulate stats just for db */
+  bool get_db_stats( HashCounters &tot,  uint8_t db_num ) const;
   /* accumulate memory usage stats of each segment and return true if changed
    * stats[] should be sized by this->hdr.nsegs */
-  bool get_mem_deltas( MemDeltaCounters *stats,  MemCounters &chg,
+  bool sum_mem_deltas( MemDeltaCounters *stats,  MemCounters &chg,
                        MemCounters &tot ) const;
   /* get the start of a data segment */
   Segment &segment( uint32_t i ) {
@@ -360,7 +384,7 @@ void kv_close_map( kv_hash_tab_t *ht );
 /* calculate % load and return it, 0 <= load < 1.0 */
 float kv_update_load( kv_hash_tab_t *ht );
 /* attach a thread context, return ctx_id, which is an index to ht->ctx[], key is arbitrary */
-uint32_t kv_attach_ctx( kv_hash_tab_t *ht,  uint32_t key );
+uint32_t kv_attach_ctx( kv_hash_tab_t *ht,  uint32_t key,  uint8_t db_num );
 /* deattach a thread context */
 void kv_detach_ctx( kv_hash_tab_t *ht,  uint32_t ctx_id );
 /* total number of hash slots */

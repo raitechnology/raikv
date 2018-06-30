@@ -10,6 +10,7 @@
 #include <raikv/radix_sort.h>
 
 static kv_hash_tab_t * ht;
+static uint8_t db_num;
 extern void print_map_geom_c( kv_hash_tab_t *map, uint32_t ctx_id );
 
 #define MAX_THR 64
@@ -173,7 +174,7 @@ thr_process( void *data )
   char          * p;
   uint32_t        j;
 
-  t->ctx_id = kv_attach_ctx( ht, t->id );
+  t->ctx_id = kv_attach_ctx( ht, t->id, db_num );
   for ( j = 0; j < CTX_COUNT; j++ )
     t->ctx[ j ] = kv_create_key_ctx( ht, t->ctx_id );
   t->wrk = kv_create_ctx_alloc( 8 * 1024, NULL, NULL, 0 );
@@ -308,26 +309,47 @@ process_input_data( uint32_t num_thr )
   }
 }
 
+static const char *
+get_arg( int argc, char *argv[], int n, int b, const char *f, const char *def )
+{
+  if ( n > 0 && argc > n && argv[ 1 ][ 0 ] != '-' )
+    return argv[ n ];
+  for ( int i = 1; i < argc - b; i++ )
+    if ( strcmp( f, argv[ i ] ) == 0 )
+      return argv[ i + b ];
+  return def; /* default value */
+}
+
 int
 main( int argc,  char *argv[] )
 {
   kv_geom_t geom;
-  const char * mn;
-  uint32_t num_thr = 4;
+  uint32_t num_thr = 8;
 
-  if ( argc < 2 ) {
+  /* [sysv2m:shm.test] [4] [0] [0] */
+  const char * mn = get_arg( argc, argv, 1, 1, "-m", "sysv2m:shm.test" ),
+             * nt = get_arg( argc, argv, 2, 1, "-t", "8" ),
+             * db = get_arg( argc, argv, 3, 1, "-d", "0" ),
+             * te = get_arg( argc, argv, 4, 1, "-x", "0" ),
+             * he = get_arg( argc, argv, 0, 0, "-h", 0 );
+
+  if ( he != NULL ) {
   cmd_error:;
     fprintf( stderr, "raikv version: %s\n", kv_stringify( KV_VER ) );
-    fprintf( stderr, "%s map [num-threads] [testing]\n", argv[ 0 ] );
+    fprintf( stderr,
+  "%s [-m map] [-t num-thr] [-d db-num] [-x testing]\n"
+  "  map            = name of map file (prefix w/ file:, sysv:, posix:)\n"
+  "  num-thr        = number of worker threads to utilize\n"
+  "  db-num         = database number to use\n"
+  "  testing        = debug testing\n",
+             argv[ 0 ] );
     return 1;
   }
-  switch ( argc ) {
-    default: goto cmd_error;
-    case 4: testing = atoi( argv[ 3 ] );
-    case 3: if ( (num_thr = atoi( argv[ 2 ] )) == 0 ) goto cmd_error;
-    case 2: mn = argv[ 1 ];
-            break;
-  }
+
+  testing = atoi( te );
+  db_num = (uint8_t) atoi( db );
+  if ( (num_thr = atoi( nt )) == 0 )
+    goto cmd_error;
 
   ht = kv_attach_map( mn, 0, &geom );
   if ( ht == NULL )

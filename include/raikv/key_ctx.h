@@ -46,6 +46,7 @@ namespace kv {
 typedef enum kv_key_status_e KeyStatus;
 
 struct HashTab;
+struct ThrCtx;
 struct MsgHdr;
 struct MsgCtx;
 
@@ -82,21 +83,21 @@ enum KeyCtxFlags {
 
 struct KeyCtx {
   HashTab      & ht;      /* operates on this table */
+  ThrCtx       & thr_ctx; /* thread context */
   KeyFragment  * kbuf;    /* key to lookup resolve */
-  const uint32_t ctx_id,  /* which thread owns this this context */
-                 hash_entry_size;
   const uint64_t ht_size;
+  const uint32_t hash_entry_size;
   const uint16_t cuckoo_buckets; /* how many cuckoo buckets */
   const uint8_t  cuckoo_arity,   /* how many cuckoo hash functions */
                  seg_align_shift; /* alignment of segment data */
-  uint8_t        inc,        /* which hash function: 0 -> cuckoo_arity */
-                 pad;
+  uint8_t        db_num,
+                 inc;        /* which hash function: 0 -> cuckoo_arity */
   uint16_t       drop_flags, /* flags from dropped recycle entry */
                  pad2,
-                 flags,      /* KeyCtxFlags */
-                 pad3[ 2 ];
+                 flags;      /* KeyCtxFlags */
   HashEntry    * entry;   /* the entry after lookup, may be empty entry if NF*/
   MsgHdr       * msg;     /* the msg header indexed by geom */
+
   uint64_t       max_chains, /* drop entries after accumulating max chains */
                  chains,     /* number of chains used to find/acquire */
                  start,   /* key % ht_size */
@@ -133,7 +134,7 @@ struct KeyCtx {
 
   void * operator new( size_t sz, void *ptr ) { return ptr; }
   void operator delete( void *ptr ) { ::free( ptr ); }
-
+  void switch_db( uint8_t db_num );
   /* set key, this does not hash the key, use set_hash() afterwards */
   void set_key( KeyFragment &b ) { this->kbuf = &b; }
   /* set hash value, no key arg, usually done as:
@@ -181,6 +182,9 @@ struct KeyCtx {
   void prefetch( uint64_t cnt = 2 ) const;
   uint8_t get_type( void ) {
     return this->entry->value_ctr( this->hash_entry_size ).type;
+  }
+  uint8_t get_db( void ) {
+    return this->entry->value_ctr( this->hash_entry_size ).db;
   }
   void set_type( uint8_t type ) {
     this->entry->value_ctr( this->hash_entry_size ).type = type;
@@ -273,15 +277,18 @@ struct KeyCtx {
                                        const uint64_t start_pos );
   /* get item at ht[ i ] */
   KeyStatus fetch( ScratchMem *a,  const uint64_t i,
-                   const uint64_t spin_wait = 0 ) {
+                   const uint64_t spin_wait = 0,
+                   const bool is_scan = false ) {
     this->init_work( a ); /* buffer used for copying hash entry & data */
-    return this->fetch( i, spin_wait );
+    return this->fetch( i, spin_wait, is_scan );
   }
-  KeyStatus fetch( const uint64_t i,  const uint64_t spin_wait ) {
+  KeyStatus fetch( const uint64_t i,  const uint64_t spin_wait,
+                   const bool is_scan ) {
     this->init_find();
-    return this->fetch_position( i, spin_wait );
+    return this->fetch_position( i, spin_wait, is_scan );
   }
-  KeyStatus fetch_position( const uint64_t i,  const uint64_t spin_wait );
+  KeyStatus fetch_position( const uint64_t i,  const uint64_t spin_wait,
+                            const bool is_scan );
   /* exclusive access to a position */
   KeyStatus try_acquire_position( const uint64_t i );
 

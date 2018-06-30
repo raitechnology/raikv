@@ -48,12 +48,21 @@ struct MsgHdr {
     ctr.seal = 0;
   }
   /* update serial and set seal, allowing readers to access */
-  void seal( uint64_t serial,  uint8_t type,  uint16_t flags ) {
+  void seal( uint64_t serial,  uint8_t db,  uint8_t type,  uint16_t flags ) {
     ValueCtr &ctr = this->value_ctr();
     ctr.set_serial( serial );
-    ctr.size = 1;
-    ctr.type = type;
-    ctr.seal = 1;
+    ctr.size    = 1;
+    ctr.db      = db;
+    ctr.type    = type;
+    ctr.seal    = 1;
+    this->flags = flags; /* clears FL_BUSY */
+  }
+  /* update serial and set seal, allowing readers to access */
+  void seal2( uint64_t serial,  uint16_t flags ) {
+    ValueCtr &ctr = this->value_ctr();
+    ctr.set_serial( serial );
+    ctr.size    = 1;
+    ctr.seal    = 1;
     this->flags = flags; /* clears FL_BUSY */
   }
   /* check that the message has same serial as hash_entry and is not unsealed */
@@ -97,7 +106,7 @@ struct MsgHdr {
   }
   /* no longer need the memory, mark freed */
   void release( void ) {
-    this->seal( 0, 0, 0 );
+    this->seal2( 0, 0 );
     this->hash = ZOMBIE64;
   }
   /* the serial and seal are at the end of the msg data */
@@ -180,7 +189,7 @@ struct Segment {
              newy = ( new_off >> align_shift );
     this->ring = newx | newy; /* set x == y, then others can lock segment */
   }
-  void get_mem_delta( MemDeltaCounters &stat,  uint16_t align_shift ) const;
+  void get_mem_seg_delta( MemDeltaCounters &stat,  uint16_t align_shift ) const;
 };
 
 /* a context to allocate memory from a segment for later linking into ht[] */
@@ -205,23 +214,24 @@ struct Segment {
 */
 struct MsgCtx {
   HashTab      & ht;      /* operates on this table */
+  ThrCtx       & thr_ctx;
   KeyFragment  * kbuf;    /* key to place */
-  const uint32_t ctx_id,  /* which thread owns this this context */
-                 hash_entry_size;
+  const uint32_t hash_entry_size;
+  uint32_t       pad;
   uint64_t       key,
                  key2;
   MsgHdr       * msg;
   void         * prefetch_ptr;
   ValueGeom      geom;    /* value location */
 
-  MsgCtx( HashTab &t,  uint32_t id );
-  MsgCtx( HashTab &t,  uint32_t id,  uint32_t sz );
+  MsgCtx( HashTab &t,  uint32_t ctx_id );
+  MsgCtx( HashTab &t,  uint32_t ctx_id,  uint32_t sz );
   ~MsgCtx() {}
   /* placement new to deal with broken c++ new[], for example:
    * MsgCtxBuf kctxbuf[ 8 ];
-   * MsgCtx * kctx = MsgCtx::new_array( ht, ctx_id, kctxbuf, 8 );
+   * MsgCtx * kctx = MsgCtx::new_array( ht, thr_ctx, kctxbuf, 8 );
    * or to use malloc() instead of stack:
-   * MsgCtx * kctx = MsgCtx::new_array( ht, ctx_id, NULL, 8 );
+   * MsgCtx * kctx = MsgCtx::new_array( ht, thr_ctx, NULL, 8 );
    * if ( kctx == NULL ) fatal( "no memory" );
    * delete kctx; // same as free( kctx )
    */
@@ -237,7 +247,7 @@ struct MsgCtx {
     this->key  = k;
     this->key2 = k2;
   }
-  void set_key_hash( KeyFragment &b );
+  //void set_key_hash( KeyFragment &b );
 
   void prefetch_segment( uint64_t size );
 

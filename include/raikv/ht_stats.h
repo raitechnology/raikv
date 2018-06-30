@@ -35,23 +35,21 @@ struct MemDeltaCounters {
   MemDeltaCounters() {}
 
   void get_mem_delta( const MemCounters &cnts );
-
-  static MemDeltaCounters *new_array( size_t sz );
 };
 
 struct HashCounters {
   int64_t rd, wr,     /* counter of get/put operations for this ctx */
           spins,      /* count of spins to acquire locks */
-          chains,     /* count of chain links */
+          chains,     /* count of chain links traversed to find/acquire items */
           add, drop,  /* count of new entries, count of dropped entries */
-          htevict,    /* count of evictions because of ht collisions */
-          afail,      /* write failed to allocate data */
-          hit, miss,  /* read when data was found, miss when not found */
-          cuckacq,    /* cuckoo path acquire */
-          cuckfet,    /* cuckoo path fetch */
-          cuckmov,    /* cuckoo path move */
-          cuckbiz,    /* cuckoo path busy */
-          cuckret,    /* cuckoo path retry */
+          htevict,    /* count of evictions */
+          afail,      /* write failed to allocate data (too big or no space) */
+          hit, miss,  /* hit when data was found, miss when not found */
+          cuckacq,    /* cuckoo path acquire ops */
+          cuckfet,    /* cuckoo path fetch to find a path */
+          cuckmov,    /* cuckoo path move items to new locations */
+          cuckbiz,    /* cuckoo path busy when move targets are acquired */
+          cuckret,    /* cuckoo path retry when a path search failed */
           cuckmax;    /* cuckoo path max retry, could be cycle */
 
   HashCounters() { this->zero(); }
@@ -72,6 +70,37 @@ struct HashDeltaCounters {
   void zero( void ) { this->last.zero(); this->delta.zero(); }
 
   void get_ht_delta( const HashCounters &stat );
+};
+
+struct HashTab;
+
+struct HashTabStats {
+  void * operator new( size_t sz, void *ptr ) { return ptr; }
+  void operator delete( void *ptr ) { ::free( ptr ); }
+  HashTab           & ht;
+  HashDeltaCounters * ctx_stats, /* one for each context */
+                    * db_stats;  /* one for each db */
+  MemDeltaCounters  * mem_stats; /* one for each memory segment */
+  uint32_t          * ctx_seqno; /* one for each context */
+  HashCounters        hops,      /* ops in the last ival */
+                      htot;      /* total ops since creation */
+  MemCounters         mops,      /* mops in the last ival */
+                      mtot;      /* total ops since creation */
+  double              ival,      /* ival for ops */
+                      ival_start,/* start time */
+                      ival_end;  /* end time, end becomes start next ival */
+  uint32_t            ctx_count, /* MAX_CTX_ID */
+                      nsegs,     /* ht.hdr.nsegs */
+                      db_count;  /* MAX_DB_COUNT */
+  HashTabStats( HashTab &h ) : ht( h ), ctx_stats( 0 ), db_stats( 0 ),
+    mem_stats( 0 ), ctx_seqno( 0 ), ival( 0 ), ival_start( 0 ), ival_end( 0 ),
+    ctx_count( 0 ), nsegs( 0 ), db_count( 0 ) {
+    this->hops.zero(); this->htot.zero();
+    this->mops.zero(); this->mtot.zero();
+  }
+  static HashTabStats * create( HashTab &ht );
+
+  bool fetch( void ); /* calculate a new interval, return true if new stats */
 };
 
 } /* namespace kv */

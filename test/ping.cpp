@@ -22,7 +22,7 @@ shm_attach( const char *mn )
 {
   map = HashTab::attach_map( mn, 0, geom );
   if ( map != NULL ) {
-    ctx_id = map->attach_ctx( ::getpid() );
+    ctx_id = map->attach_ctx( ::getpid(), 0 );
     fputs( print_map_geom( map, ctx_id ), stdout );
   }
 }
@@ -126,12 +126,10 @@ main( int argc, char *argv[] )
   KeyCtx pingctx( *map, ctx_id, &pingkb ),
          pongctx( *map, ctx_id, &pongkb );
   uint64_t h1, h2;
-  h1 = map->hdr.hash_key_seed;
-  h2 = map->hdr.hash_key_seed2;
+  map->hdr.get_hash_seed( 0, h1, h2 );
   pingkb.hash( h1, h2 );
   pingctx.set_hash( h1, h2 );
-  h1 = map->hdr.hash_key_seed;
-  h2 = map->hdr.hash_key_seed2;
+  map->hdr.get_hash_seed( 0, h1, h2 );
   pongkb.hash( h1, h2 );
   pongctx.set_hash( h1, h2 );
 

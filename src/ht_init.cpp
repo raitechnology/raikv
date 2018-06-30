@@ -1,7 +1,6 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
-#include <stdarg.h>
 #include <string.h>
 #include <inttypes.h>
 #include <unistd.h>
@@ -49,20 +48,6 @@ HashTab::HashTab( const char *map_name,  const HashTabGeom &geom )
 {
   this->initialize( map_name, geom );
 }
-//#if 0
-static bool is_divis( uint64_t x, ... ) { /* pseudo prime checker */
-  va_list ap;
-  va_start( ap, x );
-  for (;;) {
-    int n = va_arg( ap, int );
-    if ( n == 0 )
-      return false;
-    if ( x % (uint64_t) n == 0 )
-      return true;
-  }
-  va_end( ap );
-}
-//#endif
                                           /* 01234567890123456 */
 const char HashTab::shared_mem_sig[ 16 ]  = "rai.kv.tab 0.1";
 static const int SHM_TYPE_IDX = 14;
@@ -86,7 +71,7 @@ HashTab::initialize( const char *map_name,  const HashTabGeom &geom )
            fraction,
            max_idx,
            el_cnt;
-  uint32_t i,
+  uint32_t i, j,
            nsegs;     /* number of seg[] entries */
   uint16_t szlog2;
   uint8_t  shift;
@@ -121,12 +106,6 @@ HashTab::initialize( const char *map_name,  const HashTabGeom &geom )
   el_cnt    = (uint64_t) ( geom.hash_value_ratio * (double) data_area ) /
                            (uint64_t) geom.hash_entry_size;
   sz = el_cnt;
-  /* not using integer mod, no need to be prime */
-  while ( sz > 0 && is_divis( sz, 2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37,
-                                  41, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97,
-                                  101, 103, 107, 109, 113, 127, 131, 137, 139,
-                                  149, 151, 0 ) )
-    sz--;
   //printf( "stash %lu\n", el_cnt - sz );
   for ( szlog2 = 1; ( (uint64_t) 1 << szlog2 ) < sz; szlog2++ )
     ;
@@ -220,12 +199,18 @@ HashTab::initialize( const char *map_name,  const HashTabGeom &geom )
   /* zero the thread contexts and the ht elements */
   ::memset( this->ctx, 0, sizeof( this->ctx ) );
   /* init rand elems */
-  uint64_t buf[ MAX_CTX_ID * 2 + 4 ];
+  uint64_t buf[ MAX_CTX_ID * 2 + DB_COUNT * 2 ];
   rand::fill_urandom_bytes( buf, sizeof( buf ) );
-  for ( i = 0; i < MAX_CTX_ID * 2; i += 2 )
-    this->ctx[ i / 2 ].rng.init( (void *) &buf[ i ], sizeof( uint64_t ) * 2 );
-  this->hdr.hash_key_seed  = buf[ i ] ^ buf[ i + 1 ];
-  this->hdr.hash_key_seed2 = buf[ i + 2 ] ^ buf[ i + 3 ];
+  i = 0;
+  for ( j = 0; j < MAX_CTX_ID; j++ ) {
+    this->ctx[ j ].rng.init( (void *) &buf[ i ], sizeof( uint64_t ) * 2 );
+    i += 2;
+  }
+  for ( j = 0; j < DB_COUNT; j++ ) {
+    this->hdr.seed[ j ].hash1 = buf[ i ];
+    this->hdr.seed[ j ].hash2 = buf[ i + 1 ];
+    i += 2;
+  }
 
   if ( nsegs > 0 ) {
     /* check that ht doesn't overflow into seg data */
@@ -639,7 +624,7 @@ HashTab::close_map( void )
 
 /* find a new thread entry, key should be non-zero */
 uint32_t
-HashTab::attach_ctx( uint32_t key )
+HashTab::attach_ctx( uint32_t key,  uint8_t db_num )
 {
   ThrCtx * el;
   uint32_t i     = this->hdr.next_ctx.add( 1 ) % MAX_CTX_ID,
@@ -662,6 +647,9 @@ HashTab::attach_ctx( uint32_t key )
         el->ctx_id    = el - this->ctx;
         el->ctx_pid   = ::getpid();
         el->ctx_thrid = ::syscall( SYS_gettid );
+        el->db_num    = db_num;
+        if ( ++el->ctx_seqno == 0 )
+          el->ctx_seqno = 1;
         this->hdr.ctx_used.add( 1 );
         el->key.xchg( key );
         return el->ctx_id;
@@ -678,28 +666,62 @@ HashTab::attach_ctx( uint32_t key )
   }
 }
 
-/* detach thread */
 void
-HashTab::detach_ctx( uint32_t ctx_id )
+HashTab::retire_ht_thr_stats( uint32_t ctx_id )
 {
-  ThrCtx & el   = this->ctx[ ctx_id ],
-         & base = this->ctx[ 0 ];
-  uint32_t val;
-  const uint32_t bizyid = ZOMBIE32 | ctx_id;
+  ThrCtx       & el      = this->ctx[ ctx_id ],
+               & base    = this->ctx[ 0 ];
+  uint8_t        db_num  = el.db_num;
+  HashCounters & db_stat = this->hdr.stat[ db_num ];
+  const uint32_t bizyid  = ZOMBIE32 | ctx_id;
+  uint32_t       val, val2;
 
   if ( ctx_id >= MAX_CTX_ID || ctx_id == 0 )
     return;
 
+  this->hdr.ht_spin_lock( db_num );
   while ( ( (val = base.key.xchg( bizyid )) & ZOMBIE32 ) != 0 )
     kv_sync_pause();
-  while ( ( (val = el.key.xchg( bizyid )) & ZOMBIE32 ) != 0 )
+  while ( ( (val2 = el.key.xchg( bizyid )) & ZOMBIE32 ) != 0 )
     kv_sync_pause();
   base.stat += el.stat;
+  db_stat += el.stat;
+  if ( ++el.ctx_seqno == 0 )
+    el.ctx_seqno = 1;
+  el.stat.zero();
+  el.key.xchg( val2 );
+  base.key.xchg( val );
+  this->hdr.ht_spin_unlock( db_num );
+}
+
+/* detach thread */
+void
+HashTab::detach_ctx( uint32_t ctx_id )
+{
+  ThrCtx       & el      = this->ctx[ ctx_id ],
+               & base    = this->ctx[ 0 ];
+  uint8_t        db_num  = el.db_num;
+  HashCounters & db_stat = this->hdr.stat[ db_num ];
+  const uint32_t bizyid  = ZOMBIE32 | ctx_id;
+
+  if ( ctx_id >= MAX_CTX_ID || ctx_id == 0 )
+    return;
+
+  this->hdr.ht_spin_lock( db_num );
+  while ( ( base.key.xchg( bizyid ) & ZOMBIE32 ) != 0 )
+    kv_sync_pause();
+  while ( ( el.key.xchg( bizyid ) & ZOMBIE32 ) != 0 )
+    kv_sync_pause();
+  base.stat += el.stat;
+  db_stat += el.stat;
+  if ( ++el.ctx_seqno == 0 )
+    el.ctx_seqno = 1;
   //el.stat.zero();
   el.ctx_id = KV_NO_CTX_ID;
   this->hdr.ctx_used.sub( 1 );
   el.key.xchg( 0 );
   base.key.xchg( 0 );
+  this->hdr.ht_spin_unlock( db_num );
 }
 
 extern "C" {
@@ -738,9 +760,9 @@ kv_update_load( kv_hash_tab_t *ht )
 }
 
 uint32_t
-kv_attach_ctx( kv_hash_tab_t *ht,  uint32_t key )
+kv_attach_ctx( kv_hash_tab_t *ht,  uint32_t key,  uint8_t db_num )
 {
-  return reinterpret_cast<HashTab *>( ht )->attach_ctx( key );
+  return reinterpret_cast<HashTab *>( ht )->attach_ctx( key, db_num );
 }
 
 void

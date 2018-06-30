@@ -115,7 +115,7 @@ MemDeltaCounters::get_mem_delta( const MemCounters &cnts )
 }
 
 void
-Segment::get_mem_delta( MemDeltaCounters &stat,  uint16_t align_shift ) const
+Segment::get_mem_seg_delta( MemDeltaCounters &stat,  uint16_t align_shift ) const
 {
   MemCounters current;
   uint64_t x, y;
@@ -129,52 +129,64 @@ Segment::get_mem_delta( MemDeltaCounters &stat,  uint16_t align_shift ) const
   current.evict_size   = this->evict_size;
   stat.get_mem_delta( current );
 }
-
+#if 0
 /* get deltas for all attached threads */
 bool
-HashTab::get_ht_deltas( HashDeltaCounters *stats,  HashCounters &ops,
-                        HashCounters &tot,  uint32_t ctx_id ) const
+HashTab::sum_ht_thr_deltas( HashDeltaCounters *stats,  HashCounters &ops,
+                            HashCounters &tot ) const
 {
+  HashCounters mvd;
+  uint32_t seqno;
+  uint8_t db;
   ops.zero();
   tot.zero();
-  if ( ctx_id >= MAX_CTX_ID ) {
-    HashCounters mvd;
-    mvd.zero();
-    for ( size_t i = 0; i < MAX_CTX_ID; i++ ) {
-      if ( this->ctx[ i ].get_ht_delta( stats[ i ] ) ) {
-        ops += stats[ i ].delta;
-        tot += stats[ i ].last;
-      }
-      else {
-        mvd += stats[ i ].last;
-        stats[ i ].zero();
-      }
-    }
-    ops -= mvd;
-  }
-  else {
-    if ( this->ctx[ ctx_id ].get_ht_delta( stats[ 0 ] ) ) {
-      ops += stats[ 0 ].delta;
-      tot += stats[ 0 ].last;
+  mvd.zero();
+  for ( size_t i = 0; i < MAX_CTX_ID; i++ ) {
+    if ( this->ctx[ i ].get_ht_thr_delta( stats[ i ], db, seqno ) ) {
+      ops += stats[ i ].delta;
+      tot += stats[ i ].last;
     }
     else {
-      stats[ 0 ].zero();
+      mvd += stats[ i ].last;
+      stats[ i ].zero();
     }
+  }
+  ops -= mvd;
+  return ops != 0;
+}
+#endif
+bool
+HashTab::sum_ht_thr_delta( HashDeltaCounters &stats,  HashCounters &ops,
+                           HashCounters &tot,  uint32_t ctx_id ) const
+{
+  uint32_t seqno;
+  uint8_t db;
+  ops.zero();
+  tot.zero();
+  if ( this->ctx[ ctx_id ].get_ht_thr_delta( stats, db, seqno ) ) {
+    ops += stats.delta;
+    tot += stats.last;
+  }
+  else {
+    stats.zero();
   }
   return ops != 0;
 }
 
 bool
-ThrCtx::get_ht_delta( HashDeltaCounters &stat ) const
+ThrCtx::get_ht_thr_delta( HashDeltaCounters &stat,  uint8_t &db,
+                          uint32_t &seqno ) const
 {
   for (;;) {
     while ( ( this->key & ZOMBIE32 ) != 0 )
       kv_sync_pause();
+    db = this->db_num; /* set db, useful when detecting retired stats */
     if ( this->ctx_id == KV_NO_CTX_ID )
       return false;
     HashCounters tmp( this->stat );
     /* XXX: weak sync, mutator could lock & unlock while stat copied to tmp */
     if ( ( this->key & ZOMBIE32 ) == 0 ) {
+      seqno = this->ctx_seqno;
       stat.get_ht_delta( tmp );
       return true;
     }
@@ -182,17 +194,32 @@ ThrCtx::get_ht_delta( HashDeltaCounters &stat ) const
 }
 
 bool
-HashTab::get_mem_deltas( MemDeltaCounters *stats,  MemCounters &chg,
+HashTab::sum_mem_deltas( MemDeltaCounters *stats,  MemCounters &chg,
                          MemCounters &tot ) const
 {
+  const uint16_t align_shift = this->hdr.seg_align_shift;
   chg.zero();
   tot.zero();
   for ( size_t i = 0; i < this->hdr.nsegs; i++ ) {
-    this->hdr.seg[ i ].get_mem_delta( stats[ i ], this->hdr.seg_align_shift );
+    this->hdr.seg[ i ].get_mem_seg_delta( stats[ i ], align_shift );
     chg += stats[ i ].delta;
     tot += stats[ i ].last;
   }
   return chg != 0;
+}
+
+bool
+HashTab::get_db_stats( HashCounters &tot,  uint8_t db_num ) const
+{
+  size_t i;
+  tot = this->hdr.stat[ db_num ];
+  for ( i = 0; i < MAX_CTX_ID; i++ ) {
+    if ( this->ctx[ i ].ctx_id != KV_NO_CTX_ID ) {
+      if ( this->ctx[ i ].db_num == db_num )
+        tot += this->ctx[ i ].stat;
+    }
+  }
+  return tot != 0;
 }
 
 void
@@ -232,7 +259,7 @@ HashTab::update_load( void )
   this->hdr.value_load       = (float) value_load;
   this->hdr.load_percent     = (uint8_t) ( max_load * 100.0 + 0.5 );
 }
-
+#if 0
 MemDeltaCounters *
 MemDeltaCounters::new_array( size_t sz )
 {
@@ -245,5 +272,85 @@ MemDeltaCounters::new_array( size_t sz )
     p = &p[ 1 ];
   }
   return (MemDeltaCounters *) b;
+}
+#endif
+HashTabStats *
+HashTabStats::create( HashTab &ht )
+{
+  size_t sz = sizeof( HashTabStats ) +
+              sizeof( HashDeltaCounters ) * MAX_CTX_ID +
+              sizeof( HashDeltaCounters ) * DB_COUNT +
+              sizeof( MemDeltaCounters ) * ht.hdr.nsegs +
+              sizeof( uint32_t ) * MAX_CTX_ID;
+  void *p = ::malloc( sz );
+  if ( p == NULL )
+    return NULL;
+  ::memset( p, 0, sz );
+  HashTabStats * hts = new ( p ) HashTabStats( ht );
+  hts->ctx_count = MAX_CTX_ID;
+  hts->nsegs     = ht.hdr.nsegs;
+  hts->db_count  = DB_COUNT;
+  hts->ctx_stats = (HashDeltaCounters *) (void *) &hts[ 1 ];
+  hts->db_stats  = &hts->ctx_stats[ hts->ctx_count ];
+  hts->mem_stats = (MemDeltaCounters *) (void *)
+                   &hts->db_stats[ hts->db_count ];
+  hts->ctx_seqno = (uint32_t *) &hts->mem_stats[ hts->nsegs ];
+  return hts;
+}
+
+bool
+HashTabStats::fetch( void )
+{
+  bool   b = false;
+  double t = current_monotonic_coarse_s();
+
+  if ( this->nsegs > 0 )
+    b |= this->ht.sum_mem_deltas( this->mem_stats, this->mops, this->mtot );
+  //b |= this->ht.sum_ht_thr_deltas( this->ctx_stats, this->hops, this->htot );
+
+  HashCounters db[ DB_COUNT ];
+  HashCounters mvd;
+  size_t i;
+  uint32_t seqno;
+  uint8_t db_num;
+  this->hops.zero();
+  this->htot.zero();
+  mvd.zero();
+  for ( i = 0; i < DB_COUNT; i++ )
+    ::memcpy( db, this->ht.hdr.stat, sizeof( db ) );
+
+  for ( i = 0; i < MAX_CTX_ID; i++ ) {
+    const bool valid = /* true if ctx is active */
+      this->ht.ctx[ i ].get_ht_thr_delta( this->ctx_stats[ i ], db_num, seqno );
+    if ( valid && seqno == this->ctx_seqno[ i ] ) {
+      this->hops += this->ctx_stats[ i ].delta;
+      this->htot += this->ctx_stats[ i ].last;
+      db[ db_num ] += this->ctx_stats[ i ].last;
+    }
+    else if ( this->ctx_seqno[ i ] != 0 ) {
+      mvd += this->ctx_stats[ i ].last;
+      this->ctx_stats[ i ].zero();
+    }
+    this->ctx_seqno[ i ] = ( valid ? seqno : 0 );
+  }
+
+  for ( i = 0; i < DB_COUNT; i++ )
+    this->db_stats[ i ].get_ht_delta( db[ i ] );
+
+  this->hops -= mvd;
+  b |= ( this->hops != 0 );
+
+  if ( this->ival_end == 0 ) {
+    this->ival_end = t;
+    b = false; /* wait for an interval */
+  }
+  else {
+    this->ival_start = this->ival_end;
+    this->ival_end = t;
+    this->ival = t - this->ival_start;
+    if ( this->ival <= 0 )
+      b = false;
+  }
+  return b;
 }
 

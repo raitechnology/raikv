@@ -50,27 +50,28 @@ print_ops( HashTab &map,  HashCounters &ops,  double ival )
 SignalHandler sighndl;
 
 void
-test_one( HashTab &map,  uint32_t ctx_id,  kv_hash128_func_t func,
-          HashDeltaCounters *stats,  HashCounters &ops,  HashCounters &tot,
+test_one( HashTab &map,  uint8_t db,  uint32_t ctx_id,  kv_hash128_func_t func,
           uint64_t test_count,  bool use_find,  bool use_single )
 {
+  HashDeltaCounters stats;
+  HashCounters ops, tot;
   WorkAlloc8k wrk;
   KeyBuf kb;
   double mono, ival, tmp;
   uint64_t i, h1, h2, k;
   void *p;
 
+  stats.zero();
   kb.zero();
   kb.keylen = sizeof( k );
 
   sighndl.install();
   mono = current_monotonic_time_s();
-  map.get_ht_deltas( stats, ops, tot, ctx_id );
+  map.sum_ht_thr_delta( stats, ops, tot, ctx_id );
   while ( ! sighndl.signaled ) {
     KeyCtx kctx( map, ctx_id, &kb );
-    kb.set( (uint64_t) 0 );
-    h1 = map.hdr.hash_key_seed;
-    h2 = map.hdr.hash_key_seed2;
+    kb.set( (uint64_t) 0 ); /* use value 0 */
+    map.hdr.get_hash_seed( db, h1, h2 );
     kb.hash( h1, h2, func );
     kctx.set_hash( h1, h2 );
     if ( use_single )
@@ -91,18 +92,19 @@ test_one( HashTab &map,  uint32_t ctx_id,  kv_hash128_func_t func,
     ival = current_monotonic_time_s();
     if ( ival - mono >= 1.0 ) {
       tmp = mono; mono  = ival; ival -= tmp;
-      if ( map.get_ht_deltas( stats, ops, tot, ctx_id ) > 0 )
+      if ( map.sum_ht_thr_delta( stats, ops, tot, ctx_id ) > 0 )
         print_ops( map, ops, ival );
     }
   }
 }
 
 void
-test_rand( HashTab &map,  uint32_t ctx_id,  kv_hash128_func_t func,
-           HashDeltaCounters *stats,  HashCounters &ops,
-           HashCounters &tot,  uint64_t test_count,  bool use_find,
-           uint32_t use_prefetch,  bool use_single )
+test_rand( HashTab &map,  uint8_t db,  uint32_t ctx_id,  kv_hash128_func_t func,
+           uint64_t test_count,  bool use_find,  uint32_t prefetch,
+           bool use_single )
 {
+  HashDeltaCounters stats;
+  HashCounters ops, tot;
   WorkAlloc8k wrk;
   KeyBuf kb;
   double mono, ival, tmp;
@@ -110,6 +112,7 @@ test_rand( HashTab &map,  uint32_t ctx_id,  kv_hash128_func_t func,
   uint64_t i, h1, h2, k;
   uint32_t j;
 
+  stats.zero();
   kv::rand::xorshift1024star rand;
   if ( ! rand.init() )
     printf( "urandom failed\n" );
@@ -127,8 +130,7 @@ test_rand( HashTab &map,  uint32_t ctx_id,  kv_hash128_func_t func,
 
   mono = current_monotonic_time_s();
   for ( i = 0, k = 0; i < 1000000; i++ ) {
-    h1 = map.hdr.hash_key_seed;
-    h2 = map.hdr.hash_key_seed2;
+    map.hdr.get_hash_seed( db, h1, h2 );
     key[ k ].hash( h1, h2, func );
     k  = ( k + 1 ) % test_count;
   }
@@ -138,10 +140,10 @@ test_rand( HashTab &map,  uint32_t ctx_id,  kv_hash128_func_t func,
           1000000.0 / mono );
 
   mono = current_monotonic_time_s();
-  map.get_ht_deltas( stats, ops, tot, ctx_id );
+  map.sum_ht_thr_delta( stats, ops, tot, ctx_id );
   while ( ! sighndl.signaled ) {
-    if ( use_prefetch > 1 ) {
-      const uint32_t stride = use_prefetch;
+    if ( prefetch > 1 ) {
+      const uint32_t stride = prefetch;
       KeyCtx * kctx = KeyCtx::new_array( map, ctx_id, NULL, stride );
 
       for ( i = 0; i < test_count; i += stride ) {
@@ -176,18 +178,19 @@ test_rand( HashTab &map,  uint32_t ctx_id,  kv_hash128_func_t func,
     ival = current_monotonic_time_s();
     if ( ival - mono >= 1.0 ) {
       tmp = mono; mono  = ival; ival -= tmp;
-      if ( map.get_ht_deltas( stats, ops, tot, ctx_id ) > 0 )
+      if ( map.sum_ht_thr_delta( stats, ops, tot, ctx_id ) > 0 )
         print_ops( map, ops, ival );
     }
   }
 }
 
 void
-test_incr( HashTab &map,  uint32_t ctx_id,  kv_hash128_func_t func,
-           HashDeltaCounters *stats,  HashCounters &ops,
-           HashCounters &tot,  uint64_t test_count,  bool use_find,
-           uint32_t use_prefetch,  bool use_single )
+test_incr( HashTab &map,  uint8_t db,  uint32_t ctx_id,  kv_hash128_func_t func,
+           uint64_t test_count,  bool use_find,  uint32_t prefetch,
+           bool use_single )
 {
+  HashDeltaCounters stats;
+  HashCounters ops, tot;
   WorkAlloc8k wrk;
   KeyBuf kb;
   double mono, ival, tmp;
@@ -195,6 +198,7 @@ test_incr( HashTab &map,  uint32_t ctx_id,  kv_hash128_func_t func,
   uint64_t i, h1, h2, k;
   uint32_t j;
 
+  stats.zero();
   mono = current_monotonic_time_s();
   for ( i = 0, k = 0; i < 1000000; i++ ) {
     if ( k == 0 ) {
@@ -202,8 +206,7 @@ test_incr( HashTab &map,  uint32_t ctx_id,  kv_hash128_func_t func,
       kb.keylen = 2;
       kb.u.buf[ 0 ] = '0';
     }
-    h1 = map.hdr.hash_key_seed;
-    h2 = map.hdr.hash_key_seed2;
+    map.hdr.get_hash_seed( db, h1, h2 );
     kb.hash( h1, h2, func );
     k  = ( k + 1 ) % test_count;
     incr_key( kb );
@@ -215,13 +218,13 @@ test_incr( HashTab &map,  uint32_t ctx_id,  kv_hash128_func_t func,
 
   sighndl.install();
   mono = current_monotonic_time_s();
-  map.get_ht_deltas( stats, ops, tot, ctx_id );
+  map.sum_ht_thr_delta( stats, ops, tot, ctx_id );
   while ( ! sighndl.signaled ) {
     kb.zero();
     kb.keylen = 2;
     kb.u.buf[ 0 ] = '0';
-    if ( use_prefetch > 1 ) {
-      const uint32_t stride = use_prefetch;
+    if ( prefetch > 1 ) {
+      const uint32_t stride = prefetch;
       KeyCtx * kctx = KeyCtx::new_array( map, ctx_id, NULL, stride );
       KeyBufAligned * kbar = KeyBufAligned::new_array( stride );
 
@@ -254,8 +257,7 @@ test_incr( HashTab &map,  uint32_t ctx_id,  kv_hash128_func_t func,
     else {
       KeyCtx kctx( map, ctx_id, &kb );
       for ( i = 0; i < test_count; i++ ) {
-        h1 = map.hdr.hash_key_seed;
-        h2 = map.hdr.hash_key_seed2;
+        map.hdr.get_hash_seed( db, h1, h2 );
         kb.hash( h1, h2, func );
         kctx.set_hash( h1, h2 );
         if ( use_single )
@@ -275,18 +277,19 @@ test_incr( HashTab &map,  uint32_t ctx_id,  kv_hash128_func_t func,
     ival = current_monotonic_time_s();
     if ( ival - mono >= 1.0 ) {
       tmp = mono; mono  = ival; ival -= tmp;
-      if ( map.get_ht_deltas( stats, ops, tot, ctx_id ) > 0 )
+      if ( map.sum_ht_thr_delta( stats, ops, tot, ctx_id ) > 0 )
         print_ops( map, ops, ival );
     }
   }
 }
 
 void
-test_int( HashTab &map,  uint32_t ctx_id,  kv_hash128_func_t func,
-          HashDeltaCounters *stats,  HashCounters &ops,
-          HashCounters &tot,  uint64_t test_count,  bool use_find,
-          uint32_t use_prefetch,  bool use_single )
+test_int( HashTab &map,  uint8_t db,  uint32_t ctx_id,  kv_hash128_func_t func,
+          uint64_t test_count,  bool use_find,  uint32_t prefetch,
+          bool use_single )
 {
+  HashDeltaCounters stats;
+  HashCounters ops, tot;
   WorkAlloc8k wrk;
   KeyBuf kb, ukb;
   double mono, ival, tmp;
@@ -294,12 +297,12 @@ test_int( HashTab &map,  uint32_t ctx_id,  kv_hash128_func_t func,
   uint64_t i, h1, h2, k;
   uint32_t j;
 
+  stats.zero();
   mono = current_monotonic_time_s();
   ukb.zero();
   for ( i = 0, k = 0; i < 1000000; i++ ) {
     ukb.set( k );
-    h1 = map.hdr.hash_key_seed;
-    h2 = map.hdr.hash_key_seed2;
+    map.hdr.get_hash_seed( db, h1, h2 );
     ukb.hash( h1, h2, func );
     k  = ( k + 1 ) % test_count;
   }
@@ -313,8 +316,7 @@ test_int( HashTab &map,  uint32_t ctx_id,  kv_hash128_func_t func,
   akb.zero();
   for ( i = 0, k = 0; i < 1000000; i++ ) {
     akb.set( k );
-    h1 = map.hdr.hash_key_seed;
-    h2 = map.hdr.hash_key_seed2;
+    map.hdr.get_hash_seed( db, h1, h2 );
     akb.hash( h1, h2, func );
     k  = ( k + 1 ) % test_count;
   }
@@ -325,10 +327,10 @@ test_int( HashTab &map,  uint32_t ctx_id,  kv_hash128_func_t func,
 
   sighndl.install();
   mono = current_monotonic_time_s();
-  map.get_ht_deltas( stats, ops, tot, ctx_id );
+  map.sum_ht_thr_delta( stats, ops, tot, ctx_id );
   while ( ! sighndl.signaled ) {
-    if ( use_prefetch > 1 ) {
-      const uint32_t stride = use_prefetch;
+    if ( prefetch > 1 ) {
+      const uint32_t stride = prefetch;
       KeyCtx * kctx = KeyCtx::new_array( map, ctx_id, NULL, stride );
       KeyBufAligned * kbar = KeyBufAligned::new_array( stride );
 
@@ -360,8 +362,7 @@ test_int( HashTab &map,  uint32_t ctx_id,  kv_hash128_func_t func,
       KeyCtx kctx( map, ctx_id, kb );
       for ( i = 0; i < test_count; i++ ) {
         kb.set( i );
-        h1 = map.hdr.hash_key_seed;
-        h2 = map.hdr.hash_key_seed2;
+        map.hdr.get_hash_seed( db, h1, h2 );
         kb.hash( h1, h2, func );
         kctx.set_hash( h1, h2 );
         if ( use_single )
@@ -378,10 +379,21 @@ test_int( HashTab &map,  uint32_t ctx_id,  kv_hash128_func_t func,
     ival = current_monotonic_time_s();
     if ( ival - mono >= 1.0 ) {
       tmp = mono; mono  = ival; ival -= tmp;
-      if ( map.get_ht_deltas( stats, ops, tot, ctx_id ) > 0 )
+      if ( map.sum_ht_thr_delta( stats, ops, tot, ctx_id ) > 0 )
         print_ops( map, ops, ival );
     }
   }
+}
+
+static const char *
+get_arg( int argc, char *argv[], int n, int b, const char *f, const char *def )
+{
+  if ( n > 0 && argc > n && argv[ 1 ][ 0 ] != '-' )
+    return argv[ n ];
+  for ( int i = 1; i < argc - b; i++ )
+    if ( ::strcmp( f, argv[ i ] ) == 0 )
+      return argv[ i + b ];
+  return def; /* default value */
 }
 
 int
@@ -389,46 +401,48 @@ main( int argc, char *argv[] )
 {
   HashTabGeom   geom;
   HashTab     * map;
-  const char  * ins_fnd  = NULL,
-              * pref     = NULL,
-              * load_pct = NULL,
-              * oper     = NULL,
-              * mn       = NULL;
+  double        load_pct;
+  uint32_t      prefetch;
+  uint8_t       db_num;
 
-  if ( argc <= 2 ) {
+  /* [sysv2m:shm.test] [int] [50] [1] [ins] [0] [0] */
+  const char * mn = get_arg( argc, argv, 1, 1, "-m", "sysv2m:shm.test" ),
+             * te = get_arg( argc, argv, 2, 1, "-t", "int" ),
+             * pc = get_arg( argc, argv, 3, 1, "-p", "50" ),
+             * fe = get_arg( argc, argv, 4, 1, "-f", "1" ),
+             * op = get_arg( argc, argv, 5, 1, "-o", "ins" ),
+             * si = get_arg( argc, argv, 6, 1, "-s", "0" ),
+             * db = get_arg( argc, argv, 7, 1, "-d", "0" ),
+             * he = get_arg( argc, argv, 0, 0, "-h", 0 );
+
+  if ( he != NULL ) {
   cmd_error:;
     fprintf( stderr, "raikv version: %s\n", kv_stringify( KV_VER ) );
     fprintf( stderr,
-     "%s (map) (rand|incr|int|cli) [pct] [prefetch] [ins|find]\n"
-     "  map           -- name of map file (prefix w/ file:, sysv:, posix:)\n"
-     "  rand   [pct]  -- inserts random string keys, load pct\n"
-     "  incr   [pct]  -- inserts incrementing strings, load pct\n"
-     "  int    [pct]  -- inserts incrementing integers, load pct\n"
-     "  cli           -- attach and prompt for input\n"
-     "         [prefetch] == arg to rand/incr/int to use memory\n"
-     "                           prefetching with a pipeline of N\n"
-     "         [ins/find] == arg client to insert or find\n",
-             argv[ 0 ]);
+"%s [-m map] [-t test] [-p pct] [-f prefetch] [-o oper] [-s sin] [-d db-num]\n"
+  "  map            = name of map file (prefix w/ file:, sysv:, posix:)\n"
+  "  test           = test kind: one, int, rand, incr (def: int)\n"
+  "  pct            = percent coverage of total hash entries (def: 50%%)\n"
+  "  prefetch       = number of prefetches to perform (def: 1)\n"
+  "  oper           = find or insert (def: ins)\n"
+  "  sin            = single thread, no locking (def: 0)\n"
+  "  db-num         = database number to use (def: 0)\n", argv[ 0 ] );
     return 1;
   }
-  switch ( argc ) {
-    default: goto cmd_error;
-    case 6: ins_fnd  = argv[ 5 ];
-    case 5: pref     = argv[ 4 ];
-    case 4: load_pct = argv[ 3 ];
-    case 3: oper     = argv[ 2 ];
-            mn       = argv[ 1 ];
-            break;
-  }
+
+  load_pct = strtod( pc, 0 );
+  if ( load_pct == 0 )
+    goto cmd_error;
+  prefetch = atoi( fe );
+  if ( prefetch == 0 )
+    goto cmd_error;
+  db_num = (uint8_t) atoi( db );
 
   map = HashTab::attach_map( mn, 0, geom );
   if ( map == NULL )
     return 1;
 
-  HashDeltaCounters stats[ MAX_CTX_ID ];
-  HashCounters ops, tot;
-
-  uint32_t ctx_id = map->attach_ctx( ::getpid() );
+  uint32_t ctx_id = map->attach_ctx( ::getpid(), db_num );
   if ( ctx_id == MAX_CTX_ID ) {
     printf( "no more ctx available\n" );
     return 3;
@@ -436,37 +450,32 @@ main( int argc, char *argv[] )
   fputs( print_map_geom( map, ctx_id ), stdout );
   kv_hash128_func_t func = KV_DEFAULT_HASH;
 
-  const uint64_t test_count = (
-    ( load_pct != NULL && atoi( load_pct ) > 0 && atoi( load_pct ) <= 100 ) ?
-    ( map->hdr.ht_size * atoi( load_pct ) / 100 ) :
-    ( map->hdr.ht_size / 2 + map->hdr.ht_size / 4 ) ) & ~(uint64_t) 15;
-  const int use_prefetch = ( ( pref != NULL ) ? atoi( pref ) : 0 );
-  const bool use_find    = ( ( ins_fnd != NULL ) ?
-                             ::strncmp( ins_fnd, "find", 4 ) == 0 : false );
-  const bool use_single  = ( ( ins_fnd != NULL ) ?
-     ::strcmp( &ins_fnd[ ::strlen( ins_fnd ) - 1 ], "S" ) == 0 : false );
+  const uint64_t test_count = (uint64_t)
+    ( ( (double) map->hdr.ht_size * load_pct ) / 100.0 ) & ~(uint64_t) 15;
+  const bool use_find    = ::strncmp( op, "find", 4 ) == 0;
+  const bool use_single  = si[ 0 ] != '0';
 
-  printf( "elem count = %lu\n", test_count );
-  printf( "use prefetch: %s\n", use_prefetch <= 1 ? "no" : "yes" );
+  printf( "test: %s\n", te );
+  printf( "elem count: %lu\n", test_count );
+  printf( "prefetch: %u\n", prefetch );
   printf( "use find: %s\n", use_find ? "yes" : "no" );
   printf( "use single: %s\n", use_single ? "yes" : "no" );
 
-  WorkAlloc8k wrk;
-  if ( ::strcmp( oper, "one" ) == 0 ) {
-    test_one( *map, ctx_id, func, stats, ops, tot, test_count, use_find,
+  if ( ::strcmp( te, "one" ) == 0 ) {
+    test_one( *map, db_num, ctx_id, func, test_count, use_find,
               use_single );
   }
-  else if ( ::strcmp( oper, "rand" ) == 0 ) {
-    test_rand( *map, ctx_id, func, stats, ops, tot, test_count, use_find,
-               use_prefetch, use_single );
+  else if ( ::strcmp( te, "rand" ) == 0 ) {
+    test_rand( *map, db_num, ctx_id, func, test_count, use_find,
+               prefetch, use_single );
   }
-  else if ( ::strcmp( oper, "incr" ) == 0 ) {
-    test_incr( *map, ctx_id, func, stats, ops, tot, test_count, use_find,
-               use_prefetch, use_single );
+  else if ( ::strcmp( te, "incr" ) == 0 ) {
+    test_incr( *map, db_num, ctx_id, func, test_count, use_find,
+               prefetch, use_single );
   }
-  else if ( ::strcmp( oper, "int" ) == 0 ) {
-    test_int( *map, ctx_id, func, stats, ops, tot, test_count, use_find,
-               use_prefetch, use_single );
+  else if ( ::strcmp( te, "int" ) == 0 ) {
+    test_int( *map, db_num, ctx_id, func, test_count, use_find,
+               prefetch, use_single );
   }
   printf( "bye\n" );
   map->detach_ctx( ctx_id );

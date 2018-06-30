@@ -120,9 +120,10 @@ fetch_hash_entry( void *p,  void *q,  uint32_t sz )
 
 /* spin on ht[ i ] until it is fetchable */
 KeyStatus
-KeyCtx::fetch_position( const uint64_t i,  const uint64_t spin_wait )
+KeyCtx::fetch_position( const uint64_t i,  const uint64_t spin_wait,
+                        const bool is_scan )
 {
-  ThrCtx    & ctx  = this->ht.ctx[ this->ctx_id ];
+  ThrCtx    & ctx  = this->thr_ctx;
   HashEntry * cpy  = this->get_work_entry();
   uint64_t    spin = 0,
               h;
@@ -162,8 +163,12 @@ KeyCtx::fetch_position( const uint64_t i,  const uint64_t spin_wait )
       this->lock   = h;
       this->serial = cpy->value_ctr( this->hash_entry_size ).get_serial();
       this->entry  = cpy;
-      if ( h != 0 )
-        return KEY_OK;
+      if ( h != 0 ) {
+        if ( ! is_scan )
+          return KEY_OK;
+        if ( cpy->test( FL_DROPPED ) == 0 && this->db_num == this->get_db() )
+          return KEY_OK;
+      }
       return KEY_NOT_FOUND;
     }
   }
@@ -181,7 +186,7 @@ KeyCtx::drop( void )
     return status;
 
   ThrCtxOwner    closure( this->ht.ctx );
-  ThrCtx       & ctx       = ht.ctx[ this->ctx_id ];
+  ThrCtx       & ctx       = this->thr_ctx;
   const uint64_t half_size = this->ht_size / 2;
   HashEntry    * el,
                * base,

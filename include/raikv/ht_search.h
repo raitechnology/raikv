@@ -4,18 +4,18 @@
 namespace rai {
 namespace kv {
 
-/* resolve by walking entries until found or empty, always keep one lock active
-   so that no other thread can pass by while this thread is on the same chain
-   if a jump to a non-linear position is required with cuckoo alternate
-   hashing, then it must back out with KEY_BUSY to avoid deadlock of two
-   threads jumping to eachothers position while holding the old positions's
-   lock */
+/* Resolve by walking entries until found or empty. Always keep one lock
+ active so that no other thread can pass by while this thread is on the same
+ chain. If a jump to a non-linear position (where next pos != pos +1), which
+ occurs with cuckoo alternate hashing; Then, on collision, it must be able to
+ recover by returning KEY_BUSY to avoid the deadlock condition of two threads
+ jumping into each others current position */
 template <class Position, bool is_blocking>
 KeyStatus
 KeyCtx::acquire( const uint64_t k,  uint64_t i,  Position &next )
 {
   ThrCtxOwner  closure( this->ht.ctx );
-  ThrCtx     & ctx     = this->ht.ctx[ this->ctx_id ];
+  ThrCtx     & ctx     = this->thr_ctx;
   HashEntry  * el,              /* current ht[] ptr */
              * last,            /* last ht[] ptr */
              * drop    = NULL;  /* drop ht[] ptr */
@@ -192,7 +192,7 @@ template <class Position>
 KeyStatus
 KeyCtx::acquire_single_thread( const uint64_t k,  uint64_t i,  Position &next )
 {
-  ThrCtx     & ctx    = this->ht.ctx[ this->ctx_id ];
+  ThrCtx     & ctx    = this->thr_ctx;
   HashEntry  * el,              /* current ht[] ptr */
              * drop   = NULL;  /* drop ht[] ptr */
   uint64_t     h,               /* hash val at the current element */
@@ -310,7 +310,7 @@ KeyStatus
 KeyCtx::find( const uint64_t k,  uint64_t i,  const uint64_t spin_wait,
               Position &next )
 {
-  ThrCtx    & ctx  = this->ht.ctx[ this->ctx_id ];
+  ThrCtx    & ctx  = this->thr_ctx;
   HashEntry * cpy  = this->get_work_entry();
   uint64_t    spin = 0,
               h;
@@ -375,7 +375,7 @@ template <class Position>
 KeyStatus
 KeyCtx::find_single_thread( const uint64_t k,  uint64_t i,  Position &next )
 {
-  ThrCtx  & ctx  = this->ht.ctx[ this->ctx_id ];
+  ThrCtx  & ctx  = this->thr_ctx;
   uint64_t  h;
   KeyStatus status;
 

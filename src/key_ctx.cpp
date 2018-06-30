@@ -12,13 +12,14 @@ using namespace kv;
 /* KeyFragment b is usually null */
 KeyCtx::KeyCtx( HashTab &t, uint32_t id, KeyFragment *b )
   : ht( t )
+  , thr_ctx( t.ctx[ id ] )
   , kbuf( b )
-  , ctx_id( id )
-  , hash_entry_size( t.hdr.hash_entry_size )
   , ht_size( t.hdr.ht_size )
+  , hash_entry_size( t.hdr.hash_entry_size )
   , cuckoo_buckets( t.hdr.cuckoo_buckets )
   , cuckoo_arity( t.hdr.cuckoo_arity )
   , seg_align_shift( t.hdr.seg_align_shift )
+  , db_num( t.ctx[ id ].db_num )
   , inc( 0 )
   , drop_flags( 0 )
   , flags( KEYCTX_IS_READ_ONLY )
@@ -33,13 +34,14 @@ KeyCtx::KeyCtx( HashTab &t, uint32_t id, KeyFragment *b )
 
 KeyCtx::KeyCtx( HashTab &t, uint32_t id, KeyFragment &b )
   : ht( t )
+  , thr_ctx( t.ctx[ id ] )
   , kbuf( &b )
-  , ctx_id( id )
-  , hash_entry_size( t.hdr.hash_entry_size )
   , ht_size( t.hdr.ht_size )
+  , hash_entry_size( t.hdr.hash_entry_size )
   , cuckoo_buckets( t.hdr.cuckoo_buckets )
   , cuckoo_arity( t.hdr.cuckoo_arity )
   , seg_align_shift( t.hdr.seg_align_shift )
+  , db_num( t.ctx[ id ].db_num )
   , inc( 0 )
   , drop_flags( 0 )
   , flags( KEYCTX_IS_READ_ONLY )
@@ -53,6 +55,14 @@ KeyCtx::KeyCtx( HashTab &t, uint32_t id, KeyFragment &b )
 }
 
 void
+KeyCtx::switch_db( uint8_t db_num )
+{
+  this->ht.retire_ht_thr_stats( this->thr_ctx.ctx_id );
+  this->db_num = db_num;
+  this->thr_ctx.db_num = db_num; /* must account for other KeyCtx in app */
+}
+
+void
 KeyCtx::set_hash( uint64_t k,  uint64_t k2 )
 {
   this->key   = k;
@@ -63,8 +73,8 @@ KeyCtx::set_hash( uint64_t k,  uint64_t k2 )
 void
 KeyCtx::set_key_hash( KeyFragment &b )
 {
-  uint64_t k  = this->ht.hdr.hash_key_seed,
-           k2 = this->ht.hdr.hash_key_seed2;
+  uint64_t k, k2;
+  this->ht.hdr.get_hash_seed( this->db_num, k, k2 );
   this->set_key( b );
   b.hash( k, k2 );
   this->set_hash( k, k2 );
@@ -139,7 +149,7 @@ KeyStatus
 KeyCtx::tombstone( void )
 {
   if ( this->lock != 0 ) { /* if it's not new */
-    ThrCtx  & ctx = ht.ctx[ this->ctx_id ];
+    ThrCtx  & ctx = this->thr_ctx;
     KeyStatus status;
     if ( (status = this->release_data()) != KEY_OK )
       return status;
@@ -246,7 +256,7 @@ KeyCtx::release( void )
     return;
   }
   HashEntry & el   = *this->entry;
-  ThrCtx    & ctx  = this->ht.ctx[ this->ctx_id ];
+  ThrCtx    & ctx  = this->thr_ctx;
   ThrCtxOwner closure( this->ht.ctx );
   uint64_t    spin = 0,
               k    = this->key;
@@ -265,7 +275,7 @@ KeyCtx::release( void )
         k        = DROPPED_HASH;
         el.flags = FL_DROPPED;
       }
-      el.seal_entry( this->hash_entry_size, 0 );
+      el.seal_entry( this->hash_entry_size, 0, 0 );
       goto done; /* skip over the seals, they will be tossed */
     }
     ctx.incr_add(); /* counter for added elements */
@@ -273,7 +283,7 @@ KeyCtx::release( void )
   /* allow readers to access */
   el.hash2 = this->key2;
   el.set_cuckoo_inc( this->inc );
-  el.seal_entry( this->hash_entry_size, this->serial );
+  el.seal_entry( this->hash_entry_size, this->serial, this->db_num );
   if ( el.test( FL_SEGMENT_VALUE ) )
     this->seal_msg();
 done:;
@@ -294,7 +304,7 @@ KeyCtx::release_single_thread( void )
   if ( this->test( KEYCTX_IS_READ_ONLY ) != 0 )
     return;
   HashEntry & el   = *this->entry;
-  ThrCtx    & ctx  = this->ht.ctx[ this->ctx_id ];
+  ThrCtx    & ctx  = this->thr_ctx;
   uint64_t    k    = this->key;
   /* if no data was inserted, mark the entry as tombstone */
   if ( this->lock == 0 ) { /* if it's new */
@@ -313,7 +323,7 @@ KeyCtx::release_single_thread( void )
         el.hash2 = 0;
         el.flags = FL_DROPPED;
       }
-      el.seal_entry( this->hash_entry_size, 0 );
+      el.seal_entry( this->hash_entry_size, 0, 0 );
       goto done; /* skip over the seals, they will be tossed */
     }
     ctx.incr_add(); /* counter for added elements */
@@ -321,7 +331,7 @@ KeyCtx::release_single_thread( void )
   /* allow readers to access */
   el.hash2 = this->key2;
   el.set_cuckoo_inc( this->inc );
-  el.seal_entry( this->hash_entry_size, this->serial );
+  el.seal_entry( this->hash_entry_size, this->serial, this->db_num );
   if ( el.test( FL_SEGMENT_VALUE ) )
     this->seal_msg();
 done:;
@@ -444,7 +454,7 @@ KeyStatus
 KeyCtx::release_evict( void )
 {
   HashEntry & el  = *this->entry;
-  ThrCtx    & ctx = this->ht.ctx[ this->ctx_id ];
+  ThrCtx    & ctx = this->thr_ctx;
   switch ( this->drop_flags & ( FL_SEGMENT_VALUE | FL_IMMEDIATE_VALUE ) ) {
     case FL_SEGMENT_VALUE: {
       MsgHdr * tmp;
@@ -491,7 +501,8 @@ KeyCtx::seal_msg( void )
     RelativeStamp & rs = this->entry->rela_stamp( this->hash_entry_size );
     this->msg->rela_stamp().u.stamp = rs.u.stamp;
   }
-  this->msg->seal( this->serial, this->get_type(), this->entry->flags );
+  ValueCtr &ctr = this->entry->value_ctr( this->hash_entry_size );
+  this->msg->seal( this->serial, ctr.db, ctr.type, this->entry->flags );
 }
 
 KeyStatus
@@ -542,7 +553,7 @@ KeyCtx::update_entry( void *res,  uint64_t size,  uint8_t alignment,
   /* key doesn't fit and no segment data, check if value fits */
   hdr_end = &((uint8_t *) (void *) &el)[ sizeof( HashEntry ) ];
   if ( &hdr_end[ size ] > trail ) {
-    this->ht.ctx[ this->ctx_id ].incr_afail();
+    this->thr_ctx.incr_afail();
     return KEY_ALLOC_FAILED;
   }
   /* only part of the key fits */
@@ -606,7 +617,7 @@ KeyCtx::alloc( void *res,  uint64_t size,  bool copy,  uint8_t alignment )
 
   if ( status == KEY_SEG_VALUE ) {
     /* allocate mem from a segment */
-    MsgCtx msg_ctx( this->ht, this->ctx_id, this->hash_entry_size );
+    MsgCtx msg_ctx( this->ht, this->thr_ctx.ctx_id, this->hash_entry_size );
     msg_ctx.set_key( *this->kbuf );
     msg_ctx.set_hash( this->key, this->key2 );
     if ( (status = msg_ctx.alloc_segment( res, size, alignment )) == KEY_OK ) {
@@ -619,7 +630,7 @@ KeyCtx::alloc( void *res,  uint64_t size,  bool copy,  uint8_t alignment )
       this->msg = msg_ctx.msg;
     }
     else if ( status == KEY_ALLOC_FAILED ) {
-      this->ht.ctx[ this->ctx_id ].incr_afail();
+      this->thr_ctx.incr_afail();
     }
   }
   if ( cpp != NULL ) {
@@ -1012,8 +1023,8 @@ void
 kv_hash_key_frag( kv_hash_tab_t *ht,  kv_key_frag_t *frag,
                   uint64_t *k,  uint64_t *k2 )
 {
-  *k  = reinterpret_cast<HashTab *>( ht )->hdr.hash_key_seed;
-  *k2 = reinterpret_cast<HashTab *>( ht )->hdr.hash_key_seed2;
+  HashTab *map = reinterpret_cast<HashTab *>( ht );
+  map->hdr.get_hash_seed( 0, *k, *k2 );
   ((KeyFragment *) frag )->hash( *k, *k2 );
 }
 

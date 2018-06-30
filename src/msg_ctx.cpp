@@ -10,14 +10,14 @@ using namespace rai;
 using namespace kv;
 
 MsgCtx::MsgCtx( HashTab &t,  uint32_t id,  uint32_t sz )
-      : ht( t ), kbuf( 0 ), ctx_id( id ), hash_entry_size( sz ), key( 0 ),
+      : ht( t ), thr_ctx( t.ctx[ id ] ), kbuf( 0 ), hash_entry_size( sz ), key( 0 ),
         msg( 0 ), prefetch_ptr( 0 ) {}
 
 MsgCtx::MsgCtx( HashTab &t,  uint32_t id )
-      : ht( t ), kbuf( 0 ), ctx_id( id ),
+      : ht( t ), thr_ctx( t.ctx[ id ] ), kbuf( 0 ),
         hash_entry_size( t.hdr.hash_entry_size ), key( 0 ),
         msg( 0 ), prefetch_ptr( 0 ) {}
-
+#if 0
 void
 MsgCtx::set_key_hash( KeyFragment &b )
 {
@@ -27,7 +27,7 @@ MsgCtx::set_key_hash( KeyFragment &b )
   b.hash( k, k2 );
   this->set_hash( k, k2 );
 }
-
+#endif
 MsgCtx *
 MsgCtx::new_array( HashTab &t,  uint32_t id,  void *b,  size_t bsz )
 {
@@ -67,8 +67,8 @@ MsgCtx::prefetch_segment( uint64_t size )
 KeyStatus
 MsgCtx::alloc_segment( void *res,  uint64_t size,  uint8_t alignment )
 {
-  ThrCtx         & ctx       = this->ht.ctx[ this->ctx_id ];
-  KeyCtx           mv_kctx( this->ht, this->ctx_id );
+  ThrCtx         & ctx       = this->thr_ctx;
+  KeyCtx           mv_kctx( this->ht, this->thr_ctx.ctx_id );
   WorkAllocT<1024> wrk;
   const uint64_t   seg_size  = this->ht.hdr.seg_size();
   const uint32_t   nsegs     = this->ht.hdr.nsegs,
@@ -124,6 +124,7 @@ MsgCtx::alloc_segment( void *res,  uint64_t size,  uint8_t alignment )
             mv_kctx.set_hash( mv_hash, mv_hash2 );
             mv_kctx.set( KEYCTX_IS_GC_ACQUIRE );
             if ( mv_kctx.try_acquire( &wrk ) <= KEY_IS_NEW ) {
+              mv_kctx.db_num = mv_kctx.get_db();
               /* make sure it didn't move */
               if ( mv_kctx.entry->test( FL_SEGMENT_VALUE ) ) {
                 mv_kctx.entry->get_value_geom( this->hash_entry_size,
@@ -154,8 +155,7 @@ MsgCtx::alloc_segment( void *res,  uint64_t size,  uint8_t alignment )
                       mv_kctx.entry->set_value_geom( this->hash_entry_size,
                                                      mv_kctx.geom, algn_shft );
                       msg = (MsgHdr *) (void *) &segptr[ j ];
-                      msg->seal( mv_kctx.serial, mv_kctx.get_type(),
-                                 mv_kctx.entry->flags );
+                      msg->seal2( mv_kctx.serial, mv_kctx.entry->flags );
                       /* advance both leading and trailing edge */
                       j += msgsize;
                       i += msgsize;

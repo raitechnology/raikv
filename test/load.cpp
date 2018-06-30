@@ -22,7 +22,7 @@ shm_attach( const char *mn )
 {
   map = HashTab::attach_map( mn, 0, geom );
   if ( map != NULL ) {
-    ctx_id = map->attach_ctx( 1000 /*::getpid()*/ );
+    ctx_id = map->attach_ctx( 1000 /*::getpid()*/, 0 );
     fputs( print_map_geom( map, ctx_id ), stdout );
   }
 }
@@ -234,9 +234,13 @@ main( int argc, char *argv[] )
           kb.u.buf[ kb.keylen++ ] = '\0';
           if ( use_pref )
             mctx[ i ].prefetch_segment( sz );
-          mctx[ i ].set_key_hash( kb );
+          uint64_t h1, h2;
+          map->hdr.get_hash_seed( 0, h1, h2 );
+          kb.hash( h1, h2 );
+          mctx[ i ].set_key( kb );
+          mctx[ i ].set_hash( h1, h2 );
           kctx[ i ].set_key( kb );
-          kctx[ i ].set_hash( mctx[ i ].key, mctx[ i ].key2 );
+          kctx[ i ].set_hash( h1, h2 );
           if ( use_pref )
             kctx[ i ].prefetch( 1 );
           if ( mctx[ i ].alloc_segment( &ptr, sz, 8 ) == KEY_OK ) {

@@ -88,8 +88,8 @@ CuckooAltHash::find_cuckoo_path( CuckooPosition &cp )
   const uint32_t     arity     = kctx.cuckoo_arity,
                      buckets   = kctx.cuckoo_buckets;
   const uint64_t     ht_size   = kctx.ht_size;
-  KeyCtx             to_kctx( kctx.ht, kctx.ctx_id ),
-                     fr_kctx( kctx.ht, kctx.ctx_id );
+  KeyCtx             to_kctx( kctx.ht, kctx.thr_ctx.ctx_id ),
+                     fr_kctx( kctx.ht, kctx.thr_ctx.ctx_id );
   WorkAllocT<1024>   wrk, wrk2;
   CuckooVisit        node[ node_size ],
                    * vis;
@@ -97,7 +97,7 @@ CuckooAltHash::find_cuckoo_path( CuckooPosition &cp )
    /*= (CuckooVisit *) kctx.wrk->alloc( node_size * sizeof( CuckooVisit ) ),*/
    /*= (uint32_t *) kctx.wrk->alloc( stk_size * sizeof( uint32_t ) );*/
   CuckooAltHash    * h   = CuckooAltHash::create( kctx );
-  ThrCtx           & ctx = kctx.ht.ctx[ kctx.ctx_id ];
+  ThrCtx           & ctx = kctx.thr_ctx;
   rand::xoroshiro128plus
                    & rng = ctx.rng;
   uint64_t           key, key2, p, rng_bits, boff;
@@ -204,6 +204,7 @@ CuckooAltHash::find_cuckoo_path( CuckooPosition &cp )
               to_kctx.lock   = fr_kctx.lock;
               to_kctx.key    = fr_kctx.key;
               to_kctx.key2   = fr_kctx.key2;
+              to_kctx.db_num = fr_kctx.db_num;
               to_kctx.serial = fr_kctx.serial;
               to_kctx.release();
 
@@ -301,6 +302,7 @@ CuckooAltHash::find_cuckoo_path( CuckooPosition &cp )
                   to_kctx.lock   = fr_kctx.lock;
                   to_kctx.key    = fr_kctx.key;
                   to_kctx.key2   = fr_kctx.key2;
+                  to_kctx.db_num = fr_kctx.db_num;
                   to_kctx.serial = fr_kctx.serial;
                   to_kctx.release();
 
@@ -509,7 +511,7 @@ KeyCtx::get_pos_info( uint64_t &natural_pos,  uint64_t &pos_off )
 KeyStatus
 KeyCtx::try_acquire_position( const uint64_t i )
 {
-  ThrCtx    & ctx = this->ht.ctx[ this->ctx_id ];
+  ThrCtx    & ctx = this->thr_ctx;
   HashEntry * el;          /* current ht[] ptr */
   uint64_t    cur_mcs_id,  /* MCS lock queue for the current element */
               h,           /* hash val at the current element */
@@ -525,6 +527,8 @@ KeyCtx::try_acquire_position( const uint64_t i )
   if ( (h & ZOMBIE64) == 0 ) {
     if ( ! this->test( KEYCTX_IS_CUCKOO_ACQUIRE ) )
       ctx.incr_write();
+    else
+      this->db_num = el->value_ctr( this->hash_entry_size ).db;
     if ( el->test( FL_DROPPED ) ) {
       this->drop_key   = h;
       this->drop_key2  = el->hash2;

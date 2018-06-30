@@ -2,6 +2,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <malloc.h>
 #include <raikv/work.h>
 
 using namespace rai;
@@ -31,7 +32,7 @@ kv_create_ctx_alloc( size_t sz,  kv_alloc_func_t ba,  kv_free_func_t bf,
 #ifdef _ISOC11_SOURCE
     ::aligned_alloc( sizeof( BufAlign64 ), sz2 ); /* >= RH7 */
 #else
-    ::malloc( sz2 ); /* RH5, RH6 */
+    ::memalign( sizeof( BufAlign64 ), sz2 ); /* RH5, RH6 */
 #endif
   if ( ptr == NULL )
     return NULL;

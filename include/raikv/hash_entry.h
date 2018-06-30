@@ -143,11 +143,12 @@ struct ValuePtr { /* packed 128 bit pointer with seg & off & size & serial */
 };
 
 struct ValueCtr { /* packed 64 bit immediate size & serial & seal */
-  static const uint64_t SERIAL_MASK = ( (uint64_t) 1 << 48 ) - 1;
-  uint32_t size     : 10, /* size of immediate or number of values */
+  static const uint64_t SERIAL_MASK = ( (uint64_t) 1 << 42 ) - 1;
+  uint32_t size     : 8, /* size of immediate or number of values */
+           db       : 8,  /* db number */
            type     : 5,  /* object type */
            seal     : 1,  /* seal check, data is valid */
-           serialhi : 16, /* update serial */
+           serialhi : 10, /* update serial */
            seriallo;
 
   uint64_t get_serial( void ) const {
@@ -162,25 +163,42 @@ struct ValueCtr { /* packed 64 bit immediate size & serial & seal */
   }
 };
 
-/* HashEntry layout:
+/* HashEntry layout (segment data, when hash_entry_size=64):
      What       |  Fields             | Offset
     ------------+---------------------+----------
-     Header     |  8b = hash          |  0 ->  8
-                |  8b = hash2         |  8 -> 16
-                |  4b = seal          | 16 -> 20
-                |  2b = flags         | 20 -> 22
-                |  2b = key len       | 22 -> 24
-                |  8b = key part      | 24 -> 32
+     Header     |  8b = hash          |  0 ->  8   Always present
+                |  8b = hash2         |  8 -> 16       "
+                |  4b = seal          | 16 -> 20       "
+                |  2b = flags         | 20 -> 22       "
+                |  2b = key len       | 22 -> 24       "
+                |  8b = key part      | 24 -> 32   (Optional)
                 |                     |
      Value PTR  |  2b = segment       | 32 -> 34
-                |  6b = serial cnt    | 34 -> 40
+                |  6b = serial cnt    | 34 -> 40   When value is in segment
                 |  4b = size          | 40 -> 44
                 |  4b = offset        | 44 -> 48
                 |                     |
-     Rela Stamp |  8b = timestamp     | 48 -> 56
+     Rela Stamp |  8b = timestamp     | 48 -> 56   (Optional)
                 |                     |
-     Value CTR  |  2b = size/seal     | 56 -> 58
-                |  6b = serial cnt    | 58 -> 64
+     Value CTR  |  2b = size/seal     | 56 -> 58   Always present
+                |  6b = serial cnt    | 58 -> 64       "
+
+   HashEntry layout (immediate data, when hash_entry_size=64):
+     What       |  Fields             | Offset
+    ------------+---------------------+----------
+     Header     |  8b = hash          |  0 ->  8   Always present
+                |  8b = hash2         |  8 -> 16       "
+                |  4b = seal          | 16 -> 20       "
+                |  2b = flags         | 20 -> 22       "
+                |  2b = key len       | 22 -> 24       "
+                |  8b = key part      | 24 -> 32   (Optional if key material
+                |                     |                      is not required)
+     Value      | 16b = value         | 32 -> 48   When value is immediate
+                |                     |              key len + value len <= 24
+     Rela Stamp |  8b = timestamp     | 48 -> 56   (Optional, then len <= 32)
+                |                     |
+     Value CTR  |  2b = size/seal     | 56 -> 58   Always present
+                |  6b = serial cnt    | 58 -> 64       "
 */
 struct HashEntry {
   AtomUInt64  hash;   /* the lock and the hash value */
@@ -219,9 +237,10 @@ struct HashEntry {
     ctr.seal = 0;
     return ctr.get_serial();
   }
-  void seal_entry( uint32_t hash_entry_size,  uint64_t serial ) { 
+  void seal_entry( uint32_t hash_entry_size,  uint64_t serial,  uint8_t db ) {
     ValueCtr &ctr = this->value_ctr( hash_entry_size );
     ctr.set_serial( serial );
+    ctr.db   = db;
     ctr.seal = 1;
     this->seal = (uint32_t) serial;
   }
