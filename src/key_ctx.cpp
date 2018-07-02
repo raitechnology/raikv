@@ -727,9 +727,8 @@ KeyCtx::resize( void *res,  uint64_t size,  bool copy,  uint8_t alignment )
       break;
   }
   /* reallocate, could do better if key already copied */
+  this->next_serial( ValueCtr::SERIAL_MASK );
   KeyStatus status = this->alloc( res, size, copy, alignment );
-  if ( status == KEY_OK )
-    this->next_serial( ValueCtr::SERIAL_MASK );
   return status;
 }
 

@@ -811,6 +811,7 @@ cli( void )
 
       case 'd': /* drop */
       case 'p': /* put */
+      case 's': /* set (alias for put) */
       case 't': /* tombstone */
       case 'u': /* update stamp */
         parse_key_string( kb, key );
@@ -828,7 +829,7 @@ cli( void )
                      kv_key_status_description( status ) );
           /*kctx.update_ns = current_realtime_ns();*/
           /*map->hdr.current_stamp = kctx.update_ns;*/
-          if ( cmd_char == 'p' ) {
+          if ( cmd_char == 'p' || cmd_char == 's' ) {
             if ( (status = kctx.resize( &ptr, sz + 1 )) == KEY_OK ) {
               ::memcpy( ptr, data, sz + 1 );
               status = print_key_data( kctx, "put", sz + 1 );
@@ -1110,7 +1111,7 @@ cli( void )
         }
         break;
 
-      case 's': /* stats */
+      case 'S': /* stats */
         print_map_geom( map, ctx_id );
         print_stats();
         break;
@@ -1146,7 +1147,7 @@ cli( void )
       default:
         xprintf( 0,
         "acdfghijkmpqrstuvx:\n"
-        "put [+exp] key value  ; set key to value w/optional +expires\n"
+        "put/set [+exp] key value ; set key to value w/optional +expires\n"
         "upd [+exp] key        ; update key +expires\n"
         "get key               ; print key value as string\n"
         "hex key               ; print hex dump of key value\n"
@@ -1160,10 +1161,11 @@ cli( void )
         "mem                   ; print segment offsets\n"
         "validate              ; validate all keys are reachable\n"
         "xamin seg#            ; dump segment data\n"
-        "stats                 ; print stats\n"
+        "Stats                 ; print stats\n"
         "contexts              ; print stats for all contexts\n"
         "y                     ; scan for broken locks\n"
         "z                     ; suspend pid (Z to unsuspend)\n"
+        "Z                     ; unsuspend pid\n"
         "read file             ; read input from file (R to read quietly)\n"
         "quit                  ; bye\n" );
         break;
