@@ -9,12 +9,12 @@
 using namespace rai;
 using namespace kv;
 
-MsgCtx::MsgCtx( HashTab &t,  uint32_t id,  uint32_t sz )
-      : ht( t ), thr_ctx( t.ctx[ id ] ), kbuf( 0 ), hash_entry_size( sz ), key( 0 ),
+MsgCtx::MsgCtx( HashTab &t,  ThrCtx &thr,  uint32_t sz )
+      : ht( t ), thr_ctx( thr ), kbuf( 0 ), hash_entry_size( sz ), key( 0 ),
         msg( 0 ), prefetch_ptr( 0 ) {}
 
-MsgCtx::MsgCtx( HashTab &t,  uint32_t id )
-      : ht( t ), thr_ctx( t.ctx[ id ] ), kbuf( 0 ),
+MsgCtx::MsgCtx( HashTab &t,  ThrCtx &thr )
+      : ht( t ), thr_ctx( thr ), kbuf( 0 ),
         hash_entry_size( t.hdr.hash_entry_size ), key( 0 ),
         msg( 0 ), prefetch_ptr( 0 ) {}
 #if 0
@@ -39,7 +39,7 @@ MsgCtx::new_array( HashTab &t,  uint32_t id,  void *b,  size_t bsz )
     b = (void *) p;
   }
   for ( size_t i = 0; i < bsz; i++ ) {
-    new ( (void *) p ) MsgCtx( t, id );
+    new ( (void *) p ) MsgCtx( t, t.ctx[ id ] );
     p = &p[ 1 ];
   }
   return (MsgCtx *) (void *) b;
@@ -68,7 +68,7 @@ KeyStatus
 MsgCtx::alloc_segment( void *res,  uint64_t size,  uint8_t alignment )
 {
   ThrCtx         & ctx       = this->thr_ctx;
-  KeyCtx           mv_kctx( this->ht, this->thr_ctx.ctx_id );
+  KeyCtx           mv_kctx( this->ht, ctx );
   WorkAllocT<1024> wrk;
   const uint64_t   seg_size  = this->ht.hdr.seg_size();
   const uint32_t   nsegs     = this->ht.hdr.nsegs,

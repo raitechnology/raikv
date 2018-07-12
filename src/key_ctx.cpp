@@ -10,16 +10,16 @@ using namespace rai;
 using namespace kv;
 
 /* KeyFragment b is usually null */
-KeyCtx::KeyCtx( HashTab &t, uint32_t id, KeyFragment *b )
+KeyCtx::KeyCtx( HashTab &t, ThrCtx &ctx, KeyFragment *b )
   : ht( t )
-  , thr_ctx( t.ctx[ id ] )
+  , thr_ctx( ctx )
   , kbuf( b )
   , ht_size( t.hdr.ht_size )
   , hash_entry_size( t.hdr.hash_entry_size )
   , cuckoo_buckets( t.hdr.cuckoo_buckets )
   , cuckoo_arity( t.hdr.cuckoo_arity )
   , seg_align_shift( t.hdr.seg_align_shift )
-  , db_num( t.ctx[ id ].db_num )
+  , db_num( ctx.db_num )
   , inc( 0 )
   , drop_flags( 0 )
   , flags( KEYCTX_IS_READ_ONLY )
@@ -32,10 +32,10 @@ KeyCtx::KeyCtx( HashTab &t, uint32_t id, KeyFragment *b )
               (uint8_t *) (void *) &this->chains );
 }
 
-KeyCtx::KeyCtx( HashTab &t, uint32_t id, KeyFragment &b )
+KeyCtx::KeyCtx( HashTab &t, uint32_t id, KeyFragment *b )
   : ht( t )
   , thr_ctx( t.ctx[ id ] )
-  , kbuf( &b )
+  , kbuf( b )
   , ht_size( t.hdr.ht_size )
   , hash_entry_size( t.hdr.hash_entry_size )
   , cuckoo_buckets( t.hdr.cuckoo_buckets )
@@ -617,7 +617,7 @@ KeyCtx::alloc( void *res,  uint64_t size,  bool copy,  uint8_t alignment )
 
   if ( status == KEY_SEG_VALUE ) {
     /* allocate mem from a segment */
-    MsgCtx msg_ctx( this->ht, this->thr_ctx.ctx_id, this->hash_entry_size );
+    MsgCtx msg_ctx( this->ht, this->thr_ctx, this->hash_entry_size );
     msg_ctx.set_key( *this->kbuf );
     msg_ctx.set_hash( this->key, this->key2 );
     if ( (status = msg_ctx.alloc_segment( res, size, alignment )) == KEY_OK ) {
@@ -754,9 +754,12 @@ KeyCtx::value( void *data,  uint64_t &size )
       if ( this->msg == NULL &&
            ( (mstatus = this->attach_msg( ATTACH_READ )) != KEY_OK ) )
         return mstatus;
+      /* fetch the sizes before testing is_msg_valid() */
       uint64_t hdr_size = this->msg->hdr_size();
       size = this->msg->msg_size;
-      if ( this->test( KEYCTX_NO_COPY_ON_READ ) ) {
+      /* no need to test is_valid with write access or msg is copied */
+      if ( this->test( KEYCTX_NO_COPY_ON_READ | KEYCTX_IS_READ_ONLY ) ==
+                     ( KEYCTX_NO_COPY_ON_READ | KEYCTX_IS_READ_ONLY ) ) {
         if ( ! this->is_msg_valid() ) /* check that hdr and size are correct */
           return KEY_MUTATED;
       }

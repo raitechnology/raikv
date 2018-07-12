@@ -81,6 +81,7 @@ struct KeyBufAligned {
   }
 #endif
   operator KeyFragment&() { return this->kb; }
+  operator KeyFragment*() { return &this->kb; }
 
   static KeyBufAligned *new_array( size_t sz ) {
     void *b = ::malloc( sizeof( KeyBufAligned ) * sz );

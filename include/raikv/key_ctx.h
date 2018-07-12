@@ -118,7 +118,7 @@ struct KeyCtx {
   uint64_t seg_align( void ) const {
     return (uint64_t) 1 << this->seg_align_shift;
   }
-  KeyCtx( HashTab &t,  uint32_t id,  KeyFragment &b );
+  KeyCtx( HashTab &t,  ThrCtx &ctx,  KeyFragment *b = NULL );
   KeyCtx( HashTab &t,  uint32_t id,  KeyFragment *b = NULL );
   ~KeyCtx() {}
 

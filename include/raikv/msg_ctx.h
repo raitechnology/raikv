@@ -224,8 +224,8 @@ struct MsgCtx {
   void         * prefetch_ptr;
   ValueGeom      geom;    /* value location */
 
-  MsgCtx( HashTab &t,  uint32_t ctx_id );
-  MsgCtx( HashTab &t,  uint32_t ctx_id,  uint32_t sz );
+  MsgCtx( HashTab &t,  ThrCtx &thr );
+  MsgCtx( HashTab &t,  ThrCtx &thr,  uint32_t sz );
   ~MsgCtx() {}
   /* placement new to deal with broken c++ new[], for example:
    * MsgCtxBuf kctxbuf[ 8 ];
