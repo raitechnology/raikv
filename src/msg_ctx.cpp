@@ -46,7 +46,7 @@ MsgCtx::new_array( HashTab &t,  uint32_t id,  void *b,  size_t bsz )
 }
 
 void
-MsgCtx::prefetch_segment( uint64_t size )
+MsgCtx::prefetch_segment( uint64_t /*size*/ )
 {
   static const int rw = 1;       /* 0 is prepare for write, 1 is read */
   static const int locality = 2; /* 0 is non, 1 is low, 2 is moderate, 3 high*/
@@ -65,7 +65,7 @@ MsgCtx::prefetch_segment( uint64_t size )
 }
 
 KeyStatus
-MsgCtx::alloc_segment( void *res,  uint64_t size,  uint8_t alignment )
+MsgCtx::alloc_segment( void *res,  uint64_t size,  uint8_t /*alignment*/ )
 {
   ThrCtx         & ctx       = this->thr_ctx;
   KeyCtx           mv_kctx( this->ht, ctx );

@@ -146,7 +146,7 @@ struct MCSLock {
   }
 
   /* try to recover from crashes by post-mortem unlocking */
-  MCSStatus recover_lock( Atom<Int> &link,  const Int locked_bit,
+  MCSStatus recover_lock( Atom<Int> &/*link*/,  const Int locked_bit,
                           const Int my_id,  Owner &closure ) {
     uint64_t v = this->val;
     /* if locked_bit is set, then waiting for another thread */

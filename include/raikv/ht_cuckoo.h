@@ -92,7 +92,7 @@ struct CuckooPosition {
   /* start a new search */
   void start( void ) { this->buckets_off = 0; this->inc = 0; }
   /* go to next position, use alternate hashes when no more buckets  */
-  KeyStatus acquire_incr( uint64_t &pos,  const uint64_t chains,
+  KeyStatus acquire_incr( uint64_t &pos,  const uint64_t /*chains*/,
                           bool &is_next_hash,  const bool have_drop ) {
     if ( ++pos == this->kctx.ht_size )
       pos = 0;
@@ -111,7 +111,7 @@ struct CuckooPosition {
     }
     return KEY_BUSY;
   }
-  KeyStatus acquire_incr_single_thread( uint64_t &pos,  const uint64_t chains,
+  KeyStatus acquire_incr_single_thread( uint64_t &pos, const uint64_t/*chains*/,
                                         const bool have_drop ) {
     if ( ++pos == this->kctx.ht_size )
       pos = 0;
@@ -125,7 +125,7 @@ struct CuckooPosition {
     return KEY_PATH_SEARCH;
   }
   /* the find() function uses this version */
-  KeyStatus find_incr( uint64_t &pos,  const uint64_t chains ) {
+  KeyStatus find_incr( uint64_t &pos,  const uint64_t /*chains*/ ) {
     if ( ++pos == this->kctx.ht_size )
       pos = 0;
     if ( ++this->buckets_off != this->kctx.cuckoo_buckets )
@@ -152,7 +152,7 @@ struct CuckooAltHash {
     this->pos  = &this->alt[ arity ];
     this->num  = &this->pos[ arity ];
   }
-  void * operator new( size_t sz, void *ptr ) { return ptr; }
+  void * operator new( size_t, void *ptr ) { return ptr; }
 
   static size_t size( uint8_t arity ) {
     return sizeof( CuckooAltHash ) + sizeof( uint64_t ) * arity * 3;

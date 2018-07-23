@@ -253,7 +253,7 @@ void
 start_threads( uint32_t num_thr )
 {
   pthread_t thrid;
-  int i;
+  uint32_t i;
   for ( i = 0; i < num_thr; i++ ) {
     pthread_create( &thrid, NULL, thr_process, thr[ i ] );
   }
@@ -263,7 +263,7 @@ void
 process_input_data( uint32_t num_thr )
 {
   ssize_t x = 0, n = 0;
-  int i, j;
+  uint32_t i;
   create_thr_data( num_thr );
   start_threads( num_thr );
 
@@ -299,7 +299,7 @@ process_input_data( uint32_t num_thr )
   for ( i = 0; i < num_thr; i++ ) {
     printf( "[%d] %lu words, %lu bytes, %lu dup -- ",
             i, thr[ i ]->count, thr[ i ]->consumed, thr[ i ]->dup_count );
-    for ( j = 0; j < KEY_MAX_STATUS; j++ ) {
+    for ( int j = 0; j < KEY_MAX_STATUS; j++ ) {
       if ( thr[ i ]->status_cnt[ j ] != 0 ) {
         const char *s = kv_key_status_string( (kv_key_status_t) j );
         printf( "%s:%lu ", &s[ 4 ], thr[ i ]->status_cnt[ j ] );

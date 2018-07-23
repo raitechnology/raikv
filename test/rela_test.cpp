@@ -70,7 +70,7 @@ static const uint64_t EXP_DAYS_NS = (uint64_t) ( 700 * 24 * 60 * 60 ) * NANOS;
 static const uint64_t TWO_DAYS_NS = (uint64_t) ( 2 * 24 * 60 * 60 ) * NANOS;
 
 int
-main( int argc, char *argv[] )
+main( int, char ** )
 {
   RelativeStamp stamp;
   char          buf[ 80 ], buf2[ 80 ];

@@ -10,14 +10,15 @@ using namespace kv;
 
 extern "C" {
 
+/* KeyCtx::big_alloc*/
 void *
-kv_key_ctx_big_alloc( void *closure,  size_t item_size ) /* KeyCtx::big_alloc*/
+kv_key_ctx_big_alloc( void * /*closure*/,  size_t item_size )
 {
   return ::malloc( item_size );
 }
 
 void
-kv_key_ctx_big_free( void *closure,  void *item )
+kv_key_ctx_big_free( void * /*closure*/,  void *item )
 {
   return ::free( item );
 }

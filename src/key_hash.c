@@ -4,6 +4,7 @@
 #include <stdint.h>
 
 #include <raikv/shm_ht.h>
+#define fallthrough __attribute__ ((fallthrough))
 /* Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to
  * deal in the Software without restriction, including without limitation the
@@ -47,19 +48,19 @@ kv_crc_c( const void *p,  size_t sz,  uint32_t seed )
 
   switch ( e - s ) {
     case 7:
-      CRC32b( hash32, s[ 0 ] ); s++;
+      CRC32b( hash32, s[ 0 ] ); s++; fallthrough;
     case 6:
-      CRC32w( hash32, ((const uint16_t *) s)[ 0 ] ); s = &s[ 2 ];
+      CRC32w( hash32, ((const uint16_t *) s)[ 0 ] ); s = &s[ 2 ]; fallthrough;
     case 4:
       CRC32l( hash32, ((const uint32_t *) s)[ 0 ] );
       break;
     case 3:
-      CRC32b( hash32, s[ 0 ] ); s++;
+      CRC32b( hash32, s[ 0 ] ); s++; fallthrough;
     case 2:
       CRC32w( hash32, ((const uint16_t *) s)[ 0 ] );
       break;
     case 5:
-      CRC32l( hash32, ((const uint32_t *) s)[ 0 ] ); s = &s[ 4 ];
+      CRC32l( hash32, ((const uint32_t *) s)[ 0 ] ); s = &s[ 4 ]; fallthrough;
     case 1:
       CRC32b( hash32, s[ 0 ] );
       break;
@@ -96,12 +97,12 @@ MurmurHash64A ( const void * key, int len, uint64_t seed )
   }
 
   switch ( len & 7 ) {
-    case 7: h ^= ((uint64_t) data2[ 6 ] ) << 48;
-    case 6: h ^= ((uint64_t) data2[ 5 ] ) << 40;
-    case 5: h ^= ((uint64_t) data2[ 4 ] ) << 32;
-    case 4: h ^= ((uint64_t) data2[ 3 ] ) << 24;
-    case 3: h ^= ((uint64_t) data2[ 2 ] ) << 16;
-    case 2: h ^= ((uint64_t) data2[ 1 ] ) << 8;
+    case 7: h ^= ((uint64_t) data2[ 6 ] ) << 48; fallthrough;
+    case 6: h ^= ((uint64_t) data2[ 5 ] ) << 40; fallthrough;
+    case 5: h ^= ((uint64_t) data2[ 4 ] ) << 32; fallthrough;
+    case 4: h ^= ((uint64_t) data2[ 3 ] ) << 24; fallthrough;
+    case 3: h ^= ((uint64_t) data2[ 2 ] ) << 16; fallthrough;
+    case 2: h ^= ((uint64_t) data2[ 1 ] ) << 8; fallthrough;
     case 1: h ^= ((uint64_t) data2[ 0 ] );
         h *= m;
   };
@@ -175,22 +176,22 @@ MurmurHash3_x64_128 ( const void * key, const size_t len, uint64_t *x1,
 
   switch(len & 15)
   {
-  case 15: k2 ^= ((uint64_t)tail[14]) << 48;
-  case 14: k2 ^= ((uint64_t)tail[13]) << 40;
-  case 13: k2 ^= ((uint64_t)tail[12]) << 32;
-  case 12: k2 ^= ((uint64_t)tail[11]) << 24;
-  case 11: k2 ^= ((uint64_t)tail[10]) << 16;
-  case 10: k2 ^= ((uint64_t)tail[ 9]) << 8;
+  case 15: k2 ^= ((uint64_t)tail[14]) << 48; fallthrough;
+  case 14: k2 ^= ((uint64_t)tail[13]) << 40; fallthrough;
+  case 13: k2 ^= ((uint64_t)tail[12]) << 32; fallthrough;
+  case 12: k2 ^= ((uint64_t)tail[11]) << 24; fallthrough;
+  case 11: k2 ^= ((uint64_t)tail[10]) << 16; fallthrough;
+  case 10: k2 ^= ((uint64_t)tail[ 9]) << 8; fallthrough;
   case  9: k2 ^= ((uint64_t)tail[ 8]) << 0;
-           k2 *= c2; k2  = MH_rotl64(k2,33); k2 *= c1; h2 ^= k2;
+           k2 *= c2; k2  = MH_rotl64(k2,33); k2 *= c1; h2 ^= k2; fallthrough;
 
-  case  8: k1 ^= ((uint64_t)tail[ 7]) << 56;
-  case  7: k1 ^= ((uint64_t)tail[ 6]) << 48;
-  case  6: k1 ^= ((uint64_t)tail[ 5]) << 40;
-  case  5: k1 ^= ((uint64_t)tail[ 4]) << 32;
-  case  4: k1 ^= ((uint64_t)tail[ 3]) << 24;
-  case  3: k1 ^= ((uint64_t)tail[ 2]) << 16;
-  case  2: k1 ^= ((uint64_t)tail[ 1]) << 8;
+  case  8: k1 ^= ((uint64_t)tail[ 7]) << 56; fallthrough;
+  case  7: k1 ^= ((uint64_t)tail[ 6]) << 48; fallthrough;
+  case  6: k1 ^= ((uint64_t)tail[ 5]) << 40; fallthrough;
+  case  5: k1 ^= ((uint64_t)tail[ 4]) << 32; fallthrough;
+  case  4: k1 ^= ((uint64_t)tail[ 3]) << 24; fallthrough;
+  case  3: k1 ^= ((uint64_t)tail[ 2]) << 16; fallthrough;
+  case  2: k1 ^= ((uint64_t)tail[ 1]) << 8; fallthrough;
   case  1: k1 ^= ((uint64_t)tail[ 0]) << 0;
            k1 *= c1; k1  = MH_rotl64(k1,31); k1 *= c2; h1 ^= k1;
   };
@@ -721,37 +722,37 @@ static void spooky_shorthash
     switch (remainder)
     {
         case 15:
-            d += ((uint64_t)u.p8[14]) << 48;
+            d += ((uint64_t)u.p8[14]) << 48; fallthrough;
         case 14:
-            d += ((uint64_t)u.p8[13]) << 40;
+            d += ((uint64_t)u.p8[13]) << 40; fallthrough;
         case 13:
-            d += ((uint64_t)u.p8[12]) << 32;
+            d += ((uint64_t)u.p8[12]) << 32; fallthrough;
         case 12:
             d += u.p32[2];
             c += u.p64[0];
             break;
         case 11:
-            d += ((uint64_t)u.p8[10]) << 16;
+            d += ((uint64_t)u.p8[10]) << 16; fallthrough;
         case 10:
-            d += ((uint64_t)u.p8[9]) << 8;
+            d += ((uint64_t)u.p8[9]) << 8; fallthrough;
         case 9:
-            d += (uint64_t)u.p8[8];
+            d += (uint64_t)u.p8[8]; fallthrough;
         case 8:
             c += u.p64[0];
             break;
         case 7:
-            c += ((uint64_t)u.p8[6]) << 48;
+            c += ((uint64_t)u.p8[6]) << 48; fallthrough;
         case 6:
-            c += ((uint64_t)u.p8[5]) << 40;
+            c += ((uint64_t)u.p8[5]) << 40; fallthrough;
         case 5:
-            c += ((uint64_t)u.p8[4]) << 32;
+            c += ((uint64_t)u.p8[4]) << 32; fallthrough;
         case 4:
             c += u.p32[0];
             break;
         case 3:
-            c += ((uint64_t)u.p8[2]) << 16;
+            c += ((uint64_t)u.p8[2]) << 16; fallthrough;
         case 2:
-            c += ((uint64_t)u.p8[1]) << 8;
+            c += ((uint64_t)u.p8[1]) << 8; fallthrough;
         case 1:
             c += (uint64_t)u.p8[0];
             break;
@@ -866,31 +867,31 @@ hash_aes128( const void *p, size_t sz, uint64_t *x1, uint64_t *x2 )
 	  hi = *(uint64_t *) (void *) &b[ 8 ];
 	  lo = *(uint64_t *) (void *) &b[ 0 ];
 	  break;
-	case 15: hi |= ( (uint64_t) b[ 14 ] ) << 56;
-	case 14: lo |= ( (uint64_t) b[ 13 ] ) << 48;
-	case 13: hi |= ( (uint64_t) b[ 12 ] ) << 48;
+	case 15: hi |= ( (uint64_t) b[ 14 ] ) << 56; fallthrough;
+	case 14: lo |= ( (uint64_t) b[ 13 ] ) << 48; fallthrough;
+	case 13: hi |= ( (uint64_t) b[ 12 ] ) << 48; fallthrough;
 	case 12:
 	  lo |= ( (uint64_t) *(const uint32_t *) (void *) &b[ 8 ] ) << 16;
 	  hi |= ( (uint64_t) *(const uint32_t *) (void *) &b[ 4 ] ) << 16;
 	  lo |= (uint64_t) *(const uint16_t *) (void *) &b[ 2 ];
 	  hi |= (uint64_t) *(const uint16_t *) (void *) &b[ 0 ];
 	  break;
-	case 11: hi |= ( (uint64_t) b[ 10 ] ) << 40;
-	case 10: lo |= ( (uint64_t) b[ 9 ] ) << 32;
-	case 9: hi |= ( (uint64_t) b[ 8 ] ) << 32;
+	case 11: hi |= ( (uint64_t) b[ 10 ] ) << 40; fallthrough;
+	case 10: lo |= ( (uint64_t) b[ 9 ] ) << 32; fallthrough;
+	case 9: hi |= ( (uint64_t) b[ 8 ] ) << 32; fallthrough;
 	case 8:
 	  lo |= (uint64_t) *(const uint32_t *) (void *) &b[ 4 ];
 	  hi |= (uint64_t) *(const uint32_t *) (void *) &b[ 0 ];
 	  break;
-	case 7: hi |= ( (uint64_t) b[ 6 ] ) << 24;
-	case 6: lo |= ( (uint64_t) b[ 5 ] ) << 16;
-	case 5: hi |= ( (uint64_t) b[ 4 ] ) << 16;
+	case 7: hi |= ( (uint64_t) b[ 6 ] ) << 24; fallthrough;
+	case 6: lo |= ( (uint64_t) b[ 5 ] ) << 16; fallthrough;
+	case 5: hi |= ( (uint64_t) b[ 4 ] ) << 16; fallthrough;
 	case 4:
 	  lo |= (uint64_t) *(const uint16_t *) (void *) &b[ 2 ];
 	  hi |= (uint64_t) *(const uint16_t *) (void *) &b[ 0 ];
 	  break;
-	case 3: hi |= ( (uint64_t) b[ 2 ] ) << 8;
-	case 2: lo |= ( (uint64_t) b[ 1 ] );
+	case 3: hi |= ( (uint64_t) b[ 2 ] ) << 8; fallthrough;
+	case 2: lo |= ( (uint64_t) b[ 1 ] ); fallthrough;
 	case 1: hi |= ( (uint64_t) b[ 0 ] );
 	  break;
       }

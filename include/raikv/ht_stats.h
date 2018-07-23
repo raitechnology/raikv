@@ -29,7 +29,7 @@ struct MemCounters {
 struct MemDeltaCounters {
   MemCounters last, delta;
 
-  void * operator new( size_t sz, void *ptr ) { return ptr; }
+  void * operator new( size_t, void *ptr ) { return ptr; }
   void operator delete( void *ptr ) { ::free( ptr ); }
 
   MemDeltaCounters() {}
@@ -75,7 +75,7 @@ struct HashDeltaCounters {
 struct HashTab;
 
 struct HashTabStats {
-  void * operator new( size_t sz, void *ptr ) { return ptr; }
+  void * operator new( size_t, void *ptr ) { return ptr; }
   void operator delete( void *ptr ) { ::free( ptr ); }
   HashTab           & ht;
   HashDeltaCounters * ctx_stats, /* one for each context */

@@ -14,7 +14,7 @@ cmpint( const void *p,  const void *q )
 }
 
 int
-main( int argc, char *argv[] )
+main( int, char ** )
 {
   PrioQueue<int> queue( 128 );
   static const int N = 100;

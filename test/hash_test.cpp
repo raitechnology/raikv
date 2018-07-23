@@ -30,8 +30,8 @@ struct Content {
   const char *name;
   Content( const char *n ) : name( n ) {}
   virtual ~Content() {}
-  virtual void nextKey( KeyFragment &kb,  uint8_t keylen ) {}
-  void operator delete( void *ptr ) {}
+  virtual void nextKey( KeyFragment &/*kb*/,  uint8_t /*keylen*/ ) {}
+  void operator delete( void * ) {}
 };
 
 struct RandContent : public Content {
@@ -47,7 +47,7 @@ struct RandContent : public Content {
         this->rand.next() % 38 ];
     }
   }
-  void operator delete( void *ptr ) {}
+  void operator delete( void * ) {}
 };
 
 struct IntContent : public Content {
@@ -63,7 +63,7 @@ struct IntContent : public Content {
       j += sizeof( this->counter );
     } while ( j < keylen );
   }
-  void operator delete( void *ptr ) {}
+  void operator delete( void * ) {}
 };
 
 struct IncrContent : public Content {
@@ -86,7 +86,7 @@ struct IncrContent : public Content {
     }
     return;
   }
-  void operator delete( void *ptr ) {}
+  void operator delete( void * ) {}
 };
 
 int

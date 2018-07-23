@@ -16,7 +16,7 @@ using namespace kv;
 char *
 mstring( double f,  char *buf,  int64_t k )
 {
-  return mem_to_string( (int64_t) ceil( f ), buf, 1000 );
+  return mem_to_string( (int64_t) ceil( f ), buf, k );
 }
 
 void

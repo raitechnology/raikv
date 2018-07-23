@@ -100,7 +100,7 @@ test_one( HashTab &map,  uint8_t db,  uint32_t ctx_id,  kv_hash128_func_t func,
 
 void
 test_rand( HashTab &map,  uint8_t db,  uint32_t ctx_id,  kv_hash128_func_t func,
-           uint64_t test_count,  bool use_find,  uint32_t prefetch,
+           uint64_t test_count,  bool /*use_find*/,  uint32_t prefetch,
            bool use_single )
 {
   HashDeltaCounters stats;

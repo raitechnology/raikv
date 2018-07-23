@@ -315,7 +315,7 @@ public:
     return this->get_entry( i, this->hdr.hash_entry_size );
   }
   /* mem is shm via mmap(): new HashTab( mmap( fd ) ) */
-  void * operator new( size_t sz, void *ptr ) { return ptr; }
+  void * operator new( size_t, void *ptr ) { return ptr; }
   /* delete does close if shm, free() if alloced */
   void operator delete( void *ptr );
   /* static header string for this version, sigs for different memory models */

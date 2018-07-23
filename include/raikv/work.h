@@ -85,7 +85,7 @@ struct ScratchMem {
   kv_free_func_t      kv_big_free;
   void              * closure;
 
-  void * operator new( size_t sz, void *ptr ) { return ptr; }
+  void * operator new( size_t, void *ptr ) { return ptr; }
   void operator delete( void *ptr ) { ::free( ptr ); }
   static ScratchMem *create( void ) {
     return reinterpret_cast<ScratchMem *>(

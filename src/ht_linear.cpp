@@ -17,12 +17,12 @@ struct LinearPosition {
   LinearPosition( KeyCtx &kc ) : kctx( kc ) {}
 
   KeyStatus acquire_incr( uint64_t &pos,  const uint64_t chains,
-                          bool &is_next_hash,  const bool have_drop ) {
+                          bool &/*is_next_hash*/,  const bool /*have_drop*/ ) {
     return this->find_incr( pos, chains );
   }
 
   KeyStatus acquire_incr_single_thread( uint64_t &pos,  const uint64_t chains,
-                                        const bool have_drop ) {
+                                        const bool /*have_drop*/ ) {
     return this->find_incr( pos, chains );
   }
 
@@ -36,7 +36,7 @@ struct LinearPosition {
     return KEY_MAX_CHAINS;
   }
 
-  void restore_inc( uint64_t pos ) {}
+  void restore_inc( uint64_t /*pos*/ ) {}
 };
 }
 }

@@ -74,7 +74,7 @@ run( void *p )
 }
 
 int
-main( int argc, char *argv[] )
+main( int, char ** )
 {
   uint64_t i;
   pthread_t thr[ CTX_CNT ];

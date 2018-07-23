@@ -110,12 +110,17 @@ main( int argc, char *argv[] )
              argv[ 0 ]);
     return 1;
   }
-  switch ( argc ) {
-    default: goto cmd_error;
-    case 4: pausesp  = argv[ 3 ];
-    case 3: oper     = argv[ 2 ];
-            mn       = argv[ 1 ];
-            break;
+  if ( argc >= 4 ) {
+    if ( argc > 4 )
+      goto cmd_error;
+    pausesp = argv[ 3 ];
+  }
+  if ( argc >= 3 ) {
+    oper = argv[ 2 ];
+    mn   = argv[ 1 ];
+  }
+  else {
+    goto cmd_error;
   }
 
   shm_attach( mn );

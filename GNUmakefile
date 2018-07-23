@@ -29,7 +29,7 @@ cpp         := $(CXX)
 cppflags    := -fno-rtti -fno-exceptions
 arch_cflags := -march=corei7-avx -fno-omit-frame-pointer
 cpplink     := gcc
-gcc_wflags  := -Wall -Werror -pedantic
+gcc_wflags  := -Wall -Wextra -Werror -pedantic
 fpicflags   := -fPIC
 soflag      := -shared
 

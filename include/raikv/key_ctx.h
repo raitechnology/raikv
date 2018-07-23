@@ -132,7 +132,7 @@ struct KeyCtx {
    */
   static KeyCtx * new_array( HashTab &t,  uint32_t id,  void *b,  size_t bsz );
 
-  void * operator new( size_t sz, void *ptr ) { return ptr; }
+  void * operator new( size_t, void *ptr ) { return ptr; }
   void operator delete( void *ptr ) { ::free( ptr ); }
   void switch_db( uint8_t db_num );
   /* set key, this does not hash the key, use set_hash() afterwards */

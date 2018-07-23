@@ -506,7 +506,7 @@ KeyCtx::seal_msg( void )
 }
 
 KeyStatus
-KeyCtx::update_entry( void *res,  uint64_t size,  uint8_t alignment,
+KeyCtx::update_entry( void *res,  uint64_t size,  uint8_t /*alignment*/,
                       HashEntry &el )
 {
   KeyFragment  & kb       = *this->kbuf;

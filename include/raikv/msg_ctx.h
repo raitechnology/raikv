@@ -237,7 +237,7 @@ struct MsgCtx {
    */
   static MsgCtx * new_array( HashTab &t,  uint32_t id,  void *b,  size_t bsz );
 
-  void * operator new( size_t sz, void *ptr ) { return ptr; }
+  void * operator new( size_t, void *ptr ) { return ptr; }
   /* no allocated objects within this structure */
   void operator delete( void *ptr ) { ::free( ptr ); }
 

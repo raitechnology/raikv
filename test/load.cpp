@@ -42,7 +42,7 @@ shm_close( void )
 }
 
 uint64_t
-do_load( KeyCtx *kctx,  MsgCtx *mctx,  uint64_t count,  bool use_pref,
+do_load( KeyCtx *kctx,  MsgCtx *mctx,  uint64_t count,  bool /*use_pref*/,
          uint64_t cur_time )
 {
   WorkAlloc8k wrk;
@@ -89,43 +89,48 @@ compute_key_count( void )
   }
 }
 #endif
+static const char *
+get_arg( int argc, char *argv[], int n, int b, const char *f, const char *def )
+{
+  if ( n > 0 && argc > n && argv[ 1 ][ 0 ] != '-' )
+    return argv[ n ];
+  for ( int i = 1; i < argc - b; i++ )
+    if ( ::strcmp( f, argv[ i ] ) == 0 )
+      return argv[ i + b ];
+  return def; /* default value */
+}
+
 int
 main( int argc, char *argv[] )
 {
   SignalHandler sighndl;
-  const char  * fn  = NULL,
-              * mn  = NULL,
-              * cnt = NULL,
-              * pre = NULL;
   uint32_t precount = 4,
            use_pref = 1;
 
-  if ( argc <= 2 ) {
-  cmd_error:;
+  /* [sysv2m:shm.test] [file] [cnt] [pre] */
+  const char * mn = get_arg( argc, argv, 1, 1, "-m", "sysv2m:shm.test" ),
+             * fn = get_arg( argc, argv, 2, 1, "-f", "file.dat" ),
+             * cn = get_arg( argc, argv, 3, 1, "-c", "4" ),
+             * pr = get_arg( argc, argv, 4, 1, "-p", "1" ),
+             * he = get_arg( argc, argv, 0, 0, "-h", 0 );
+
+  if ( he != NULL ) {
     fprintf( stderr, "raikv version: %s\n", kv_stringify( KV_VER ) );
     fprintf( stderr,
-     "%s (map) (file)\n"
-     "  map             -- name of map file (prefix w/ file:, sysv:, posix:)\n"
-     "  file            -- which file to load\n"
-     "  count           -- number of preloads\n"
-     "  prefetch        -- if prefetch\n",
+     "%s [-m map] [-f file] [-c cnt] [-p pre]\n"
+     "  map             = name of map file (prefix w/ file:, sysv:, posix:)\n"
+     "  file            = which file to load\n"
+     "  count           = number of preloads (defaut 4)\n"
+     "  prefetch        = if prefetch (defaut 1)\n",
              argv[ 0 ]);
     return 1;
   }
-  switch ( argc ) {
-    default: goto cmd_error;
-    case 5: pre = argv[ 4 ];
-    case 4: cnt = argv[ 3 ];
-    case 3: fn  = argv[ 2 ];
-            mn  = argv[ 1 ];
-            break;
-  }
 
-  if ( cnt != NULL ) {
-    precount = atoi( cnt );
+  if ( cn != NULL ) {
+    precount = atoi( cn );
   }
-  if ( pre != NULL ) {
-    use_pref = atoi( pre );
+  if ( pr != NULL ) {
+    use_pref = atoi( pr );
   }
   shm_attach( mn );
   if ( map == NULL )
