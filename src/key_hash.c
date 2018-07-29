@@ -2,6 +2,8 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <immintrin.h>
+#include <wmmintrin.h>
 
 #include <raikv/shm_ht.h>
 #define fallthrough __attribute__ ((fallthrough))
@@ -26,50 +28,31 @@
 uint32_t
 kv_crc_c( const void *p,  size_t sz,  uint32_t seed )
 {
-#define CRC32q( CRC, X ) \
-  __asm__ __volatile__ ( "crc32q %1, %0" : "+r" (CRC) : "m" (X) )
-#define CRC32l( CRC, X ) \
-  __asm__ __volatile__ ( "crc32l %1, %0" : "+r" (CRC) : "m" (X) )
-#define CRC32w( CRC, X ) \
-  __asm__ __volatile__ ( "crc32w %1, %0" : "+r" (CRC) : "m" (X) )
-#define CRC32b( CRC, X ) \
-  __asm__ __volatile__ ( "crc32b %1, %0" : "+r" (CRC) : "m" (X) )
+  const uint8_t * s =   (uint8_t *) p;
+  const uint8_t * e = &((uint8_t *) p) [ sz ];
+  uint64_t  hash64 = seed;
 
-  register const uint8_t * s =   (uint8_t *) p;
-  register const uint8_t * e = &((uint8_t *) p) [ sz ];
-  register       uint64_t  hash64 = seed;
-  register       uint32_t  hash32;
-
-  while ( e >= &s[ sizeof( uint64_t ) ] ) {
-    CRC32q( hash64, ((const uint64_t *) (const void *) s)[ 0 ] );
-    s = &s[ 8 ];
+  for (;;) {
+    switch ( e - s ) {
+      default: hash64 = _mm_crc32_u64( hash64, *(uint64_t *) s ); s+=8;
+               break;
+      case 7: hash64 = _mm_crc32_u8( hash64, *s++ );
+              fallthrough;
+      case 6: hash64 = _mm_crc32_u16( hash64, *(uint16_t *) s ); s+=2;
+              fallthrough;
+      case 4: hash64 = _mm_crc32_u32( hash64, *(uint32_t *) s ); s+=4;
+              return hash64;
+      case 3: hash64 = _mm_crc32_u8( hash64, *s++ );
+              fallthrough;
+      case 2: hash64 = _mm_crc32_u16( hash64, *(uint16_t *) s ); s+=2;
+              return hash64;
+      case 5: hash64 = _mm_crc32_u32( hash64, *(uint32_t *) s ); s+=4;
+              fallthrough;
+      case 1: hash64 = _mm_crc32_u8( hash64, *s++ );
+              fallthrough;
+      case 0: return hash64;
+    }
   }
-  hash32 = (uint32_t) hash64;
-
-  switch ( e - s ) {
-    case 7:
-      CRC32b( hash32, s[ 0 ] ); s++; fallthrough;
-    case 6:
-      CRC32w( hash32, ((const uint16_t *) s)[ 0 ] ); s = &s[ 2 ]; fallthrough;
-    case 4:
-      CRC32l( hash32, ((const uint32_t *) s)[ 0 ] );
-      break;
-    case 3:
-      CRC32b( hash32, s[ 0 ] ); s++; fallthrough;
-    case 2:
-      CRC32w( hash32, ((const uint16_t *) s)[ 0 ] );
-      break;
-    case 5:
-      CRC32l( hash32, ((const uint32_t *) s)[ 0 ] ); s = &s[ 4 ]; fallthrough;
-    case 1:
-      CRC32b( hash32, s[ 0 ] );
-      break;
-    default:
-    case 0:
-      break;
-  }
-
-  return hash32;
 }
 
 #ifdef USE_KV_MURMUR_HASH
@@ -844,8 +827,6 @@ kv_hash_spooky128( const void *p, size_t sz, uint64_t *h1, uint64_t *h2 )
 #endif /* USE_KV_SPOOKY_HASH */
 
 #ifdef USE_KV_AES_HASH
-#include <immintrin.h>
-#include <wmmintrin.h>
 
 /* based on falkhash (https://github.com/gamozolabs/falkhash)
  * 3 rounds of AES, similar to go internal:

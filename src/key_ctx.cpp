@@ -757,6 +757,7 @@ KeyCtx::value( void *data,  uint64_t &size )
       /* fetch the sizes before testing is_msg_valid() */
       uint64_t hdr_size = this->msg->hdr_size();
       size = this->msg->msg_size;
+      void * p = this->msg->ptr( hdr_size );
       /* no need to test is_valid with write access or msg is copied */
       if ( this->test( KEYCTX_NO_COPY_ON_READ | KEYCTX_IS_READ_ONLY ) ==
                      ( KEYCTX_NO_COPY_ON_READ | KEYCTX_IS_READ_ONLY ) ) {
@@ -764,7 +765,63 @@ KeyCtx::value( void *data,  uint64_t &size )
           return KEY_MUTATED;
       }
       /* data starts after hdr */
-      *(void **) data = this->msg->ptr( hdr_size );
+      *(void **) data = p;
+      return KEY_OK;
+    }
+    default:
+      return KEY_NO_VALUE;
+  }
+}
+
+/* get the value associated with the key */
+KeyStatus
+KeyCtx::value_copy( void *data,  uint64_t &size,  void *cp,  uint64_t &cplen )
+{
+  if ( this->entry == NULL )
+    return KEY_NO_VALUE;
+
+  HashEntry & el = *this->entry;
+  void      * p;
+
+  switch ( el.test( FL_SEGMENT_VALUE | FL_IMMEDIATE_VALUE ) ) {
+    case FL_IMMEDIATE_VALUE: {
+      /* size stashed at end */
+      size = el.value_ctr( this->hash_entry_size ).size;
+      /* data after hdr in hash entry */
+      p = (void *) el.immediate_value();
+      *(void **) data = p;
+      if ( cplen > size )
+        cplen = size;
+      ::memcpy( cp, p, cplen );
+      return KEY_OK;
+    }
+    case FL_SEGMENT_VALUE: {
+      KeyStatus mstatus;
+      if ( this->msg == NULL &&
+           ( (mstatus = this->attach_msg( ATTACH_READ )) != KEY_OK ) )
+        return mstatus;
+      /* fetch the sizes before testing is_msg_valid() */
+      uint64_t hdr_size = this->msg->hdr_size();
+      size = this->msg->msg_size;
+      p    = this->msg->ptr( hdr_size );
+      /* no need to test is_valid with write access or msg is copied */
+      if ( this->test( KEYCTX_NO_COPY_ON_READ | KEYCTX_IS_READ_ONLY ) ==
+                     ( KEYCTX_NO_COPY_ON_READ | KEYCTX_IS_READ_ONLY ) ) {
+        if ( ! this->ht.is_valid_region( p, size ) )
+          return KEY_MUTATED;
+        if ( cplen > size )
+          cplen = size;
+        ::memcpy( cp, p, cplen );
+        if ( ! this->is_msg_valid() ) /* check that hdr and size are correct */
+          return KEY_MUTATED;
+      }
+      else {
+        if ( cplen > size )
+          cplen = size;
+        ::memcpy( cp, p, cplen );
+      }
+      /* data starts after hdr */
+      *(void **) data = p;
       return KEY_OK;
     }
     default:

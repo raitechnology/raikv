@@ -357,10 +357,14 @@ public:
   Segment &segment( uint32_t i ) {
     return this->hdr.seg[ i ];
   }
-  void *seg_data( uint32_t i,  uint64_t off ) {
+  void *seg_data( uint32_t i,  uint64_t off ) const {
     /*return &((uint8_t *) this)[ this->segment( i ).seg_off + off ];*/
     return &((uint8_t *) this)[ this->hdr.seg_start() + 
                                 (uint64_t) i * this->hdr.seg_size() + off ];
+  }
+  bool is_valid_region( void *p,  size_t sz ) const {
+    return (uint8_t *) p >= &((uint8_t *) this)[ this->hdr.seg_start() ] &&
+           &((uint8_t *) p)[ sz ] <= &((uint8_t *) this)[ this->hdr.map_size ];
   }
 };
 

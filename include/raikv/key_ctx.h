@@ -317,6 +317,10 @@ struct KeyCtx {
    * table, but copied data;  if acquire() is used, ptr will reference the shm
    * table data */
   KeyStatus value( void *ptr,  uint64_t &size );
+  /* value + a copy of value header which is validated as current and
+   * unmolested by mutators (which can and will happen) */
+  KeyStatus value_copy( void *ptr,  uint64_t &size,  void *cp,
+                        uint64_t &cplen );
   /* update timestamp if not zero */
   KeyStatus update_stamps( uint64_t exp_ns,  uint64_t upd_ns );
   /* clear one or both timestamps */
