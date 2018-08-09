@@ -40,11 +40,11 @@ kv_crc_c( const void *p,  size_t sz,  uint32_t seed )
               fallthrough;
       case 6: hash64 = _mm_crc32_u16( hash64, *(uint16_t *) s ); s+=2;
               fallthrough;
-      case 4: hash64 = _mm_crc32_u32( hash64, *(uint32_t *) s ); s+=4;
+      case 4: hash64 = _mm_crc32_u32( hash64, *(uint32_t *) s );
               return hash64;
       case 3: hash64 = _mm_crc32_u8( hash64, *s++ );
               fallthrough;
-      case 2: hash64 = _mm_crc32_u16( hash64, *(uint16_t *) s ); s+=2;
+      case 2: hash64 = _mm_crc32_u16( hash64, *(uint16_t *) s );
               return hash64;
       case 5: hash64 = _mm_crc32_u32( hash64, *(uint32_t *) s ); s+=4;
               fallthrough;
