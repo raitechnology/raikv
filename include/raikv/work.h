@@ -77,7 +77,8 @@ struct ScratchMem {
   DLinkList<BigBlock> big_list; /* big blocks in use > alloc_size */
   bool                fast;
   uint32_t            off,     /* offset within hd */
-                      free_cnt;/* num of blocks available (up to slack_count) */
+                      free_cnt,/* num of blocks available (up to slack_count) */
+                      block_cnt;
   const uint32_t      slack_count;
   const size_t        alloc_size;
   /* external allocation functions to acquire heap mem */
@@ -97,8 +98,9 @@ struct ScratchMem {
               kv_alloc_func_t ba = 0/*kv_key_ctx_big_alloc*/,
               kv_free_func_t bf = 0/*kv_key_ctx_big_free*/,  void *cl = 0 )
     : fast_buf( fb ), fast_off( 0 ), fast_len( fbsz ),
-      fast( fbsz != 0 ), off( sz ), free_cnt( 0 ), slack_count( cnt ),
-      alloc_size( sz ), kv_big_alloc( ba ), kv_big_free( bf ), closure( cl ) {}
+      fast( fbsz != 0 ), off( sz ), free_cnt( 0 ), block_cnt( 0 ),
+      slack_count( cnt ), alloc_size( sz ), kv_big_alloc( ba ),
+      kv_big_free( bf ), closure( cl ) {}
   ~ScratchMem() {
     if ( ! this->blk_list.is_empty() || ! this->big_list.is_empty() )
       this->release_all();

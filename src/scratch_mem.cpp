@@ -63,6 +63,7 @@ ScratchMem::alloc_block( void )
     blk = (MBlock *) this->kv_big_alloc( this->closure, this->alloc_size );
     if ( blk == NULL )
       return NULL;
+    this->block_cnt++;
   }
   blk->init( this );
   this->off = sizeof( MBlock );
@@ -78,15 +79,18 @@ ScratchMem::release_block( MBlock *blk )
     this->free_cnt++;
     this->blk_list.push_tl( blk );
   }
-  else
+  else {
     this->kv_big_free( this->closure, blk );
+    this->block_cnt--;
+  }
 }
 
 void
 ScratchMem::release_all( void )
 {
   this->reset();
-  this->free_cnt = 0;
+  this->free_cnt  = 0;
+  this->block_cnt = 0;
   while ( ! this->blk_list.is_empty() )
     this->kv_big_free( this->closure, this->blk_list.pop_hd() );
 }
@@ -94,10 +98,11 @@ ScratchMem::release_all( void )
 void
 ScratchMem::reset_slow( void )
 {
-  if ( ! this->blk_list.is_empty() &&
-       this->blk_list.hd->off2 != this->alloc_size ) {
+  if ( this->block_cnt > 0 ) {
     this->blk_list.hd->off2 = this->alloc_size;
-    this->release_block( this->blk_list.hd );
+    while ( this->block_cnt > this->slack_count )
+      this->release_block( this->blk_list.hd );
+    this->free_cnt = this->block_cnt;
   }
   this->off = this->alloc_size;
   while ( ! this->big_list.is_empty() )

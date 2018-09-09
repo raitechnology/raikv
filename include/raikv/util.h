@@ -44,10 +44,13 @@ namespace rai {
 namespace kv {
 
 /* align<int>( 11, 8 ) == 16 */
-template <class Int>
-static inline Int align( Int sz,  Int a )
-{
+template <class Int> static inline Int align( Int sz,  Int a ) {
   return ( sz + ( a - 1 ) ) & ~( a - 1 );
+}
+template <class Int> static inline Int max( Int i,  Int j ) { return i>j?i:j; }
+template <class Int> static inline Int min( Int i,  Int j ) { return i<j?i:j; }
+template <class Int> static inline Int unaligned( const void *p ) {
+  Int i; ::memcpy( &i, p, sizeof( Int ) ); return i;
 }
 
 namespace rand {

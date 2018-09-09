@@ -284,7 +284,7 @@ kv_termination_handler( int signum )
 void
 kv_sighndl_install( kv_signal_handler_t *sh )
 {
-  struct sigaction new_action, old_action;
+  struct sigaction new_action, old_action, ign_action;
 
   sh->signaled = 0;
   sh->sig = 0;
@@ -295,6 +295,10 @@ kv_sighndl_install( kv_signal_handler_t *sh )
   sigemptyset (&new_action.sa_mask);
   new_action.sa_flags = 0;
 
+  ign_action.sa_handler = SIG_IGN;
+  sigemptyset (&ign_action.sa_mask);
+  ign_action.sa_flags = 0;
+
   sigaction (SIGINT, NULL, &old_action);
   if (old_action.sa_handler != SIG_IGN)
     sigaction (SIGINT, &new_action, NULL);
@@ -304,6 +308,10 @@ kv_sighndl_install( kv_signal_handler_t *sh )
   sigaction (SIGTERM, NULL, &old_action);
   if (old_action.sa_handler != SIG_IGN)
     sigaction (SIGTERM, &new_action, NULL);
+  /* Ignore pipe */
+  sigaction (SIGPIPE, NULL, &old_action);
+  if (old_action.sa_handler != SIG_IGN)
+    sigaction (SIGPIPE, &ign_action, NULL);
 }
 }
 
