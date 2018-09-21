@@ -64,7 +64,7 @@ all_depends :=
 major_num   := 1
 minor_num   := 0
 patch_num   := 0
-build_num   := 36
+build_num   := 38
 version     := $(major_num).$(minor_num).$(patch_num)
 ver_build   := $(version)-$(build_num)
 defines     += -DKV_VER=$(ver_build)

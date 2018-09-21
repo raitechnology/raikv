@@ -5,14 +5,14 @@
 namespace rai {
 namespace kv {
 
-template <class Elem>
+template <class Elem, bool (*IS_GREATER)(Elem, Elem)>
 struct PrioQueue {
   Elem * heap;
   size_t num_elems,
          max_elems;
   const size_t incrby;
 
-  PrioQueue( size_t inc = 32 )
+  PrioQueue( size_t inc = 128 )
     : heap( 0 ), num_elems( 0 ), max_elems( 0 ), incrby( inc ) {}
 
   bool increase_heap( void ) {
@@ -32,7 +32,7 @@ struct PrioQueue {
         return false; /* if realloc() failed, return false */
     while ( c > 0 ) {
       size_t p = ( c + 1 ) / 2 - 1;
-      if ( el > this->heap[ p ] ) /* find spot where el > heap[ p ] */
+      if ( IS_GREATER( el, this->heap[ p ] ) ) /* find spot where el > heap[ p ] */
         break;
       this->heap[ c ] = this->heap[ p ]; /* move heap[ p ] down */
       c = p;
@@ -48,10 +48,10 @@ struct PrioQueue {
       size_t c = 1, p;
       for ( p = 0; c < this->num_elems; c = ( p + 1 ) * 2 - 1 ) {
         if ( c + 1 < this->num_elems ) {
-          if ( this->heap[ c ] > this->heap[ c + 1 ] )
+          if ( IS_GREATER( this->heap[ c ], this->heap[ c + 1 ] ) )
             c++;
         }
-        if ( this->heap[ c ] > last ) /* found spot for last el */
+        if ( IS_GREATER( this->heap[ c ], last ) ) /* found spot for last el */
           break;
         this->heap[ p ] = this->heap[ c ]; /* move heap[ c ] up */
         p = c;
