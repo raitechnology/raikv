@@ -86,7 +86,7 @@ HashTab::initialize( const char *map_name,  const HashTabGeom &geom )
   assert( sizeof( HashHdr ) == HT_HDR_SIZE );
   assert( sizeof( ThrCtx ) * MAX_CTX_ID == HT_CTX_SIZE );
 
-  ::memset( &this->hdr, 0, HT_HDR_SIZE );
+  ::memset( (void *) &this->hdr, 0, HT_HDR_SIZE );
   ::memset( (void *) &this->ctx[ 0 ], 0, HT_CTX_SIZE );
 
   /* sig is set later, it indicates the mapping type (malloc, posix, sysv) */
@@ -539,7 +539,7 @@ HashTab::attach_map( const char *map_name,  uint8_t facility,
       ::shmctl( fd, IPC_RMID, NULL );
       return NULL;
     }
-    ::memcpy( &hdr, p, sizeof( hdr ) );
+    ::memcpy( (void *) &hdr, p, sizeof( hdr ) );
     map_size = align<uint64_t>( hdr.map_size, page_align );
     if ( ::memcmp( hdr.sig, HashTab::shared_mem_sig, SHM_TYPE_IDX ) != 0 ) {
       fprintf( stderr, "shm sig doesn't match: [%s][%s]",
