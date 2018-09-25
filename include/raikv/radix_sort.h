@@ -121,9 +121,6 @@ struct RadixSort {
        * count of elements to sort here could be large */
       if ( count < 32 || mask == 0 ) {
         if ( mask != 0 || this->sort_sub_key ) {
-#ifndef fallthrough
-#define fallthrough __attribute__ ((fallthrough))
-#endif
           switch ( count ) {
             case 4:
               /* bubble */
@@ -138,18 +135,18 @@ struct RadixSort {
               if ( this->cmp.less( this->vals[ off + 2 ],
                                    this->vals[ off + 1 ] ) )
                 swap( this->vals[ off + 1 ], this->vals[ off + 2 ] );
-              fallthrough;
+              /* FALLTHRU */
             case 3:
               if ( this->cmp.less( this->vals[ off + 2 ], this->vals[ off ] ) )
                 swap( this->vals[ off ], this->vals[ off + 2 ] );
               if ( this->cmp.less( this->vals[ off + 2 ],
                                    this->vals[ off + 1 ] ) )
                 swap( this->vals[ off + 1 ], this->vals[ off + 2 ] );
-              fallthrough;
+              /* FALLTHRU */
             case 2:
               if ( this->cmp.less( this->vals[ off + 1 ], this->vals[ off ] ) )
                 swap( this->vals[ off ], this->vals[ off + 1 ] );
-              fallthrough;
+              /* FALLTHRU */
             case 1: /* 0,1 shouldn't happen */
             case 0:
               break;
