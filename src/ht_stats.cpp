@@ -181,12 +181,12 @@ ThrCtx::get_ht_thr_delta( HashDeltaCounters &stat,  uint8_t &db,
     while ( ( this->key & ZOMBIE32 ) != 0 )
       kv_sync_pause();
     db = this->db_num; /* set db, useful when detecting retired stats */
+    seqno = this->ctx_seqno;
     if ( this->ctx_id == KV_NO_CTX_ID )
       return false;
     HashCounters tmp( this->stat );
     /* XXX: weak sync, mutator could lock & unlock while stat copied to tmp */
     if ( ( this->key & ZOMBIE32 ) == 0 ) {
-      seqno = this->ctx_seqno;
       stat.get_ht_delta( tmp );
       return true;
     }
