@@ -247,7 +247,7 @@ struct MsgCtx {
     this->key  = k;
     this->key2 = k2;
   }
-  //void set_key_hash( KeyFragment &b );
+  /*void set_key_hash( KeyFragment &b );*/
 
   void prefetch_segment( uint64_t size );
 

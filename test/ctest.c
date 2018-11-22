@@ -297,9 +297,10 @@ process_input_data( uint32_t num_thr )
   } while ( x > 0 );
 
   for ( i = 0; i < num_thr; i++ ) {
+    int j;
     printf( "[%d] %lu words, %lu bytes, %lu dup -- ",
             i, thr[ i ]->count, thr[ i ]->consumed, thr[ i ]->dup_count );
-    for ( int j = 0; j < KEY_MAX_STATUS; j++ ) {
+    for ( j = 0; j < KEY_MAX_STATUS; j++ ) {
       if ( thr[ i ]->status_cnt[ j ] != 0 ) {
         const char *s = kv_key_status_string( (kv_key_status_t) j );
         printf( "%s:%lu ", &s[ 4 ], thr[ i ]->status_cnt[ j ] );
@@ -312,9 +313,10 @@ process_input_data( uint32_t num_thr )
 static const char *
 get_arg( int argc, char *argv[], int n, int b, const char *f, const char *def )
 {
+  int i;
   if ( n > 0 && argc > n && argv[ 1 ][ 0 ] != '-' )
     return argv[ n ];
-  for ( int i = 1; i < argc - b; i++ )
+  for ( i = 1; i < argc - b; i++ )
     if ( strcmp( f, argv[ i ] ) == 0 )
       return argv[ i + b ];
   return def; /* default value */
