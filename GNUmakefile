@@ -56,22 +56,19 @@ thread_lib  := -pthread -lrt
 malloc_lib  :=
 #dynlink_lib := -ldl
 
+# first target everything, target all: is at the end, after all_* are defined
+.PHONY: everything
+everything: all
+
+# version vars
+-include .copr/Makefile
+
 # targets filled in below
 all_exes    :=
 all_libs    :=
 all_dlls    :=
 all_depends :=
-major_num   := 1
-minor_num   := 0
-patch_num   := 0
-build_num   := 38
-version     := $(major_num).$(minor_num).$(patch_num)
-ver_build   := $(version)-$(build_num)
-defines     += -DKV_VER=$(ver_build)
-
-# first target everything, target all: is at the end, after all_* are defined
-.PHONY: everything
-everything: all
+print_defines = -DKV_VER=$(ver_build)
 
 libraikv_files := key_ctx ht_linear ht_cuckoo key_hash msg_ctx ht_stats \
                   ht_init scratch_mem util rela_ts radix_sort print
@@ -194,13 +191,7 @@ $(dependd)/depend.make: $(dependd) $(all_depends)
 dist_bins: $(all_libs) $(all_dlls) $(bind)/kv_cli $(bind)/kv_server $(bind)/kv_test
 
 .PHONY: dist_rpm
-dist_rpm:
-	mkdir -p rpmbuild/{RPMS,SRPMS,BUILD,SOURCES,SPECS}
-	sed -e "s/99999/${build_num}/" \
-	    -e "s/999.999/${version}/" < rpm/raikv.spec > rpmbuild/SPECS/raikv.spec
-	mkdir -p rpmbuild/SOURCES/raikv-${version}
-	ln -sf ../../../src ../../../test ../../../include ../../../GNUmakefile rpmbuild/SOURCES/raikv-${version}/
-	( cd rpmbuild/SOURCES && tar chzf raikv-${ver_build}.tar.gz --exclude=".*.sw*" raikv-${version} && rm -r -f raikv-${version} )
+dist_rpm: srpm
 	( cd rpmbuild && rpmbuild --define "-topdir `pwd`" -ba SPECS/raikv.spec )
 
 .PHONY: local_repo_update

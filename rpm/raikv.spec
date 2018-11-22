@@ -4,7 +4,6 @@ Vendor:	        Rai Technology, Inc
 Release:	99999%{?dist}
 Summary:	Rai key value cache
 
-Group:		Rai
 License:	BSD
 URL:		https://github.com/raitechnology/%{name}
 Source0:	%{name}-%{version}-99999.tar.gz
@@ -53,5 +52,5 @@ rm -f /etc/ld.so.conf.d/raikv.conf
 ldconfig
 
 %changelog
-* Tue May 08 2018 <support@raitechnology.com>
-- Test RPM build
+* __DATE__ <support@raitechnology.com>
+- Hello world
