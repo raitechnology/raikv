@@ -12,6 +12,8 @@ BuildArch:      x86_64
 Prefix:	        /usr
 BuildRequires:  gcc-c++
 BuildRequires:  chrpath
+Requires(post): /sbin/ldconfig
+Requires(postun): /sbin/ldconfig
 
 %description
 A shared memory, concurrent access, key value caching system.
@@ -46,12 +48,14 @@ rm -rf %{buildroot}
 /usr/include/*
 
 %post
-echo "${RPM_INSTALL_PREFIX}/lib64" > /etc/ld.so.conf.d/raikv.conf
-ldconfig
+echo "${RPM_INSTALL_PREFIX}/lib64" > /etc/ld.so.conf.d/%{name}.conf
+/sbin/ldconfig
 
 %postun
-rm -f /etc/ld.so.conf.d/raikv.conf
-ldconfig
+if [ $1 -eq 0 ] ; then
+rm -f /etc/ld.so.conf.d/%{name}.conf
+fi
+/sbin/ldconfig
 
 %changelog
 * __DATE__ <support@raitechnology.com>
