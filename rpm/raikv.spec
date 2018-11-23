@@ -10,6 +10,8 @@ Source0:	%{name}-%{version}-99999.tar.gz
 BuildRoot:	${_tmppath}
 BuildArch:      x86_64
 Prefix:	        /usr
+BuildRequires:  gcc-c++
+BuildRequires:  chrpath
 
 %description
 A shared memory, concurrent access, key value caching system.

@@ -190,6 +190,10 @@ $(dependd)/depend.make: $(dependd) $(all_depends)
 
 .PHONY: dist_bins
 dist_bins: $(all_libs) $(all_dlls) $(bind)/kv_cli $(bind)/kv_server $(bind)/kv_test
+	chrpath -d $(libd)/libraikv.so
+	chrpath -d $(bind)/kv_cli
+	chrpath -d $(bind)/kv_server
+	chrpath -d $(bind)/kv_test
 
 .PHONY: dist_rpm
 dist_rpm: srpm
