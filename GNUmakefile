@@ -3,9 +3,10 @@ lsb_dist     := $(shell if [ -x /usr/bin/lsb_release ] ; then lsb_release -is ; 
 lsb_dist_ver := $(shell if [ -x /usr/bin/lsb_release ] ; then lsb_release -rs | sed 's/[.].*//' ; fi)
 uname_m      := $(shell uname -m)
 
-short_dist_lc := $(patsubst CentOS,rh,$(patsubst RedHat,rh,\
-                   $(patsubst Fedora,fc,$(patsubst Ubuntu,ub,\
-		     $(patsubst Debian,deb,$(patsubst SUSE,ss,$(lsb_dist)))))))
+short_dist_lc := $(patsubst CentOS,rh,$(patsubst RedHatEnterprise,rh,\
+                   $(patsubst RedHat,rh,\
+                     $(patsubst Fedora,fc,$(patsubst Ubuntu,ub,\
+		       $(patsubst Debian,deb,$(patsubst SUSE,ss,$(lsb_dist))))))))
 short_dist    := $(shell echo $(short_dist_lc) | tr a-z A-Z)
 rpm_os        := $(short_dist_lc)$(lsb_dist_ver).$(uname_m)
 
@@ -28,7 +29,7 @@ cc          := $(CC)
 cpp         := $(CXX)
 cppflags    := -fno-rtti -fno-exceptions
 arch_cflags := -march=corei7-avx -fno-omit-frame-pointer
-cpplink     := gcc
+cpplink     := $(CC)
 gcc_wflags  := -Wall -Wextra -Werror -pedantic
 fpicflags   := -fPIC
 soflag      := -shared
@@ -39,7 +40,7 @@ default_cflags := -ggdb
 else
 default_cflags := -ggdb -O3
 endif
-CFLAGS ?= $(default_cflags)
+CFLAGS := $(default_cflags)
 # rpmbuild uses RPM_OPT_FLAGS, which uses the -fstack-protector-strong flag
 #RPM_OPT_FLAGS ?= $(default_cflags)
 #CFLAGS ?= $(RPM_OPT_FLAGS)
@@ -50,19 +51,22 @@ INCLUDES    ?= -Iinclude
 includes    := $(INCLUDES)
 DEFINES     ?=
 defines     := $(DEFINES)
-#cpp_lnk     := -lsupc++
+cpp_lnk     :=
 sock_lib    :=
 math_lib    := -lm
 thread_lib  := -pthread -lrt
-malloc_lib  :=
-#dynlink_lib := -ldl
 
 # first target everything, target all: is at the end, after all_* are defined
 .PHONY: everything
 everything: all
 
-# version vars
+# copr/fedora build (with version env vars)
+# copr uses this to generate a source rpm with the srpm target
 -include .copr/Makefile
+
+# debian build (debuild)
+# target for building installable deb: dist_dpkg
+-include deb/Makefile
 
 # targets filled in below
 all_exes    :=
@@ -177,8 +181,15 @@ $(dependd):
 # remove target bins, objs, depends
 .PHONY: clean
 clean:
-	rm -r -f $(bind) $(libd) $(objd) $(dependd)
+	rm -rf $(bind) $(libd) $(objd) $(dependd)
 	if [ "$(build_dir)" != "." ] ; then rmdir $(build_dir) ; fi
+
+.PHONY: clean_dist
+clean_dist:
+	rm -rf dpkgbuild rpmbuild
+
+.PHONY: clean_all
+clean_all: clean clean_dist
 
 # force a remake of depend using 'make -B depend'
 .PHONY: depend
@@ -223,6 +234,29 @@ local_repo_create: dist_rpm
 
 # dependencies made by 'make depend'
 -include $(dependd)/depend.make
+
+ifeq ($(DESTDIR),)
+# 'sudo make install' puts things in /usr/local/lib, /usr/local/include
+install_prefix = /usr/local
+else
+# debuild uses DESTDIR to put things into debian/libdecnumber/usr
+install_prefix = $(DESTDIR)/usr
+endif
+
+install: dist_bins
+	install -d $(install_prefix)/lib $(install_prefix)/bin
+	install -d $(install_prefix)/include/raikv
+	for f in $(libd)/libraikv.* ; do \
+	if [ -h $$f ] ; then \
+	cp -a $$f $(install_prefix)/lib ; \
+	else \
+	install $$f $(install_prefix)/lib ; \
+	fi ; \
+	done
+	install -m 755 $(bind)/kv_cli $(install_prefix)/bin
+	install -m 755 $(bind)/kv_server $(install_prefix)/bin
+	install -m 755 $(bind)/kv_test $(install_prefix)/bin
+	install -m 644 include/raikv/*.h $(install_prefix)/include/raikv
 
 $(objd)/%.o: src/%.cpp
 	$(cpp) $(cflags) $(cppflags) $(includes) $(defines) $($(notdir $*)_includes) $($(notdir $*)_defines) -c $< -o $@
