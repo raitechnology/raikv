@@ -2,6 +2,7 @@
 /dist
 /export
 /rpmbuild
+/dpkgbuild
 # misc
 /notes
 /doc

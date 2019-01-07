@@ -8,6 +8,7 @@ short_dist_lc := $(patsubst CentOS,rh,$(patsubst RedHatEnterprise,rh,\
                      $(patsubst Fedora,fc,$(patsubst Ubuntu,ub,\
 		       $(patsubst Debian,deb,$(patsubst SUSE,ss,$(lsb_dist))))))))
 short_dist    := $(shell echo $(short_dist_lc) | tr a-z A-Z)
+pwd           := $(shell pwd)
 rpm_os        := $(short_dist_lc)$(lsb_dist_ver).$(uname_m)
 
 # this is where the targets are compiled
@@ -33,7 +34,7 @@ cpplink     := $(CC)
 gcc_wflags  := -Wall -Wextra -Werror -pedantic
 fpicflags   := -fPIC
 soflag      := -shared
-rpath       := -Wl,-rpath,$(libd)
+rpath       := -Wl,-rpath,$(pwd)/$(libd)
 
 ifdef DEBUG
 default_cflags := -ggdb
