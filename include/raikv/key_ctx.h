@@ -28,7 +28,8 @@ typedef enum kv_key_status_e {
   KEY_MAX_CHAINS    = 14, /* nothing found before entry count hit max chains */
   KEY_PATH_SEARCH   = 15, /* need a path search to acquire cuckoo entry */
   KEY_USE_DROP      = 16, /* ok to use drop, end of chain */
-  KEY_MAX_STATUS    = 17  /* maximum status code */
+  KEY_NOT_MSG       = 17, /* message size out of range */
+  KEY_MAX_STATUS    = 18  /* maximum status code */
 } kv_key_status_t;
 
 /* string versions of the above */
@@ -91,9 +92,10 @@ struct KeyCtx {
   const uint8_t  cuckoo_arity,   /* how many cuckoo hash functions */
                  seg_align_shift; /* alignment of segment data */
   uint8_t        db_num,
-                 inc;        /* which hash function: 0 -> cuckoo_arity */
+                 inc,        /* which hash function: 0 -> cuckoo_arity */
+                 msg_chain_size,
+                 pad2;
   uint16_t       drop_flags, /* flags from dropped recycle entry */
-                 pad2,
                  flags;      /* KeyCtxFlags */
   HashEntry    * entry;   /* the entry after lookup, may be empty entry if NF*/
   MsgHdr       * msg;     /* the msg header indexed by geom */
@@ -161,6 +163,19 @@ struct KeyCtx {
       this->serial = this->key & serial_mask;
     else
       this->serial++;
+  }
+  void more_serial( uint64_t count,  uint64_t serial_mask ) {
+    if ( this->lock == 0 ) /* new entry, init to key */
+      this->serial = ( this->key + count - 1 ) & serial_mask;
+    else
+      this->serial += count;
+  }
+  uint64_t get_serial_count( uint64_t serial_mask ) const {
+    return ( this->serial - this->key ) & serial_mask;
+  }
+  uint64_t get_next_serial( uint64_t serial_mask ) {
+    this->next_serial( serial_mask );
+    return this->get_serial_count( serial_mask );
   }
   /* copy on read hash entry using this->wrk->alloc() */
   HashEntry *get_work_entry( void ) {
@@ -299,24 +314,33 @@ struct KeyCtx {
     ValueGeom geom;
   };
   /* update the hash entry */
-  KeyStatus update_entry( void *res,  uint64_t size,  uint8_t alignment,
-                          HashEntry &el );
-  /* allocate memory for hash, releases data that may be allocated, alignment
-   * is a size -- sizeof( int64_t ) for example */
-  KeyStatus alloc( void *res,  uint64_t size,  bool copy = false,
-                   uint8_t alignment = 8 );
+  KeyStatus update_entry( void *res,  uint64_t size,  HashEntry &el );
+  /* allocate memory for hash, releases data that may be allocated */
+  KeyStatus alloc( void *res,  uint64_t size,  bool copy = false );
   /* copy value segment location to hash entry */
   KeyStatus load( MsgCtx &msg_ctx );
+  /* chain value segment location to hash entry at head */
+  KeyStatus add_msg_chain( MsgCtx &msg_ctx );
   /* resizes memory, could return already alloced memory if fits,
    * does not copy data to newly allocated space (maybe it should) */
-  KeyStatus resize( void *res,  uint64_t size,  bool copy = false,
-                    uint8_t alignment = 8 );
+  KeyStatus resize( void *res,  uint64_t size,  bool copy = false );
   /* value returns KEY_OK if has data and set ptrs to a reference, either
    * immediate or segment ex: char *s; if ( kctx.get( &s, sz ) == KEY_OK )
    * printf( "%s\n", s ); if find() is used, ptr will not reference data in the
    * table, but copied data;  if acquire() is used, ptr will reference the shm
    * table data */
   KeyStatus value( void *ptr,  uint64_t &size );
+  /* append data to message list */
+  KeyStatus append_msg( void *res,  uint64_t size );
+  KeyStatus append_vector( uint64_t count,  void *vec,  uint64_t *size );
+  /* get the geoms of the chained messages */
+  ValueGeom *get_msg_chain( uint8_t i,  ValueGeom &buf );
+  /* fetch a messsge from a message list value */
+  KeyStatus msg_value( uint64_t &from_idx,  uint64_t &to_idx,
+                       void *data,  uint64_t *size );
+  KeyStatus reorganize_entry( HashEntry &el,  uint16_t new_fl );
+  /* set the base seqno and remove msgs < idx */
+  KeyStatus trim_msg( uint64_t idx );
   /* value + a copy of value header which is validated as current and
    * unmolested by mutators (which can and will happen) */
   KeyStatus value_copy( void *ptr,  uint64_t &size,  void *cp,
@@ -330,10 +354,13 @@ struct KeyCtx {
   /* release the data used by entry */
   KeyStatus release_data( void );
   /* release the data used by dropped entry when chain == max_chains */
-  KeyStatus release_evict( void );
+  /*KeyStatus release_evict( void );*/
   /* set msg field to the segment data */
   enum AttachType { ATTACH_READ = 0, ATTACH_WRITE = 1 };
+  /* fetch and set this->msg, validate it */
   KeyStatus attach_msg( AttachType upd );
+  /* get any msg data attached to current key, copy and validate it */
+  MsgHdr *get_chain_msg( ValueGeom &cgeom );
   /* crc the message */
   void seal_msg( void );
   /* release the hash entry */
@@ -351,6 +378,37 @@ struct KeyCtx {
 };
 
 typedef uint64_t KeyCtxBuf[ sizeof( KeyCtx ) / sizeof( uint64_t ) ];
+typedef uint32_t msg_size_t;
+
+struct MsgIter {
+  uint8_t   * buf;
+  uint64_t    msg_off,
+              buf_size,
+              seqno;
+  msg_size_t  msg_size;
+  MsgHdr    * msg;
+  uint8_t     chain_num;
+  KeyStatus   status;
+
+  MsgIter() : buf( 0 ), msg_off( 0 ), buf_size( 0 ), seqno( 0 ), msg_size( 0 ),
+              msg( 0 ), chain_num( 0 ), status( KEY_OK ) {}
+  void setup( void *b,  uint64_t sz ) {
+    this->buf      = (uint8_t *) b;
+    this->buf_size = sz;
+    this->status   = KEY_OK;
+  }
+
+  bool init( KeyCtx &kctx,  uint64_t idx );
+  bool trim( KeyCtx &kctx,  uint64_t &idx );
+  bool seek( uint64_t &idx );
+  bool first( void );
+  bool next( void );
+
+  void get_msg( uint64_t &sz,  void *&b ) {
+    sz = this->msg_size;
+    b  = &this->buf[ this->msg_off + sizeof( msg_size_t ) ];
+  }
+};
 
 } /* namespace kv */
 } /* namespace rai */
@@ -418,11 +476,9 @@ kv_key_status_t kv_fetch( kv_key_ctx_t *kctx,  kv_work_alloc_t *a,
                           const uint64_t pos,  const uint64_t spin_wait );
 kv_key_status_t kv_value( kv_key_ctx_t *kctx,  void *ptr,  uint64_t *size );
 
-kv_key_status_t kv_alloc( kv_key_ctx_t *kctx,  void *ptr,  uint64_t size,
-                          uint8_t alignment );
+kv_key_status_t kv_alloc( kv_key_ctx_t *kctx,  void *ptr,  uint64_t size );
 kv_key_status_t kv_load( kv_key_ctx_t *kctx,  kv_msg_ctx_t *mctx );
-kv_key_status_t kv_resize( kv_key_ctx_t *kctx,  void *ptr,  uint64_t size,
-                           uint8_t alignment );
+kv_key_status_t kv_resize( kv_key_ctx_t *kctx,  void *ptr,  uint64_t size );
 kv_key_status_t kv_release_data( kv_key_ctx_t *kctx );
 #ifdef __cplusplus
 } /* extern "C" */

@@ -86,11 +86,13 @@ struct KeyFragment : public kv_key_frag_s {
 /* flags attached to hash entry and msg value */
 enum KeyValueFlags {
   FL_NO_ENTRY        =   0x00, /* initialize */
-  FL_ALIGNMENT       =   0x03, /* X=[0->3], data alignment: 2 << X, 2 -> 16 */
-#define FL_CUCKOO_SHIFT 2
-  FL_CUCKOO_INC      =   0x3c, /* 0x0f << FL_CUCKOO_SHIFT, X=[0->f], hash num */
+#define FL_CUCKOO_SHIFT 0
+  FL_CUCKOO_INC      =   0x0f, /* 0x0f << FL_CUCKOO_SHIFT, X=[0->f], hash num */
+  FL_SEQNO           =   0x10,
+  FL_MSG_LIST        =   0x20,
+  /* FL_ALIGNMENT       =   0x03, X=[0->3], data alignment: 2 << X, 2 -> 16 */
   FL_SEGMENT_VALUE   =   0x40, /* value is in segment */
-  FL_UPDATED         =   0x80, /* was updated recently, useful for persistence */
+  FL_UPDATED         =   0x80, /* was updated recently, useful for persistence*/
   FL_IMMEDIATE_VALUE =  0x100, /* has immediate data, no segment data used */
   FL_IMMEDIATE_KEY   =  0x200, /* full key is in hash entry */
   FL_PART_KEY        =  0x400, /* part of key is in hash entry */
@@ -216,17 +218,21 @@ struct HashEntry {
       *p++ = *k++;
     } while ( k < e );
   }
+  static uint32_t hdr_size_part( void ) { /* 24 */
+    return sizeof( AtomUInt64 ) + /* hash */
+           sizeof( uint64_t )   + /* hash2 */
+           sizeof( uint32_t )   + /* seal */
+           sizeof( uint16_t )   + /* flags */
+           sizeof( uint16_t );    /* keylen */
+  }
   static uint32_t hdr_size( const KeyFragment &kb ) {
-    return align<uint32_t>( sizeof( AtomUInt64 ) +
-                            sizeof( uint64_t ) +
-                            sizeof( uint32_t ) +
-                            sizeof( uint16_t ) +
-                            sizeof( kb.keylen ) + kb.keylen, 8 );
+    return hdr_size_part() + align<uint32_t>( kb.keylen, 8 );
   }
   uint32_t hdr_size2( void ) const {
     if ( this->test( FL_PART_KEY ) == 0 )
       return HashEntry::hdr_size( this->key );
-    return sizeof( HashEntry );
+    return hdr_size_part();
+    /*return sizeof( HashEntry );*/
   }
   void clear( uint32_t fl )          { this->flags &= ~fl; }
   void set( uint32_t fl )            { this->flags |= fl; }
@@ -264,21 +270,48 @@ struct HashEntry {
   void *ptr( uint32_t off ) const {
     return (void *) &((uint8_t *) (void *) this)[ off ];
   }
+  /* ValuePtr      ? ( FL_SEGMENT_VALUE )
+   * Seqno         ? ( FL_SEQNO )
+   * RelativeStamp ? ( FL_EXPIRE_STAMP | FL_UPDATE_STAMP )
+   * ValueCtr */
   /* before value ctr, relative stamp */
+  uint32_t trail_offset( uint32_t hash_entry_size ) const {
+    uint32_t sz = hash_entry_size - sizeof( ValueCtr );
+    if ( this->test( FL_SEGMENT_VALUE ) )
+      sz -= sizeof( ValuePtr );
+    if ( this->test( FL_SEQNO ) )
+      sz -= sizeof( uint64_t );
+    if ( this->test( FL_EXPIRE_STAMP | FL_UPDATE_STAMP ) )
+      sz -= sizeof( RelativeStamp );
+    return sz;
+  }
+  void *trail_ptr( uint32_t hash_entry_size ) const {
+    return this->ptr( this->trail_offset( hash_entry_size ) );
+  }
   ValuePtr &value_ptr( uint32_t hash_entry_size ) {
-    return *(ValuePtr *) this->ptr( hash_entry_size -
-                          ( sizeof( ValueCtr ) + sizeof( ValuePtr ) +
-                            ( this->test( FL_EXPIRE_STAMP | FL_UPDATE_STAMP ) ?
-                              sizeof( RelativeStamp ) : 0 ) ) );
+    uint32_t sz = hash_entry_size - ( sizeof( ValueCtr ) + sizeof( ValuePtr ) );
+    if ( this->test( FL_EXPIRE_STAMP | FL_UPDATE_STAMP ) )
+      sz -= sizeof( RelativeStamp );
+    if ( this->test( FL_SEQNO ) )
+      sz -= sizeof( uint64_t );
+    return *(ValuePtr *) this->ptr( sz );
+  }
+  RelativeStamp &rela_stamp( uint32_t hash_entry_size ) {
+    uint32_t sz = hash_entry_size - ( sizeof( ValueCtr ) +
+                                      sizeof( RelativeStamp ) );
+    if ( this->test( FL_SEQNO ) )
+      sz -= sizeof( uint64_t );
+    return *(RelativeStamp *) this->ptr( sz );
+  }
+  uint64_t &seqno( uint32_t hash_entry_size ) {
+    uint32_t sz = hash_entry_size - ( sizeof( ValueCtr ) + sizeof( uint64_t ) );
+    if ( this->test( FL_EXPIRE_STAMP | FL_UPDATE_STAMP ) )
+      sz -= sizeof( RelativeStamp );
+    return *(uint64_t *) this->ptr( sz );
   }
   /* at the the end of the entry */
   ValueCtr &value_ctr( uint32_t hash_entry_size ) {
     return *(ValueCtr *) this->ptr( hash_entry_size - sizeof( ValueCtr ) );
-  }
-  /* before value ctr */
-  RelativeStamp &rela_stamp( uint32_t hash_entry_size ) {
-    return *(RelativeStamp *) this->ptr( hash_entry_size -
-                          ( sizeof( ValueCtr ) + sizeof( RelativeStamp ) ) );
   }
   /* expand geom bits into value geom */
   void get_value_geom( uint32_t hash_entry_size,  ValueGeom &geom,

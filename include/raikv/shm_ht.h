@@ -176,18 +176,18 @@ struct ThrMCSLock : public MCSLock<uint64_t, ThrCtxOwner> {};
 struct ThrCtxHdr {
   AtomUInt32             key; /* zero free, zombie32 dropped, otherwise used */
   uint32_t               ctx_id,    /* the ctx id that holds a ht[] locks */
-	                 ctx_pid,   /* process id (getpid())*/
+                         ctx_pid,   /* process id (getpid())*/
                          ctx_thrid; /* thread id (syscall(SYS_gettid)) */
 
   HashCounters           stat;      /* stats for this thread context */
   rand::xoroshiro128plus rng;       /* rand state initialized on creation */
 
   uint64_t               mcs_used,  /* bit mask of used locks (64 > MCS_CNT=53)*/
-                         seg_pref,  /* insert segment pref, bits from rng */
-                         pad;
-  uint32_t               ctx_seqno;
-  uint8_t                db_num,
-                         pad2[ 3 ];
+                         pad[ 2 ];
+  uint32_t               ctx_seqno; /* least recently used counter */
+  uint16_t               seg_num;   /* use seg until exhausted */
+  uint8_t                db_num,    /* ctx attached to this db */
+                         pad2[ 1 ];
   /* 16(int32) + 128(stat) + 16(rng) + 24(uint64) = 184 */
 };
 
@@ -357,6 +357,9 @@ public:
   Segment &segment( uint32_t i ) {
     return this->hdr.seg[ i ];
   }
+  /* walk segment an reclaim memory */
+  bool gc_segment( ThrCtx &ctx,  uint32_t i,  GCStats &stats );
+
   void *seg_data( uint32_t i,  uint64_t off ) const {
     /*return &((uint8_t *) this)[ this->segment( i ).seg_off + off ];*/
     return &((uint8_t *) this)[ this->hdr.seg_start() + 

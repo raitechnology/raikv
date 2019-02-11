@@ -33,9 +33,10 @@ struct MsgHdr {
   }
   /* calculate space needed, hdr_size calculated from key above */
   static uint64_t alloc_size( uint32_t hdr_size,  uint64_t size,
-                              uint64_t seg_align ) {
-    return align<uint64_t>( hdr_size + size + sizeof( RelativeStamp ) +
-                            sizeof( ValueCtr ), seg_align );
+                              uint64_t seg_align,  uint8_t chain_size = 0 ) {
+    const size_t ch_size = (size_t) chain_size * sizeof( ValuePtr );
+    return align<uint64_t>( hdr_size + size + ch_size +
+                      sizeof( RelativeStamp ) + sizeof( ValueCtr ), seg_align );
   }
   void clear( uint32_t fl )          { this->flags &= ~fl; }
   void set( uint32_t fl )            { this->flags |= fl; }
@@ -48,26 +49,27 @@ struct MsgHdr {
     ctr.seal = 0;
   }
   /* update serial and set seal, allowing readers to access */
-  void seal( uint64_t serial,  uint8_t db,  uint8_t type,  uint16_t flags ) {
+  void seal( uint64_t serial,  uint8_t db,  uint8_t type,  uint16_t flags,
+             uint8_t chain_size ) {
     ValueCtr &ctr = this->value_ctr();
     ctr.set_serial( serial );
-    ctr.size    = 1;
+    ctr.size    = chain_size;
     ctr.db      = db;
     ctr.type    = type;
     ctr.seal    = 1;
     this->flags = flags; /* clears FL_BUSY */
   }
   /* update serial and set seal, allowing readers to access */
-  void seal2( uint64_t serial,  uint16_t flags ) {
+  void seal2( uint64_t serial,  uint16_t flags,  uint8_t chain_size ) {
     ValueCtr &ctr = this->value_ctr();
     ctr.set_serial( serial );
-    ctr.size    = 1;
+    ctr.size    = chain_size;
     ctr.seal    = 1;
     this->flags = flags; /* clears FL_BUSY */
   }
   /* check that the message has same serial as hash_entry and is not unsealed */
   bool check_seal( uint64_t h,  uint64_t h2,  uint64_t serial,
-                   uint32_t sz ) volatile {
+                   uint32_t sz,  uint8_t &chain_size ) volatile {
     const bool hdr_sealed = ( this->size == sz ) &
                             ( this->hash == h ) &
                             ( this->hash2 == h2 ) &
@@ -78,9 +80,31 @@ struct MsgHdr {
                &((uint8_t *) (void *) this)[ sz - sizeof( ValueCtr ) ];
       uint32_t seriallo = (uint32_t) serial,
                serialhi = (uint16_t) ( serial >> 32 );
+      chain_size = ctr.size;
       return ( ctr.seriallo == seriallo ) &
              ( ctr.serialhi == serialhi ) &
              ( ctr.seal == 1 );
+    }
+    return false;
+  }
+  bool check_seal_msg_list( uint64_t h,  uint64_t h2,  uint64_t &serial,
+                            uint32_t sz,  uint8_t &chain_size ) volatile {
+    const bool hdr_sealed = ( this->size == sz ) &
+                            ( this->hash == h ) &
+                            ( this->hash2 == h2 ) &
+                            ( ( this->flags & FL_BUSY ) == 0 );
+    if ( hdr_sealed ) { /* size is correct, it is safe to dereference */
+      /* check serial number */
+      ValueCtr &ctr = *(ValueCtr *) (void *)
+               &((uint8_t *) (void *) this)[ sz - sizeof( ValueCtr ) ];
+      uint64_t ser = ctr.get_serial();
+      chain_size = ctr.size;
+      if ( ( ser < serial ) &&
+           ( ser >= ( h & ValueCtr::SERIAL_MASK ) ) &&
+           ( ctr.seal == 1 ) ) {
+        serial = ser;
+        return true;
+      }
     }
     return false;
   }
@@ -106,7 +130,7 @@ struct MsgHdr {
   }
   /* no longer need the memory, mark freed */
   void release( void ) {
-    this->seal2( 0, 0 );
+    this->seal2( 0, 0, 0 );
     this->hash = ZOMBIE64;
   }
   /* the serial and seal are at the end of the msg data */
@@ -119,6 +143,18 @@ struct MsgHdr {
   }
   void *ptr( uint32_t off ) const {
     return &((uint8_t *) (void *) this)[ off ];
+  }
+  void set_next( uint8_t i,  ValueGeom &geom,  uint32_t align_shift ) {
+    ValuePtr & vp = *(ValuePtr *) this->ptr( this->size -
+                             ( sizeof( ValueCtr ) + sizeof( RelativeStamp ) +
+                             ( ( (size_t) i + 1 ) * sizeof( ValuePtr ) ) ) );
+    vp.set( geom, align_shift );
+  }
+  void get_next( uint8_t i,  ValueGeom &geom,  uint32_t align_shift ) const {
+    const ValuePtr & vp = *(const ValuePtr *) this->ptr( this->size -
+                             ( sizeof( ValueCtr ) + sizeof( RelativeStamp ) +
+                             ( ( (size_t) i + 1 ) * sizeof( ValuePtr ) ) ) );
+    vp.get( geom, align_shift );
   }
   bool is_expired( const HashTab &ht );
 };
@@ -150,9 +186,9 @@ struct Segment {
   /* the ring is split in 32 bit parts.  when in use, these will be the area
    * that is being updated (start->end).  when not in use, they will be equal
    * and at the point that will be allocated next (off->off) */
-  bool try_alloc( uint64_t how_aggressive,  uint64_t alloc_size,
+  bool try_alloc( uint8_t how_aggressive,  uint64_t alloc_size,
                   uint64_t ring_size,  uint16_t align_shift,
-                  uint64_t &hd,  uint64_t &tl,  uint64_t &old ) {
+                  uint64_t &start,  uint64_t &old ) {
     uint64_t avail = this->avail_size;
     if ( how_aggressive >= 1 && alloc_size > avail )
       return false;
@@ -163,8 +199,8 @@ struct Segment {
     get_position( cur, align_shift, x, y );
     if ( x != y ) /* is busy when not equal */
       return false;
-    old = x;
-    y += alloc_size;
+    old = x; /* existing location where space is likely to be available */
+    y += alloc_size; /* after allocation, new position */
     /* if size wraps around ring or space before cursor, depending on:
      * how_aggressive  ==  determines how CPU is used to scan existing items
      *   0    = wrap always
@@ -172,7 +208,7 @@ struct Segment {
      *   2    = wrap when x > 2 times of that of used, so used=100, x=200
      *   3    = wrap when x > 3 times of that of used, so used=100, x=300
      *   4    = wrap when x > 4 times of that of used, so used=100, x=400 */
-    if ( y > ring_size || x > used * how_aggressive ) {
+    if ( y > ring_size || x > used * (uint64_t) how_aggressive ) {
       x = 0;
       y = alloc_size;
     }
@@ -180,10 +216,25 @@ struct Segment {
              newy = ( y >> align_shift );
     if ( ! this->ring.cmpxchg( cur, newx | newy ) )
       return false;
-    hd = x; /* start looking for space here */
-    tl = y; /* hd + alloc_size */
+    start = x; /* start looking for space here */
     return true;
   }
+
+  bool try_lock( uint16_t align_shift,  uint64_t &pos ) {
+    uint64_t cur  = this->ring.val,
+             x, y;
+    /* presume that the caller does check for size < ring_size */
+    get_position( cur, align_shift, x, y );
+    if ( x != y ) /* is busy when not equal */
+      return false;
+    pos = x;
+    uint64_t newx = ( x >> align_shift ) << 32,
+             newy = newx + 1;
+    if ( ! this->ring.cmpxchg( cur, newx | newy ) )
+      return false;
+    return true;
+  }
+
   void release( uint64_t new_off,  uint16_t align_shift ) {
     uint64_t newx = ( new_off >> align_shift ) << 32,
              newy = ( new_off >> align_shift );
@@ -212,6 +263,12 @@ struct Segment {
      }
    }
 */
+struct MsgChain {
+  ValueGeom geom;
+  MsgHdr  * msg;
+  MsgChain() : msg( 0 ) { this->geom.zero(); }
+};
+
 struct MsgCtx {
   HashTab      & ht;      /* operates on this table */
   ThrCtx       & thr_ctx;
@@ -251,9 +308,47 @@ struct MsgCtx {
 
   void prefetch_segment( uint64_t size );
 
-  KeyStatus alloc_segment( void *res,  uint64_t size,  uint8_t alignment );
+  KeyStatus alloc_segment( void *res,  uint64_t size,  uint8_t chain_size );
 
   void nevermind( void );
+
+  static size_t copy_chain( const MsgHdr *from,  MsgHdr *to,  size_t i,
+                            size_t j,  size_t cnt,  const uint32_t algn_shft ) {
+    for ( size_t k = 0; k < cnt; k++ ) {
+      ValueGeom geom;
+      from->get_next( i++, geom, algn_shft );
+      if ( geom.size == 0 )
+        break;
+      to->set_next( j++, geom, algn_shft );
+    }
+    return j;
+  }
+  uint8_t add_chain( MsgChain &next );
+};
+
+struct GCStats {
+  uint64_t new_pos,
+           seg_pos,
+           moved_size,
+           zombie_size,
+           expired_size,
+           mutated_size,
+           orphans_size,
+           immovable_size,
+           msglist_size,
+           compact_size;
+  uint32_t moved,
+           zombie,
+           expired,
+           mutated,
+           orphans,
+           immovable,
+           msglist,
+           compact,
+           chains;
+  void zero( void ) {
+    ::memset( this, 0, sizeof( *this ) );
+  }
 };
 
 typedef uint64_t MsgCtxBuf[ sizeof( MsgCtx ) / sizeof( uint64_t ) ];
@@ -275,7 +370,7 @@ kv_msg_ctx_t *kv_create_msg_ctx( kv_hash_tab_t *ht,  uint32_t ctx_id );
 void kv_release_msg_ctx( kv_msg_ctx_t *mctx );
 
 kv_key_status_t kv_alloc_segment( kv_msg_ctx_t *mctx,  void *ptr,
-                                  uint64_t size,  uint8_t alignment );
+                                  uint64_t size );
 void kv_nevermind( kv_msg_ctx_t *mctx );
 #ifdef __cplusplus
 }

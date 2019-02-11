@@ -196,15 +196,15 @@ HashTab::initialize( const char *map_name,  const HashTabGeom &geom )
     this->hdr.seg_start_val = 0;
     this->hdr.seg_size_val  = 0;
   }
-  /* zero the thread contexts and the ht elements */
-  ::memset( this->ctx, 0, sizeof( this->ctx ) );
   /* init rand elems */
   uint64_t buf[ MAX_CTX_ID * 2 + DB_COUNT * 2 ];
   rand::fill_urandom_bytes( buf, sizeof( buf ) );
   i = 0;
   for ( j = 0; j < MAX_CTX_ID; j++ ) {
-    this->ctx[ j ].rng.init( (void *) &buf[ i ], sizeof( uint64_t ) * 2 );
+    rand::xoroshiro128plus &rng = this->ctx[ j ].rng;
+    rng.init( (void *) &buf[ i ], sizeof( uint64_t ) * 2 );
     i += 2;
+    this->ctx[ j ].seg_num = rng.next() % nsegs;
   }
   for ( j = 0; j < DB_COUNT; j++ ) {
     this->hdr.seed[ j ].hash1 = buf[ i ];

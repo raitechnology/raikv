@@ -127,8 +127,7 @@ process_key_frags( thr_data_t *t )
             uint16_t id;
           } kv_data_t;
           kv_data_t *d;
-          if ( kv_resize( t->ctx[ k ], &d, sizeof( kv_data_t ),
-                          sizeof( uint32_t ) ) == KEY_OK ) {
+          if ( kv_resize( t->ctx[ k ], &d, sizeof( kv_data_t ) ) == KEY_OK ) {
             if ( status == KEY_IS_NEW ) {
               d->count = 0;
               /*d->pos   = next_pos();*/

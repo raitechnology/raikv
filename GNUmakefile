@@ -160,10 +160,17 @@ pq_test_deps = $(dependd)/pq_test.d
 
 $(bind)/pq_test: $(pq_test_objs) $(pq_test_libs)
 
+pubsub_objs = $(objd)/pubsub.o
+pubsub_deps = $(dependd)/pubsub.d
+pubsub_libs = $(libd)/libraikv.so
+pubsub_lnk  = -lraikv
+
+$(bind)/pubsub: $(pubsub_objs) $(pubsub_libs)
+
 all_exes    += $(bind)/kv_test $(bind)/hash_test $(bind)/ping \
                $(bind)/kv_cli $(bind)/mcs_test $(bind)/kv_server \
 	       $(bind)/load $(bind)/rela_test $(bind)/ctest \
-	       $(bind)/pq_test
+	       $(bind)/pq_test $(bind)/pubsub
 all_depends += $(kv_test_deps) $(hash_test_deps) $(ping_deps) \
                $(kv_cli_deps) $(mcs_test_deps) $(kv_server_deps) \
 	       $(load_deps) $(rela_test_deps) $(ctest_deps) \

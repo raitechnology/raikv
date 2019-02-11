@@ -248,7 +248,7 @@ main( int argc, char *argv[] )
           kctx[ i ].set_hash( h1, h2 );
           if ( use_pref )
             kctx[ i ].prefetch( 1 );
-          if ( mctx[ i ].alloc_segment( &ptr, sz, 8 ) == KEY_OK ) {
+          if ( mctx[ i ].alloc_segment( &ptr, sz, 0 ) == KEY_OK ) {
             if ( fread( ptr, 1, sz, fp ) == sz ) {
               if ( ++i == precount ) {
                 j = do_load( kctx, mctx, precount, use_pref, cur );

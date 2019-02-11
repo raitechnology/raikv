@@ -69,6 +69,15 @@ struct PingRec {
            serial;
 };
 
+static const char *
+get_arg( int argc, char *argv[], int b, const char *f, const char *def )
+{
+  for ( int i = 1; i < argc - b; i++ )
+    if ( ::strcmp( f, argv[ i ] ) == 0 )
+      return argv[ i + b ];
+  return def; /* default value */
+}
+
 int
 main( int argc, char *argv[] )
 {
@@ -79,15 +88,26 @@ main( int argc, char *argv[] )
   uint64_t      last_serial = 0, mbar = 0, spin_times;
   uint64_t      last_count = 0, count = 0, nsdiff = 0, diff, t, last = 0;
   bool          use_pause, use_none, use_spin;
-  const char  * pausesp = NULL,
-              * oper    = NULL,
-              * mn      = NULL;
+
+  const char * mn = get_arg( argc, argv, 1, "-m", "sysv2m:shm.test" ),
+             * pi = get_arg( argc, argv, 1, "-p", "ping" ),
+             * sp = get_arg( argc, argv, 1, "-s", "pause" ),
+             * he = get_arg( argc, argv, 0, "-h", NULL );
+
+  /* do pong first */
+  if ( he != NULL ) {
+    fprintf( stderr, "raikv version: %s\n", kv_stringify( KV_VER ) );
+    fprintf( stderr,
+     "%s [-m map] [-p ping|pong] [-s pause|none|spin]\n"
+     "  map             -- name of map file (prefix w/ file:, sysv:, posix:)\n"
+     "  ping|pong       -- which queue to read\n"
+     "  pause|spin|none -- method of read spin loop\n",
+             argv[ 0 ]);
+    return 1;
+  }
 
   pingkb.set_string( "ping" );
   pongkb.set_string( "pong" );
-  /*if ( argc > 1 && ::strcmp( argv[ 1 ], "ping" ) == 0 )
-    shm_open();
-  else*/
   spin_times = 200;
 #if 0
   uint64_t t2;
@@ -99,30 +119,6 @@ main( int argc, char *argv[] )
   } while ( t2 - t < 15 * 100000 );
   printf( "do_spin ( %" PRIu64 " ) = 15ns\n", spin_times );
 #endif
-  if ( argc <= 2 ) {
-  cmd_error:;
-    fprintf( stderr, "raikv version: %s\n", kv_stringify( KV_VER ) );
-    fprintf( stderr,
-     "%s (map) (ping|pong) (pause|none|spin)\n"
-     "  map             -- name of map file (prefix w/ file:, sysv:, posix:)\n"
-     "  ping|pong       -- which queue to read\n"
-     "  pause|spin|none -- method of read spin loop\n",
-             argv[ 0 ]);
-    return 1;
-  }
-  if ( argc >= 4 ) {
-    if ( argc > 4 )
-      goto cmd_error;
-    pausesp = argv[ 3 ];
-  }
-  if ( argc >= 3 ) {
-    oper = argv[ 2 ];
-    mn   = argv[ 1 ];
-  }
-  else {
-    goto cmd_error;
-  }
-
   shm_attach( mn );
   if ( map == NULL )
     return 1;
@@ -138,11 +134,11 @@ main( int argc, char *argv[] )
   pongkb.hash( h1, h2 );
   pongctx.set_hash( h1, h2 );
 
-  if ( pausesp != NULL && ::strcmp( pausesp, "pause" ) == 0 )
+  if ( sp != NULL && ::strcmp( sp, "pause" ) == 0 )
     use_pause = true;
   else
     use_pause = false;
-  if ( pausesp != NULL && ::strcmp( pausesp, "none" ) == 0 )
+  if ( sp != NULL && ::strcmp( sp, "none" ) == 0 )
     use_none = true;
   else
     use_none = false;
@@ -152,7 +148,7 @@ main( int argc, char *argv[] )
   printf( "use_none  %s\n", use_none ? "true" : "false" );
   fflush( stdout );
 
-  if ( ::strcmp( oper, "ping" ) == 0 ) {
+  if ( ::strcmp( pi, "ping" ) == 0 ) {
     PingRec init, *ptr;
     ::memset( &init, 0, sizeof( init ) );
     //init.ping_time = current_monotonic_time_ns();

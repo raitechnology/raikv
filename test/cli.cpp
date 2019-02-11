@@ -181,35 +181,91 @@ print_mem( uint32_t s )
 static void
 print_seg( uint32_t s )
 {
-  if ( s < map->hdr.nsegs ) {
-    uint64_t dead_size = 0;
-    char key[ 8192 ];
-    print_mem( s );
-    uint64_t off = 0, seg_size = map->hdr.seg_size();
-    for ( MsgHdr *msg = (MsgHdr *) map->seg_data( s, off ); ; ) {
-      if ( msg->size == 0 )
-        break;
-      if ( msg->hash == ZOMBIE64 ) {
-        dead_size += msg->size;
-      }
-      else {
-        if ( dead_size > 0 ) {
-          xprintf( 0, "[dead %lu] ", dead_size );
-          dead_size = 0;
-        }
-        KeyFragment &kb = msg->key;
-        get_key_string( kb, key );
-        xprintf( 0, "[%s %u] ", key, msg->size );
-      }
-      off += msg->size;
-      if ( off >= seg_size )
-        break;
-      msg = (MsgHdr *) map->seg_data( s, off );
+  uint64_t dead_size = 0;
+  char key[ 8192 ];
+  print_mem( s );
+  uint64_t off = 0, seg_size = map->hdr.seg_size();
+  xprintf( 0, "  " );
+  for ( MsgHdr *msg = (MsgHdr *) map->seg_data( s, off ); ; ) {
+    if ( msg->size == 0 )
+      break;
+    if ( msg->hash == ZOMBIE64 ) {
+      dead_size += msg->size;
     }
-    if ( dead_size > 0 ) {
-      xprintf( 0, "[dead %lu] ", dead_size );
+    else {
+      if ( dead_size > 0 ) {
+        xprintf( 0, "[dead %lu] ", dead_size );
+        dead_size = 0;
+      }
+      KeyFragment &kb = msg->key;
+      get_key_string( kb, key );
+      xprintf( 0, "[%s %u] ", key, msg->size );
     }
-    xprintf( 0, "\n" );
+    off += msg->size;
+    if ( off >= seg_size )
+      break;
+    msg = (MsgHdr *) map->seg_data( s, off );
+  }
+  if ( dead_size > 0 ) {
+    xprintf( 0, "[dead %lu] ", dead_size );
+  }
+  xprintf( 0, "\n" );
+}
+
+static void
+print_seg( const char *seg_str )
+{
+  uint32_t s;
+  if ( ::strcmp( seg_str, "all" ) == 0 ) {
+    for ( s = 0; s < map->hdr.nsegs; s++ )
+      print_seg( s );
+  }
+  else {
+    s = atoi( seg_str );
+    if ( s < map->hdr.nsegs )
+      print_seg( s );
+  }
+}
+
+static void
+gc_seg( uint32_t s )
+{
+  GCStats stats;
+  stats.zero();
+  xprintf( 0, "segment #%u\n", s );
+  map->gc_segment( map->ctx[ ctx_id ], s, stats );
+  xprintf( 0, "  seg=%lu new=%lu "
+                "moved[%u]=%lu "
+                "zombie[%u]=%lu\n"
+              "  expired[%u]=%lu "
+                "mutated[%u]=%lu "
+                "orphans[%u]=%lu "
+                "immovable[%u]=%lu\n"
+              "  msglist[%u]=%lu(%u) "
+                "compact[%u]=%lu\n",
+    stats.seg_pos, stats.new_pos,
+    stats.moved, stats.moved_size, 
+    stats.zombie, stats.zombie_size, 
+    stats.expired, stats.expired_size, 
+    stats.mutated, stats.mutated_size, 
+    stats.orphans, stats.orphans_size, 
+    stats.immovable, stats.immovable_size, 
+    stats.msglist, stats.msglist_size,  stats.chains,
+    stats.compact, stats.compact_size ); 
+}
+
+static void
+gc_seg( const char *seg_str )
+{
+  uint32_t s;
+  if ( ::strcmp( seg_str, "all" ) == 0 ) {
+    for ( s = 0; s < map->hdr.nsegs; s++ )
+      gc_seg( s );
+  }
+  else {
+    s = atoi( seg_str );
+    if ( s < map->hdr.nsegs )
+      gc_seg( s );
   }
 }
 
@@ -231,6 +287,11 @@ struct HexDump {
   HexDump() : boff( 0 ), stream_off( 0 ) {
     this->flush_line();
   }
+  void reset( void ) {
+    this->boff = 0;
+    this->stream_off = 0;
+    this->flush_line();
+  }
   void flush_line( void ) {
     this->stream_off += this->boff;
     this->boff  = 0;
@@ -239,10 +300,12 @@ struct HexDump {
     this->init_line();
   }
   void init_line( void ) {
-    uint64_t k = this->stream_off;
+    uint64_t j, k = this->stream_off;
     ::memset( this->line, ' ', 79 );
     this->line[ 79 ] = '\0';
-    for ( uint64_t j = 5; k > 0; ) {
+    this->line[ 5 ] = hex_chars[ k & 0xf ];
+    k >>= 4; j = 4;
+    while ( k > 0 ) {
       this->line[ j ] = hex_chars[ k & 0xf ];
       if ( j-- == 0 )
         break;
@@ -388,7 +451,11 @@ static char *
 flags_string( uint16_t fl,  uint8_t type,  char *buf )
 {
   char *s = buf;
-  *buf++ = (char) ( fl & FL_ALIGNMENT ) + '0';
+  /**buf++ = (char) ( fl & FL_ALIGNMENT ) + '0';*/
+  if ( ( fl & FL_SEQNO ) != 0 )
+    buf = copy_fl( buf, "-Sno" );
+  if ( ( fl & FL_MSG_LIST ) != 0 )
+    buf = copy_fl( buf, "-Mls" );
   if ( ( fl & FL_SEGMENT_VALUE ) != 0 )
     buf = copy_fl( buf, "-Seg" );
   if ( ( fl & FL_UPDATED ) != 0 )
@@ -630,27 +697,95 @@ static KeyStatus
 print_key_data( KeyCtx &kctx,  const char *what,  uint64_t sz )
 {
   char fl[ 128 ], upd[ 64 ], exp[ 64 ];
+  uint64_t cnt, seq;
 
   sprintf_stamps( kctx, upd, exp );
+  cnt =  kctx.serial - ( kctx.key & ValueCtr::SERIAL_MASK );
+  xprintf( 0, "[%lu] [h=0x%08lx:%08lx:chn=%lu:cnt=%lu",
+    kctx.pos, kctx.key, kctx.key2, kctx.chains, cnt );
+
+  if ( ( kctx.entry->flags & FL_SEQNO ) != 0 ) {
+    seq = kctx.entry->seqno( kctx.hash_entry_size );
+    xprintf( 0, ",%lu", seq );
+  }
+  xprintf( 0, ":db=%u:inc=%u:sz=%lu%s%s] (%s",
+      kctx.get_db(), kctx.inc,
+      sz, upd, exp, flags_string( kctx.entry->flags, kctx.get_type(), fl ) );
   if ( kctx.msg != NULL ) {
     ValueGeom &geom = kctx.geom;
-    xprintf( 0,
-      "[%lu] [h=0x%08lx:%08lx:chn=%lu:cnt=%lu:db=%u:inc=%u:sz=%lu%s%s] "
-      "(%s seg=%u:sz=%lu:off=%lu:cnt=%lu) %s\n",
-      kctx.pos, kctx.key, kctx.key2, kctx.chains, kctx.serial -
-      ( kctx.key & ValueCtr::SERIAL_MASK ), kctx.get_db(), kctx.inc,
-      sz, upd, exp, flags_string( kctx.entry->flags, kctx.get_type(), fl ),
+    xprintf( 0, " seg=%u:sz=%lu:off=%lu:cnt=%lu",
       geom.segment, geom.size, geom.offset,
-      geom.serial - ( kctx.key & ValueCtr::SERIAL_MASK ), what );
+      geom.serial - ( kctx.key & ValueCtr::SERIAL_MASK ) );
   }
-  else {
-    xprintf( 0,
-      "[%lu] [h=%08lx:%08lx:chn=%lu:cnt=%lu:db=%u:inc=%u:sz=%lu%s%s] (%s) %s\n",
-      kctx.pos, kctx.key, kctx.key2, kctx.chains, kctx.serial -
-      ( kctx.key & ValueCtr::SERIAL_MASK ), kctx.get_db(), kctx.inc, sz, upd,
-      exp, flags_string( kctx.entry->flags, kctx.get_type(), fl ), what );
-  }
+  xprintf( 0, ") %s\n", what );
   return KEY_OK;
+}
+
+static void
+dump_key_data( KeyCtx &kctx )
+{
+  static const char *seglay[] = {
+           "  [seg] [seh]  [serial lo]\n",
+    "         [   size  ]  [  offset ]",
+  };
+  static const char *layout[] = {
+    "         [        hash1         ]",
+           "  [        hash2         ]\n",
+    "         [  seal   ]  [flg] [kln]",
+           "  [      key    or       ]\n",
+    "         [      key    or       ]",
+           "  [      data            ]\n",
+    "         [                      ]",
+           "  [z][d][t][ serial (42b)]\n",
+  };
+  static const char *msghdr[] = {
+    "         [   size  ]  [ msgsize ]",
+           "  [        hash1         ]\n",
+    "         [        hash2         ]",
+           "  [flg] [kln]  [  key    ]\n",
+  };
+  static const char *msgtail[] = {
+    "         [     rela stamp       ]",
+           "  [z][d][t][ serial (42b)]\n",
+  };
+  void * ptr = kctx.entry;
+  size_t size = kctx.hash_entry_size, i = 0, off;
+  HexDump hex;
+  for ( off = 0; off < size; ) {
+    if ( i == 6 && kctx.entry->test( FL_SEGMENT_VALUE ) != 0 ) 
+      xprintf( 0, seglay[ 1 ] );
+    else
+      xprintf( 0, layout[ i ] );
+    i++;
+    if ( i == 5 && kctx.entry->test( FL_SEGMENT_VALUE ) != 0 ) 
+      xprintf( 0, seglay[ 0 ] );
+    else
+      xprintf( 0, layout[ i ] );
+    i++;
+    off = hex.fill_line( ptr, off, size );
+    xprintf( 0, "%s\n", hex.line );
+    hex.flush_line();
+  }
+  if ( kctx.msg != NULL ) {
+    ptr  = kctx.msg;
+    size = kctx.msg->size;
+    i    = 0;
+    hex.reset();
+    xprintf( 0, "-- Msg --\n" );
+    for ( off = 0; off < size; ) {
+      if ( i < 4 ) {
+        xprintf( 0, msghdr[ i++ ] );
+        xprintf( 0, msghdr[ i++ ] );
+      }
+      else if ( off + 16 >= size ) {
+        xprintf( 0, msgtail[ 0 ] );
+        xprintf( 0, msgtail[ 1 ] );
+      }
+      off = hex.fill_line( ptr, off, size );
+      xprintf( 0, "%s\n", hex.line );
+      hex.flush_line();
+    }
+  }
 }
 
 static void
@@ -751,7 +886,7 @@ cli( void )
   uint32_t      cnt, i, j, print_count;
   char          cmd_char, last_cmd = 0;
   KeyStatus     status;
-  bool          inquiet = false, do_validate = false;
+  bool          inquiet = false, do_validate = false, do_verbose = false;
 
   ::memset( cmd, 0, sizeof( cmd ) );
   ::memset( key, 0, sizeof( key ) );
@@ -811,9 +946,12 @@ cli( void )
 
       case 'd': /* drop */
       case 'p': /* put */
+      case 'a': /* append */
       case 's': /* set (alias for put) */
       case 't': /* tombstone */
+      case 'T': /* trim */
       case 'u': /* update stamp */
+      case 'P': /* publish */
         parse_key_string( kb, key );
         map->hdr.get_hash_seed( db_num, h1, h2 );
         kb.hash( h1, h2 );
@@ -830,12 +968,33 @@ cli( void )
           /*kctx.update_ns = current_realtime_ns();*/
           /*map->hdr.current_stamp = kctx.update_ns;*/
           if ( cmd_char == 'p' || cmd_char == 's' ) {
-            if ( (status = kctx.resize( &ptr, sz + 1 )) == KEY_OK ) {
-              ::memcpy( ptr, data, sz + 1 );
-              status = print_key_data( kctx, "put", sz + 1 );
+            if ( (status = kctx.resize( &ptr, sz )) == KEY_OK ) {
+              ::memcpy( ptr, data, sz );
+              status = print_key_data( kctx, "put", sz );
+              if ( do_verbose )
+                dump_key_data( kctx );
             }
           }
-          else if ( cmd_char == 't' ) {
+          else if ( cmd_char == 'a' ) {
+            uint64_t cur_sz = 0, new_sz = 0;
+            kctx.get_msg_size( cur_sz );
+            new_sz = cur_sz + sz;
+            if ( (status = kctx.resize( &ptr, new_sz, true )) == KEY_OK ) {
+              ::memcpy( &((uint8_t *) ptr)[ cur_sz ], data, sz );
+              status = print_key_data( kctx, "put", new_sz );
+              if ( do_verbose )
+                dump_key_data( kctx );
+            }
+          }
+          else if ( cmd_char == 'P' ) {
+            if ( (status = kctx.append_msg( &ptr, sz )) == KEY_OK ) {
+              ::memcpy( ptr, data, sz );
+              status = print_key_data( kctx, "put", sz );
+              if ( do_verbose )
+                dump_key_data( kctx );
+            }
+          }
+          else if ( cmd_char == 't' || cmd_char == 'd' ) {
             const char *s = ( cmd_char == 'd' ? "drop" : "tomb" );
             if ( (status = print_key_data( kctx, s, 0 )) == KEY_OK ) {
               /*if ( cmd_char == 'd' )
@@ -843,6 +1002,11 @@ cli( void )
               else*/
                 status = kctx.tombstone();
             }
+          }
+          else if ( cmd_char == 'T' ) {
+            status = kctx.trim_msg( ~(uint64_t) 0 );
+            if ( status == KEY_OK )
+              status = print_key_data( kctx, "trim", 0 );
           }
           kctx.release();
         }
@@ -852,26 +1016,26 @@ cli( void )
         }
         break;
 
-      case 'a': /* acquire */
+      case 'e': /* acquire */
         parse_key_string( kb, key );
         map->hdr.get_hash_seed( db_num, h1, h2 );
         kb.hash( h1, h2 );
         kctx.set_hash( h1, h2 );
 
         if ( (status = kctx.acquire( &wrk )) <= KEY_IS_NEW ) {
-          if ( (status = kctx.resize( &ptr, 2 )) == KEY_OK ) {
-            ((uint8_t *) ptr)[ 0 ] = 'X'; ((uint8_t *) ptr)[ 1 ] = '\0';
-            status = print_key_data( kctx, "acquire", 2 );
+          if ( (status = kctx.resize( &ptr, 1 )) == KEY_OK ) {
+            ((uint8_t *) ptr)[ 0 ] = 'X';
+            status = print_key_data( kctx, "acquire", 1 );
           }
         }
         break;
 
-      case 'A': /* release acquire */
-        status = print_key_data( kctx, "release", 2 );
+      case 'E': /* release acquire */
+        status = print_key_data( kctx, "release", 1 );
         kctx.release();
         break;
 
-      case 'D': /* switch db */
+      case 'w': /* switch db */
         if ( key[ 0 ] >=  '0' && key[ 0 ] <= '9' ) {
           db_num = string_to_uint64( key, ::strlen( key ) );
           xprintf( 0, "switching to DB %u\n", db_num );
@@ -882,6 +1046,7 @@ cli( void )
       case 'h': /* hex */
       case 'i': /* int */
       case 'g': /* get */
+      case 'S': /* subscribe */
       case 'f': { /* fetch */
         bool do_int = false, do_get = false;
         char action = cmd_char;
@@ -901,6 +1066,7 @@ cli( void )
         t2 = get_rdtscp();
         cnt = 0;
         do {
+          uint64_t i = 0, j = 0, count = 0;
           if ( cmd_char != 'f' )
             status = kctx.find( &wrk );
           else {
@@ -909,40 +1075,64 @@ cli( void )
             status = kctx.fetch( &wrk, pos );
           }
           if ( status == KEY_OK ) {
-            t3 = get_rdtscp();
-            if ( (status = kctx.value( &data, sz )) == KEY_OK ) {
+            bool is_msg_list = kctx.entry->test( FL_MSG_LIST );
+            for (;;) {
+              t3 = get_rdtscp();
+              if ( is_msg_list ) {
+                i = j;
+                j = i + 1;
+                if ( (status = kctx.msg_value( i, j, &data, &sz )) != KEY_OK )
+                  break;
+                count += j - i;
+              }
+              else {
+                if ( (status = kctx.value( &data, sz )) != KEY_OK )
+                  break;
+              }
               t4 = get_rdtscp();
-              print_rdtsc( t1, t2, t3, t4, "hash", "find", "value" );
+              if ( count <= 1 ) {
+                print_rdtsc( t1, t2, t3, t4, "hash", "find", "value" );
+                status = print_key_data( kctx, "get", sz );
+                if ( do_verbose )
+                  dump_key_data( kctx );
+              }
               bool not_printed = false;
-              status = print_key_data( kctx, "get", sz );
+              if ( is_msg_list )
+                xprintf( 0, "[%lu]", i );
+              else
+                xprintf( 0, "->" );
               if ( do_int ) {
                 if ( sz == 8 )
-                  xprintf( 0, "->%lu\n", *(uint64_t *) (void *) data );
+                  xprintf( 0, "%lu\n", *(uint64_t *) (void *) data );
                 else if ( sz == 4 )
-                  xprintf( 0, "->%u\n", *(uint32_t *) (void *) data );
+                  xprintf( 0, "%u\n", *(uint32_t *) (void *) data );
                 else if ( sz == 2 )
-                  xprintf( 0, "->%u\n", *(uint16_t *) (void *) data );
+                  xprintf( 0, "%u\n", *(uint16_t *) (void *) data );
                 else if ( sz == 1 )
-                  xprintf( 0, "->%u\n", *(uint8_t *) (void *) data );
+                  xprintf( 0, "%u\n", *(uint8_t *) (void *) data );
                 else
                   not_printed = true;
               }
               else if ( do_get && sz < 16 * 1024 )
-                xprintf( 0, "->\"%.*s\"\n", (int) sz, (char *) data );
+                xprintf( 0, "\"%.*s\"\n", (int) sz, (char *) data );
               else
                 not_printed = true;
               if ( not_printed ) {
-                xprintf( 0, "->\n" );
+                xprintf( 0, "\n" );
                 dump_hex( data, sz );
               }
+              if ( ! is_msg_list )
+                break;
             }
           }
           if ( status == KEY_NOT_FOUND ) {
-            t3 = get_rdtscp();
-            print_rdtsc( t1, t2, t3, "hash", "find" );
-            xprintf( 0, "[%lu] [h=%lx]: \n",
-                    kctx.pos, kctx.key );
-            print_status( cmd, key, status );
+            if ( count == 0 ) {
+              t3 = get_rdtscp();
+              print_rdtsc( t1, t2, t3, "hash", "find" );
+              xprintf( 0, "[%lu] [h=%lx]: \n",
+                      kctx.pos, kctx.key );
+              print_status( cmd, key, status );
+            }
             status = KEY_OK;
           }
         } while ( status == KEY_MUTATED && ++cnt < 100 );
@@ -1111,7 +1301,7 @@ cli( void )
         }
         break;
 
-      case 'S': /* stats */
+      case 'X': /* stats */
         print_map_geom( map, ctx_id );
         print_stats();
         break;
@@ -1122,8 +1312,17 @@ cli( void )
         xprintf( 0, "do_validate = %s\n", do_validate ? "true" : "false" );
         break;
 
-      case 'x': /* examine segment */
-        print_seg( atoi( key ) );
+      case 'V':
+        do_verbose = ! do_verbose;
+        xprintf( 0, "do_verbose = %s\n", do_verbose ? "true" : "false" );
+        break;
+
+      case 'D': /* examine segment */
+        print_seg( key );
+        break;
+
+      case 'G': /* GC segment */
+        gc_seg( key );
         break;
 
       case 'z': /* play dead */
@@ -1146,28 +1345,34 @@ cli( void )
 
       default:
         xprintf( 0,
-        "acdfghijkmpqrstuvx:\n"
-        "put/set [+exp] key value ; set key to value w/optional +expires\n"
-        "upd [+exp] key        ; update key +expires\n"
-        "get key               ; print key value as string\n"
-        "hex key               ; print hex dump of key value\n"
-        "int key               ; print int value of key (sz 2^N)\n"
-        "acquire key           ; acquire key and 'A key' to release\n"
-        "f{get,int,hex} pos    ; print int value of ht[ pos ]\n"
-        "drop key              ; drop key\n"
-        "tomb key              ; tombstone key\n"
-        "keys [pat]            ; list keys matching (K to start over)\n"
-        "jump position         ; jump to position and list keys\n"
-        "mem                   ; print segment offsets\n"
-        "validate              ; validate all keys are reachable\n"
-        "xamin seg#            ; dump segment data\n"
-        "Stats                 ; print stats\n"
-        "contexts              ; print stats for all contexts\n"
-        "y                     ; scan for broken locks\n"
-        "z                     ; suspend pid (Z to unsuspend)\n"
-        "Z                     ; unsuspend pid\n"
-        "read file             ; read input from file (R to read quietly)\n"
-        "quit                  ; bye\n" );
+        "a| append key value      ; append value to key\n"
+        "c| contexts              ; print stats for all contexts\n"
+        "d| drop key              ; drop key\n"
+        "D| Dump seg#             ; dump segment data\n"
+        "e| xacquire key          ; acquire key and 'E key' to release\n"
+        "f| f{get,int,hex} pos    ; print int value of ht[ pos ]\n"
+        "g| get key               ; print key value as string\n"
+        "G| GC seg#               ; GC segment data\n"
+        "h| hex key               ; print hex dump of key value\n"
+        "i| int key               ; print int value of key (sz 2^N)\n"
+        "j| jump position         ; jump to position and list keys\n"
+        "k| keys [pat]            ; list keys matching (K to start over)\n"
+        "m| mem                   ; print segment offsets\n"
+        "p/s| put/set [+exp] key value ; set key to value w/optional +expires\n"
+        "P| publish key value     ; append value to key stream\n"
+        "r| read file             ; read input from file (R to read quietly)\n"
+        "S| subscribe key         ; subscribe key (fetch next value)\n"
+        "t| tomb key              ; tombstone key\n"
+        "T| trim key              : remove all messages\n"
+        "u| upd [+exp] key        ; update key +expires\n"
+        "v| validate              ; validate all keys are reachable\n"
+        "V| Verbose               ; dump memory of each key fetched\n"
+        "w| which db#             ; switch db#\n"
+        "X| Stats                 ; print stats\n"
+        "y| y                     ; scan for broken locks\n"
+        "z| z                     ; suspend pid (Z to unsuspend)\n"
+        "Z| Z                     ; unsuspend pid\n"
+        "q| quit                  ; bye\n" );
         break;
     }
     if ( status != KEY_OK )
