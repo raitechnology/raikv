@@ -60,7 +60,7 @@ shm_attach( const char *mn )
 {
   map = HashTab::attach_map( mn, 0, geom );
   if ( map != NULL ) {
-    ctx_id = map->attach_ctx( my_pid = ::getpid(), db_num );
+    ctx_id = map->attach_ctx( my_pid = ::getpid(), db_num, 0 );
     fputs( print_map_geom( map, ctx_id ), stdout );
   }
 }
@@ -139,7 +139,7 @@ print_stats( uint32_t c )
 {
   if ( c != MAX_CTX_ID ) {
     int alive = 0;
-    HashCounters & stat = map->ctx[ c ].stat;
+    HashCounters & stat = map->ctx[ c ].stat1;
     uint32_t pid = map->ctx[ c ].ctx_pid;
     if ( pid != 0 ) {
       if ( map->ctx[ c ].ctx_id != KV_NO_CTX_ID ) {

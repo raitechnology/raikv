@@ -56,9 +56,9 @@ KeyCtx::acquire( const uint64_t k,  uint64_t i,  Position &next )
     }
   found_match:;
     if ( spin > 0 )
-      ctx.incr_spins( spin );
+      this->incr_spins( spin );
     if ( ! this->test( KEYCTX_IS_GC_ACQUIRE | KEYCTX_IS_CUCKOO_ACQUIRE ) )
-      ctx.incr_write();
+      this->incr_write();
     this->clear( KEYCTX_IS_READ_ONLY );
     this->pos    = i;
     this->lock   = h;
@@ -98,7 +98,7 @@ KeyCtx::acquire( const uint64_t k,  uint64_t i,  Position &next )
         ctx.get_mcs_lock( cur_mcs_id ).release( el->hash, h, ZOMBIE64,
                                                 cur_mcs_id, spin, closure );
         ctx.release_mcs_lock( cur_mcs_id );
-        ctx.incr_chains( this->chains );
+        this->incr_chains( this->chains );
         cur_mcs_id = drop_mcs_id;
         el         = drop;
         h          = drop_h;
@@ -112,7 +112,7 @@ KeyCtx::acquire( const uint64_t k,  uint64_t i,  Position &next )
         ctx.get_mcs_lock( drop_mcs_id ).release( drop->hash, drop_h, ZOMBIE64,
                                                  drop_mcs_id, spin, closure );
         ctx.release_mcs_lock( drop_mcs_id );
-        ctx.incr_chains( this->chains );
+        this->incr_chains( this->chains );
         if ( el->test( FL_DROPPED ) )
           goto found_drop;
         goto found_match;
@@ -143,7 +143,7 @@ KeyCtx::acquire( const uint64_t k,  uint64_t i,  Position &next )
     ctx.release_mcs_lock( last_mcs_id );
     /* check for match */
     if ( h == 0 || ( h == k && this->equals( *el ) ) ) {
-      ctx.incr_chains( this->chains );
+      this->incr_chains( this->chains );
       /* process the tomebstone entry */
       if ( drop != NULL ) {
         if ( h == 0 )
@@ -166,7 +166,7 @@ KeyCtx::acquire( const uint64_t k,  uint64_t i,  Position &next )
   ctx.get_mcs_lock( cur_mcs_id ).release( el->hash, h, ZOMBIE64,
                                           cur_mcs_id, spin, closure );
   ctx.release_mcs_lock( cur_mcs_id );
-  ctx.incr_chains( this->chains );
+  this->incr_chains( this->chains );
   return status;
 
 key_is_busy1:;
@@ -182,9 +182,9 @@ key_is_busy2:;
   }
 key_is_busy3:;
   if ( spin > 0 )
-    ctx.incr_spins( spin );
+    this->incr_spins( spin );
   ctx.release_mcs_lock( cur_mcs_id );
-  ctx.incr_chains( this->chains );
+  this->incr_chains( this->chains );
   return KEY_BUSY;
 }
 
@@ -192,7 +192,6 @@ template <class Position>
 KeyStatus
 KeyCtx::acquire_single_thread( const uint64_t k,  uint64_t i,  Position &next )
 {
-  ThrCtx     & ctx    = this->thr_ctx;
   HashEntry  * el,              /* current ht[] ptr */
              * drop   = NULL;  /* drop ht[] ptr */
   uint64_t     h,               /* hash val at the current element */
@@ -216,7 +215,7 @@ KeyCtx::acquire_single_thread( const uint64_t k,  uint64_t i,  Position &next )
     }
   found_match:;
     if ( ! this->test( KEYCTX_IS_GC_ACQUIRE | KEYCTX_IS_CUCKOO_ACQUIRE ) )
-      ctx.incr_write();
+      this->incr_write();
     this->clear( KEYCTX_IS_READ_ONLY );
     this->pos    = i;
     this->lock   = h;
@@ -241,7 +240,7 @@ KeyCtx::acquire_single_thread( const uint64_t k,  uint64_t i,  Position &next )
       /* if at the end of a chain, use the tombstone entry */
       if ( h == 0 ) {
       recycle_drop:;
-        ctx.incr_chains( this->chains );
+        this->incr_chains( this->chains );
         el = drop;
         h  = drop_h;
         i  = this->ht.get_entry_pos( drop, this->hash_entry_size );
@@ -251,7 +250,7 @@ KeyCtx::acquire_single_thread( const uint64_t k,  uint64_t i,  Position &next )
       /* if found the key, release the tombstone */
       if ( h == k && this->equals( *el ) ) {
       release_drop:;
-        ctx.incr_chains( this->chains );
+        this->incr_chains( this->chains );
         if ( el->test( FL_DROPPED ) )
           goto found_drop;
         goto found_match;
@@ -264,7 +263,7 @@ KeyCtx::acquire_single_thread( const uint64_t k,  uint64_t i,  Position &next )
     h  = el->hash;
     /* check for match */
     if ( h == 0 || ( h == k && this->equals( *el ) ) ) {
-      ctx.incr_chains( this->chains );
+      this->incr_chains( this->chains );
       /* process the tomebstone entry */
       if ( drop != NULL ) {
         if ( h == 0 )
@@ -281,7 +280,7 @@ KeyCtx::acquire_single_thread( const uint64_t k,  uint64_t i,  Position &next )
     if ( status == KEY_USE_DROP )
       goto recycle_drop;
   }
-  ctx.incr_chains( this->chains );
+  this->incr_chains( this->chains );
   return status;
 }
 
@@ -310,7 +309,6 @@ KeyStatus
 KeyCtx::find( const uint64_t k,  uint64_t i,  const uint64_t spin_wait,
               Position &next )
 {
-  ThrCtx    & ctx  = this->thr_ctx;
   HashEntry * cpy  = this->get_work_entry();
   uint64_t    spin = 0,
               h;
@@ -328,19 +326,19 @@ KeyCtx::find( const uint64_t k,  uint64_t i,  const uint64_t spin_wait,
         if ( kv_likely( cpy->check_seal( this->hash_entry_size ) ) ) {
           if ( kv_likely( this->equals( *cpy ) ) ) {
             if ( kv_likely( cpy->test( FL_DROPPED ) == 0 ) ) {
-              ctx.incr_hit();
+              this->incr_hit();
               status = KEY_OK;
             }
             else {
         not_found:;
-              ctx.incr_miss();
+              this->incr_miss();
               status = KEY_NOT_FOUND;
             }
             if ( this->chains > 0 )
-              ctx.incr_chains( this->chains );
+              this->incr_chains( this->chains );
             if ( spin > 0 )
-              ctx.incr_spins( spin );
-            ctx.incr_read();
+              this->incr_spins( spin );
+            this->incr_read();
             this->pos    = i;
             this->lock   = h;
             this->serial = cpy->value_ctr( this->hash_entry_size ).get_serial();
@@ -357,14 +355,14 @@ KeyCtx::find( const uint64_t k,  uint64_t i,  const uint64_t spin_wait,
         break;
       /* h has ZOMBIE64 set or seal is broken, spin and check hash again */
       if ( kv_unlikely( ++spin == spin_wait ) ) {
-        ctx.incr_spins( spin );
+        this->incr_spins( spin );
         return KEY_BUSY;
       }
       kv_sync_pause();
     }
     /* get next element in chain (i += 1) */
     if ( (status = next.find_incr( i, ++this->chains )) != KEY_OK ) {
-      ctx.incr_spins( spin );
+      this->incr_spins( spin );
       return status;
     }
   }
@@ -375,7 +373,6 @@ template <class Position>
 KeyStatus
 KeyCtx::find_single_thread( const uint64_t k,  uint64_t i,  Position &next )
 {
-  ThrCtx  & ctx  = this->thr_ctx;
   uint64_t  h;
   KeyStatus status;
 
@@ -386,17 +383,17 @@ KeyCtx::find_single_thread( const uint64_t k,  uint64_t i,  Position &next )
     if ( kv_likely( h == k ) ) { /* check if it is the key we're looking 4 */
       if ( kv_likely( this->equals( el ) ) ) {
         if ( kv_likely( el.test( FL_DROPPED ) == 0 ) ) {
-          ctx.incr_hit();
+          this->incr_hit();
           status = KEY_OK;
         }
         else {
     not_found:;
-          ctx.incr_miss();
+          this->incr_miss();
           status = KEY_NOT_FOUND;
         }
         if ( this->chains > 0 )
-          ctx.incr_chains( this->chains );
-        ctx.incr_read();
+          this->incr_chains( this->chains );
+        this->incr_read();
         this->pos    = i;
         this->lock   = h;
         this->serial = el.value_ctr( this->hash_entry_size ).get_serial();

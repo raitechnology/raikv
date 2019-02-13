@@ -123,7 +123,6 @@ KeyStatus
 KeyCtx::fetch_position( const uint64_t i,  const uint64_t spin_wait,
                         const bool is_scan )
 {
-  ThrCtx    & ctx  = this->thr_ctx;
   HashEntry * cpy  = this->get_work_entry();
   uint64_t    spin = 0,
               h;
@@ -143,7 +142,7 @@ KeyCtx::fetch_position( const uint64_t i,  const uint64_t spin_wait,
       }
       /* key was locked, spin again */
       if ( ++spin == spin_wait ) {
-        ctx.incr_spins( spin );
+        this->incr_spins( spin );
         return KEY_BUSY;
       }
       kv_sync_pause();
@@ -152,9 +151,9 @@ KeyCtx::fetch_position( const uint64_t i,  const uint64_t spin_wait,
     if ( cpy->check_seal( this->hash_entry_size ) ) {
   not_found:;
       if ( spin > 0 )
-        ctx.incr_spins( spin );
+        this->incr_spins( spin );
       if ( ! this->test( KEYCTX_IS_CUCKOO_ACQUIRE ) )
-        ctx.incr_read();
+        this->incr_read();
       this->inc    = cpy->cuckoo_inc();
       this->set( KEYCTX_IS_READ_ONLY );
       this->pos    = i;
@@ -313,8 +312,8 @@ continue_from_save:;
   this->entry = NULL;
   this->msg   = NULL;
   if ( spin > 0 )
-    ctx.incr_spins( spin );
-  //ctx.incr_drop();  tombstone does it
+    this->incr_spins( spin );
+  //this->incr_drop();  tombstone does it
   return KEY_OK;
 }
 #endif

@@ -10,13 +10,19 @@ using namespace rai;
 using namespace kv;
 
 MsgCtx::MsgCtx( HashTab &t,  ThrCtx &thr,  uint32_t sz )
-      : ht( t ), thr_ctx( thr ), kbuf( 0 ), hash_entry_size( sz ), key( 0 ),
+      : ht( t ), thr_ctx( thr ), dbstat( thr.stat1 ), kbuf( 0 ),
+        hash_entry_size( sz ), db_num( thr.db_num1 ), key( 0 ),
         msg( 0 ), prefetch_ptr( 0 ) {}
 
 MsgCtx::MsgCtx( HashTab &t,  ThrCtx &thr )
-      : ht( t ), thr_ctx( thr ), kbuf( 0 ),
-        hash_entry_size( t.hdr.hash_entry_size ), key( 0 ),
-        msg( 0 ), prefetch_ptr( 0 ) {}
+      : ht( t ), thr_ctx( thr ), dbstat( thr.stat1 ), kbuf( 0 ),
+        hash_entry_size( t.hdr.hash_entry_size ), db_num( thr.db_num1 ),
+        key( 0 ), msg( 0 ), prefetch_ptr( 0 ) {}
+
+MsgCtx::MsgCtx( KeyCtx &kctx )
+      : ht( kctx.ht ), thr_ctx( kctx.thr_ctx ), dbstat( kctx.stat ), kbuf( 0 ),
+        hash_entry_size( kctx.hash_entry_size ), db_num( kctx.db_num ),
+        key( 0 ), msg( 0 ), prefetch_ptr( 0 ) {}
 #if 0
 void
 MsgCtx::set_key_hash( KeyFragment &b )
@@ -122,15 +128,14 @@ struct GCRunCtx {
   WorkAllocT<1024> wrk;
 
   /* used when space is allocated */
-  GCRunCtx( HashTab &tab,  ThrCtx &ctx,  Segment &s,  uint8_t *sptr,
-            const uint64_t seg_sz,  const uint32_t he_sz,
-            const uint32_t seg_algn,  const uint16_t segment_num,
-            uint64_t hd,  uint64_t tl ) :
+  GCRunCtx( MsgCtx &mctx,  ThrCtx &ctx,  Segment &s,  uint8_t *sptr,
+            const uint64_t seg_sz,  const uint32_t seg_algn,
+            const uint16_t segment_num,  uint64_t hd,  uint64_t tl ) :
     seg_size( seg_sz ),
-    hash_entry_size( he_sz ),
+    hash_entry_size( mctx.hash_entry_size ),
     algn_shft( seg_algn ),
     seg_num( segment_num ),
-    ht( tab ), kctx( tab, ctx ), 
+    ht( mctx.ht ), kctx( mctx.ht, ctx, mctx.dbstat, mctx.db_num ), 
     seg( s ),
     segptr( sptr ),
     frag( 0 ), frag_start( 0 ), frag_size( 0 ),
@@ -382,9 +387,8 @@ MsgCtx::alloc_segment( void *res,  uint64_t size,  uint8_t chain_size )
         hd = tl;        /* nothing free, need to find space  */
       /* run gc, try to make space for allocation */
       if ( hd - tl < alloc_size ) {
-        GCRunCtx gcrun( this->ht, ctx, seg, segptr, seg_size, 
-                        this->hash_entry_size, seg_algn, this->geom.segment,
-                        hd, tl );
+        GCRunCtx gcrun( *this, ctx, seg, segptr, seg_size, 
+                        seg_algn, this->geom.segment, hd, tl );
         GCStats stats;
         stats.zero();
         while ( gcrun.gc( stats ) ) {
@@ -444,8 +448,7 @@ MsgCtx::alloc_segment( void *res,  uint64_t size,  uint8_t chain_size )
 }
 
 bool
-HashTab::gc_segment( ThrCtx &ctx,  uint32_t seg_num,
-                     GCStats &stats )
+HashTab::gc_segment( ThrCtx &ctx,  uint32_t seg_num,  GCStats &stats )
 {
   if ( seg_num >= this->hdr.nsegs )
     return false;

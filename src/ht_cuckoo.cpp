@@ -88,8 +88,8 @@ CuckooAltHash::find_cuckoo_path( CuckooPosition &cp )
   const uint32_t     arity     = kctx.cuckoo_arity,
                      buckets   = kctx.cuckoo_buckets;
   const uint64_t     ht_size   = kctx.ht_size;
-  KeyCtx             to_kctx( kctx.ht, kctx.thr_ctx.ctx_id ),
-                     fr_kctx( kctx.ht, kctx.thr_ctx.ctx_id );
+  KeyCtx             to_kctx( kctx ),
+                     fr_kctx( kctx );
   WorkAllocT<1024>   wrk, wrk2;
   CuckooVisit        node[ node_size ],
                    * vis;
@@ -275,10 +275,10 @@ CuckooAltHash::find_cuckoo_path( CuckooPosition &cp )
                     kctx.entry->set( FL_MOVED );
                   }
                 skip_new_slot_init:;
-                  ctx.incr_cuckacq( acquire_cnt );
-                  ctx.incr_cuckfet( fetch_cnt );
-                  ctx.incr_cuckmov( move_cnt );
-                  ctx.incr_cuckbiz( busy_cnt );
+                  kctx.incr_cuckacq( acquire_cnt );
+                  kctx.incr_cuckfet( fetch_cnt );
+                  kctx.incr_cuckmov( move_cnt );
+                  kctx.incr_cuckbiz( busy_cnt );
                   return status;
                 }
                 status = fr_kctx.try_acquire_position( vis->from_pos );
@@ -354,15 +354,15 @@ CuckooAltHash::find_cuckoo_path( CuckooPosition &cp )
         rng_bits = rng.next();
     }
     //printf( "retrying %u off %u maxtos %u\n", retry, off, maxtos );
-    ctx.incr_cuckret( 1 );
+    kctx.incr_cuckret( 1 );
   }
 key_busy:;
-  ctx.incr_cuckacq( acquire_cnt );
-  ctx.incr_cuckfet( fetch_cnt );
-  ctx.incr_cuckmov( move_cnt );
-  ctx.incr_cuckbiz( busy_cnt );
+  kctx.incr_cuckacq( acquire_cnt );
+  kctx.incr_cuckfet( fetch_cnt );
+  kctx.incr_cuckmov( move_cnt );
+  kctx.incr_cuckbiz( busy_cnt );
   if ( retry == MAX_CUCKOO_RETRY ) {
-    ctx.incr_cuckmax( 1 );
+    kctx.incr_cuckmax( 1 );
     return KEY_HT_FULL;
   }
   return KEY_BUSY;
@@ -523,10 +523,10 @@ KeyCtx::try_acquire_position( const uint64_t i )
   h          = ctx.get_mcs_lock( cur_mcs_id ).try_acquire( el->hash, i,
                                                    ZOMBIE64, cur_mcs_id, spin );
   if ( spin > 0 )
-    ctx.incr_spins( spin );
+    this->incr_spins( spin );
   if ( (h & ZOMBIE64) == 0 ) {
     if ( ! this->test( KEYCTX_IS_CUCKOO_ACQUIRE ) )
-      ctx.incr_write();
+      this->incr_write();
     else
       this->db_num = el->value_ctr( this->hash_entry_size ).db;
     if ( el->test( FL_DROPPED ) ) {

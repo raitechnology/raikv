@@ -19,12 +19,37 @@ KeyCtx::KeyCtx( HashTab &t, ThrCtx &ctx, KeyFragment *b )
   , cuckoo_buckets( t.hdr.cuckoo_buckets )
   , cuckoo_arity( t.hdr.cuckoo_arity )
   , seg_align_shift( t.hdr.seg_align_shift )
-  , db_num( ctx.db_num )
+  , db_num( ctx.db_num1 )
   , inc( 0 )
   , drop_flags( 0 )
   , flags( KEYCTX_IS_READ_ONLY )
   , entry( 0 )
   , msg( 0 )
+  , stat( ctx.stat1 )
+  , max_chains( t.hdr.ht_size )
+{
+  ::memset( &this->chains, 0,
+            (uint8_t *) (void *) &( &this->wrk )[ 1 ] -
+              (uint8_t *) (void *) &this->chains );
+}
+
+KeyCtx::KeyCtx( HashTab &t, ThrCtx &ctx, HashCounters &dbstat,  uint8_t dbn,
+                KeyFragment *b )
+  : ht( t )
+  , thr_ctx( ctx )
+  , kbuf( b )
+  , ht_size( t.hdr.ht_size )
+  , hash_entry_size( t.hdr.hash_entry_size )
+  , cuckoo_buckets( t.hdr.cuckoo_buckets )
+  , cuckoo_arity( t.hdr.cuckoo_arity )
+  , seg_align_shift( t.hdr.seg_align_shift )
+  , db_num( dbn )
+  , inc( 0 )
+  , drop_flags( 0 )
+  , flags( KEYCTX_IS_READ_ONLY )
+  , entry( 0 )
+  , msg( 0 )
+  , stat( dbstat )
   , max_chains( t.hdr.ht_size )
 {
   ::memset( &this->chains, 0,
@@ -41,13 +66,37 @@ KeyCtx::KeyCtx( HashTab &t, uint32_t id, KeyFragment *b )
   , cuckoo_buckets( t.hdr.cuckoo_buckets )
   , cuckoo_arity( t.hdr.cuckoo_arity )
   , seg_align_shift( t.hdr.seg_align_shift )
-  , db_num( t.ctx[ id ].db_num )
+  , db_num( t.ctx[ id ].db_num1 )
   , inc( 0 )
   , drop_flags( 0 )
   , flags( KEYCTX_IS_READ_ONLY )
   , entry( 0 )
   , msg( 0 )
+  , stat( t.ctx[ id ].stat1 )
   , max_chains( t.hdr.ht_size )
+{
+  ::memset( &this->chains, 0,
+            (uint8_t *) (void *) &( &this->wrk )[ 1 ] -
+              (uint8_t *) (void *) &this->chains );
+}
+
+KeyCtx::KeyCtx( KeyCtx &kctx )
+  : ht( kctx.ht )
+  , thr_ctx( kctx.thr_ctx )
+  , kbuf( 0 )
+  , ht_size( kctx.ht_size )
+  , hash_entry_size( kctx.hash_entry_size )
+  , cuckoo_buckets( kctx.cuckoo_buckets )
+  , cuckoo_arity( kctx.cuckoo_arity )
+  , seg_align_shift( kctx.seg_align_shift )
+  , db_num( kctx.db_num )
+  , inc( 0 )
+  , drop_flags( 0 )
+  , flags( KEYCTX_IS_READ_ONLY )
+  , entry( 0 )
+  , msg( 0 )
+  , stat( kctx.stat )
+  , max_chains( kctx.ht_size )
 {
   ::memset( &this->chains, 0,
             (uint8_t *) (void *) &( &this->wrk )[ 1 ] -
@@ -59,7 +108,7 @@ KeyCtx::switch_db( uint8_t db_num )
 {
   this->ht.retire_ht_thr_stats( this->thr_ctx.ctx_id );
   this->db_num = db_num;
-  this->thr_ctx.db_num = db_num; /* must account for other KeyCtx in app */
+  this->thr_ctx.db_num1 = db_num; /* must account for other KeyCtx in app */
 }
 
 void
@@ -149,7 +198,6 @@ KeyStatus
 KeyCtx::tombstone( void )
 {
   if ( this->lock != 0 ) { /* if it's not new */
-    ThrCtx  & ctx = this->thr_ctx;
     KeyStatus status;
     if ( (status = this->release_data()) != KEY_OK )
       return status;
@@ -157,7 +205,7 @@ KeyCtx::tombstone( void )
     this->entry->set( FL_DROPPED );
     this->entry->clear( FL_EXPIRE_STAMP | FL_UPDATE_STAMP |
                         FL_SEQNO | FL_MSG_LIST );
-    ctx.incr_drop();
+    this->incr_drop();
   }
   return KEY_OK;
 }
@@ -276,7 +324,7 @@ KeyCtx::release( void )
       el.seal_entry( this->hash_entry_size, 0, 0 );
       goto done; /* skip over the seals, they will be tossed */
     }
-    ctx.incr_add(); /* counter for added elements */
+    this->incr_add(); /* counter for added elements */
   }
   /* allow readers to access */
   el.hash2 = this->key2;
@@ -289,7 +337,7 @@ done:;
                                             this->mcs_id, spin, closure );
   ctx.release_mcs_lock( this->mcs_id );
   //__sync_mfence(); /* push the updates to memory */
-  ctx.incr_spins( spin );
+  this->incr_spins( spin );
   this->entry     = NULL;
   this->msg       = NULL;
   this->drop_key  = 0;
@@ -302,7 +350,6 @@ KeyCtx::release_single_thread( void )
   if ( this->test( KEYCTX_IS_READ_ONLY ) != 0 )
     return;
   HashEntry & el   = *this->entry;
-  ThrCtx    & ctx  = this->thr_ctx;
   uint64_t    k    = this->key;
   /* if no data was inserted, mark the entry as tombstone */
   if ( this->lock == 0 ) { /* if it's new */
@@ -324,7 +371,7 @@ KeyCtx::release_single_thread( void )
       el.seal_entry( this->hash_entry_size, 0, 0 );
       goto done; /* skip over the seals, they will be tossed */
     }
-    ctx.incr_add(); /* counter for added elements */
+    this->incr_add(); /* counter for added elements */
   }
   /* allow readers to access */
   el.hash2 = this->key2;
@@ -521,8 +568,8 @@ KeyCtx::release_evict( void )
     default:
       break;
   }
-  ctx.incr_drop();
-  ctx.incr_htevict();
+  this->incr_drop();
+  this->incr_htevict();
   this->clear( KEYCTX_IS_HT_EVICT );
   return KEY_OK;
 }
@@ -589,7 +636,7 @@ KeyCtx::update_entry( void *res,  uint64_t size,  HashEntry &el )
   /* key doesn't fit and no segment data, check if value fits */
   hdr_end = &((uint8_t *) (void *) &el)[ sizeof( HashEntry ) ];
   if ( &hdr_end[ size ] > trail ) {
-    this->thr_ctx.incr_afail();
+    this->incr_afail();
     return KEY_ALLOC_FAILED;
   }
   /* only part of the key fits */
@@ -649,7 +696,7 @@ KeyCtx::alloc( void *res,  uint64_t size,  bool copy )
 
   if ( status == KEY_SEG_VALUE ) {
     /* allocate mem from a segment */
-    MsgCtx msg_ctx( this->ht, this->thr_ctx, this->hash_entry_size );
+    MsgCtx msg_ctx( *this );
     msg_ctx.set_key( *this->kbuf );
     msg_ctx.set_hash( this->key, this->key2 );
     if ( (status = msg_ctx.alloc_segment( res, size,
@@ -670,7 +717,7 @@ KeyCtx::alloc( void *res,  uint64_t size,  bool copy )
       this->msg = msg_ctx.msg;
     }
     else if ( status == KEY_ALLOC_FAILED ) {
-      this->thr_ctx.incr_afail();
+      this->incr_afail();
     }
   }
   if ( cpp != NULL ) {
@@ -967,7 +1014,7 @@ KeyCtx::append_msg( void *res,  uint64_t size )
       /* split into chains at 16k, 2x32k, 4x64, 8x128... (total 384M) */
       if ( this->msg_chain_size < 0xff &&
            cur_size > 8 * 1024 * ( (uint64_t) this->msg_chain_size + 1 ) ) {
-        MsgCtx mctx( this->ht, this->thr_ctx, this->hash_entry_size );
+        MsgCtx mctx( *this );
         mctx.set_key( *this->kbuf );
         mctx.set_hash( this->key, this->key2 );
         msg_off  = 0;
@@ -1081,7 +1128,7 @@ KeyCtx::append_vector( uint64_t count,  void *vec,  uint64_t *size )
       /* split into chains at 16k, 2x32k, 4x64, 8x128... (total 384M) */
       if ( this->msg_chain_size < 0xff &&
            cur_size > 8 * 1024 * ( (uint64_t) this->msg_chain_size + 1 ) ) {
-        MsgCtx mctx( this->ht, this->thr_ctx, this->hash_entry_size );
+        MsgCtx mctx( *this );
         mctx.set_key( *this->kbuf );
         mctx.set_hash( this->key, this->key2 );
         msg_off  = 0;
@@ -1399,7 +1446,7 @@ KeyCtx::reorganize_entry( HashEntry &el,  uint16_t new_fl )
     if ( hd + sz <= tl )
       return KEY_OK;
     /* move immediate to segment */
-    MsgCtx mctx( this->ht, this->thr_ctx, this->hash_entry_size );
+    MsgCtx mctx( *this );
     uint64_t hdr_size = MsgHdr::hdr_size( *this->kbuf );
     mctx.set_key( *this->kbuf );
     mctx.set_hash( this->key, this->key2 );

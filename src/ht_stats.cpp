@@ -180,11 +180,11 @@ ThrCtx::get_ht_thr_delta( HashDeltaCounters &stat,  uint8_t &db,
   for (;;) {
     while ( ( this->key & ZOMBIE32 ) != 0 )
       kv_sync_pause();
-    db = this->db_num; /* set db, useful when detecting retired stats */
+    db = this->db_num1; /* set db, useful when detecting retired stats */
     seqno = this->ctx_seqno;
     if ( this->ctx_id == KV_NO_CTX_ID )
       return false;
-    HashCounters tmp( this->stat );
+    HashCounters tmp( this->stat1 );
     /* XXX: weak sync, mutator could lock & unlock while stat copied to tmp */
     if ( ( this->key & ZOMBIE32 ) == 0 ) {
       stat.get_ht_delta( tmp );
@@ -215,8 +215,10 @@ HashTab::get_db_stats( HashCounters &tot,  uint8_t db_num ) const
   tot = this->hdr.stat[ db_num ];
   for ( i = 0; i < MAX_CTX_ID; i++ ) {
     if ( this->ctx[ i ].ctx_id != KV_NO_CTX_ID ) {
-      if ( this->ctx[ i ].db_num == db_num )
-        tot += this->ctx[ i ].stat;
+      if ( this->ctx[ i ].db_num1 == db_num )
+        tot += this->ctx[ i ].stat1;
+      else if ( this->ctx[ i ].db_num2 == db_num )
+        tot += this->ctx[ i ].stat2;
     }
   }
   return tot != 0;
@@ -237,8 +239,10 @@ HashTab::update_load( void )
   this->hdr.current_stamp = current_realtime_coarse_ns();
   for ( i = 0; i < MAX_CTX_ID; i++ ) {
     if ( this->ctx[ i ].ctx_id != KV_NO_CTX_ID ) {
-      total_add  += this->ctx[ i ].stat.add;
-      total_drop += this->ctx[ i ].stat.drop;
+      total_add  += this->ctx[ i ].stat1.add;
+      total_drop += this->ctx[ i ].stat1.drop;
+      total_add  += this->ctx[ i ].stat2.add;
+      total_drop += this->ctx[ i ].stat2.drop;
     }
   }
   /* total add - total drop should be the used entries */

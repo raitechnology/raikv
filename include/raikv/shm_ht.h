@@ -178,30 +178,33 @@ struct ThrCtxHdr {
   uint32_t               ctx_id,    /* the ctx id that holds a ht[] locks */
                          ctx_pid,   /* process id (getpid())*/
                          ctx_thrid; /* thread id (syscall(SYS_gettid)) */
-
-  HashCounters           stat;      /* stats for this thread context */
   rand::xoroshiro128plus rng;       /* rand state initialized on creation */
+
+  HashCounters           stat1,     /* stats for this thread context */
+                         stat2;
+  uint32_t               ctx_seqno; /* least recently used counter */
+  uint16_t               seg_num;   /* use seg until exhausted */
+  uint8_t                db_num1,   /* ctx attached to this db */
+                         db_num2;
 
   uint64_t               mcs_used,  /* bit mask of used locks (64 > MCS_CNT=53)*/
                          pad[ 2 ];
-  uint32_t               ctx_seqno; /* least recently used counter */
-  uint16_t               seg_num;   /* use seg until exhausted */
-  uint8_t                db_num,    /* ctx attached to this db */
-                         pad2[ 1 ];
-  /* 16(int32) + 128(stat) + 16(rng) + 24(uint64) = 184 */
+  /* 16(int32) + 16(rng) + 256(stat) + 32(uint64) = 320 */
 };
 
 struct ThrCtxEntry : public ThrCtxHdr {
-  static const uint32_t MCS_CNT  =
+  static const uint32_t MCS_CNT  = /* 1024 - 320 = 704 / 32 = 22 mcs */
     ( HT_THR_CTX_SIZE - sizeof( ThrCtxHdr ) ) / sizeof( ThrMCSLock );
   static const uint32_t MCS_SHIFT = 16,
                         MCS_MASK  = ( 1 << MCS_SHIFT ) - 1;
   ThrMCSLock mcs[ MCS_CNT ]; /* a queue of ctx waiting for ht.entry[ x ] */
 
   void zero( void ) {
-    this->stat.zero();
+    this->stat1.zero();
+    this->stat2.zero();
     this->mcs_used = 0;
-    this->db_num = 0;
+    this->db_num1 = 0;
+    this->db_num2 = 0;
     ::memset( this->mcs, 0, sizeof( this->mcs ) );
   }
 };
@@ -211,24 +214,6 @@ struct ThrCtx : public ThrCtxEntry { /* each thread needs one of these */
   /* 1024b align */
   static_assert( HT_THR_CTX_SIZE == sizeof( ThrCtxEntry ), "ctx hdr size" );
 #endif
-  /* convenience functions for stats */
-  void incr_read( uint64_t cnt = 1 )    { this->stat.rd      += cnt; }
-  void incr_write( uint64_t cnt = 1 )   { this->stat.wr      += cnt; }
-  void incr_spins( uint64_t cnt = 1 )   { this->stat.spins   += cnt; }
-  void incr_chains( uint64_t cnt = 1 )  { this->stat.chains  += cnt; }
-  void incr_add( uint64_t cnt = 1 )     { this->stat.add     += cnt; }
-  void incr_drop( uint64_t cnt = 1 )    { this->stat.drop    += cnt; }
-  void incr_htevict( uint64_t cnt = 1 ) { this->stat.htevict += cnt; }
-  void incr_afail( uint64_t cnt = 1 )   { this->stat.afail   += cnt; }
-  void incr_hit( uint64_t cnt = 1 )     { this->stat.hit     += cnt; }
-  void incr_miss( uint64_t cnt = 1 )    { this->stat.miss    += cnt; }
-  void incr_cuckacq( uint64_t cnt = 1 ) { this->stat.cuckacq += cnt; }
-  void incr_cuckfet( uint64_t cnt = 1 ) { this->stat.cuckfet += cnt; }
-  void incr_cuckmov( uint64_t cnt = 1 ) { this->stat.cuckmov += cnt; }
-  void incr_cuckbiz( uint64_t cnt = 1 ) { this->stat.cuckbiz += cnt; }
-  void incr_cuckret( uint64_t cnt = 1 ) { this->stat.cuckret += cnt; }
-  void incr_cuckmax( uint64_t cnt = 1 ) { this->stat.cuckmax += cnt; }
-
   bool get_ht_thr_delta( HashDeltaCounters &stat,  uint8_t &db,
                          uint32_t &seqno ) const;
   uint64_t next_mcs_lock( void ) {
@@ -337,7 +322,7 @@ public:
   static HashTab *attach_map( const char *map_name,  uint8_t facility,
                               HashTabGeom &geom ); /* return geom */
   /* a shared usage context for stats and signals */
-  uint32_t attach_ctx( uint32_t key,  uint8_t db_num );
+  uint32_t attach_ctx( uint32_t key,  uint8_t db_num1,  uint8_t db_num2 );
   /* sum ctx[0] and hdr.stats[db] stats and zero ctx[ctx_id] stats */
   void retire_ht_thr_stats( uint32_t ctx_id );
   /* free the shared usage context */
@@ -391,7 +376,8 @@ void kv_close_map( kv_hash_tab_t *ht );
 /* calculate % load and return it, 0 <= load < 1.0 */
 float kv_update_load( kv_hash_tab_t *ht );
 /* attach a thread context, return ctx_id, which is an index to ht->ctx[], key is arbitrary */
-uint32_t kv_attach_ctx( kv_hash_tab_t *ht,  uint32_t key,  uint8_t db_num );
+uint32_t kv_attach_ctx( kv_hash_tab_t *ht,  uint32_t key,  uint8_t db_num1,
+                        uint8_t db_num2 );
 /* deattach a thread context */
 void kv_detach_ctx( kv_hash_tab_t *ht,  uint32_t ctx_id );
 /* total number of hash slots */

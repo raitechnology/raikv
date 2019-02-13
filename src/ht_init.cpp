@@ -624,7 +624,7 @@ HashTab::close_map( void )
 
 /* find a new thread entry, key should be non-zero */
 uint32_t
-HashTab::attach_ctx( uint32_t key,  uint8_t db_num )
+HashTab::attach_ctx( uint32_t key,  uint8_t db_num1,  uint8_t db_num2 )
 {
   ThrCtx * el;
   uint32_t i     = this->hdr.next_ctx.add( 1 ) % MAX_CTX_ID,
@@ -647,7 +647,8 @@ HashTab::attach_ctx( uint32_t key,  uint8_t db_num )
         el->ctx_id    = el - this->ctx;
         el->ctx_pid   = ::getpid();
         el->ctx_thrid = ::syscall( SYS_gettid );
-        el->db_num    = db_num;
+        el->db_num1   = db_num1;
+        el->db_num2   = db_num2;
         if ( ++el->ctx_seqno == 0 )
           el->ctx_seqno = 1;
         this->hdr.ctx_used.add( 1 );
@@ -671,49 +672,60 @@ HashTab::retire_ht_thr_stats( uint32_t ctx_id )
 {
   ThrCtx       & el      = this->ctx[ ctx_id ],
                & base    = this->ctx[ 0 ];
-  uint8_t        db_num  = el.db_num;
-  HashCounters & db_stat = this->hdr.stat[ db_num ];
+  uint8_t        db_num1 = el.db_num1;
+  HashCounters & db_stat = this->hdr.stat[ db_num1 ];
   const uint32_t bizyid  = ZOMBIE32 | ctx_id;
   uint32_t       val, val2;
 
   if ( ctx_id >= MAX_CTX_ID || ctx_id == 0 )
     return;
 
-  this->hdr.ht_spin_lock( db_num );
+  this->hdr.ht_spin_lock( db_num1 );
   while ( ( (val = base.key.xchg( bizyid )) & ZOMBIE32 ) != 0 )
     kv_sync_pause();
   while ( ( (val2 = el.key.xchg( bizyid )) & ZOMBIE32 ) != 0 )
     kv_sync_pause();
-  base.stat += el.stat;
-  db_stat += el.stat;
+  base.stat1 += el.stat1;
+  db_stat += el.stat1;
   if ( ++el.ctx_seqno == 0 )
     el.ctx_seqno = 1;
-  el.stat.zero();
+  el.stat1.zero();
   el.key.xchg( val2 );
   base.key.xchg( val );
-  this->hdr.ht_spin_unlock( db_num );
+  this->hdr.ht_spin_unlock( db_num1 );
 }
 
 /* detach thread */
 void
 HashTab::detach_ctx( uint32_t ctx_id )
 {
-  ThrCtx       & el      = this->ctx[ ctx_id ],
-               & base    = this->ctx[ 0 ];
-  uint8_t        db_num  = el.db_num;
-  HashCounters & db_stat = this->hdr.stat[ db_num ];
-  const uint32_t bizyid  = ZOMBIE32 | ctx_id;
+  ThrCtx       & el       = this->ctx[ ctx_id ],
+               & base     = this->ctx[ 0 ];
+  uint8_t        db_num1  = el.db_num1,
+                 db_num2  = el.db_num2;
+  HashCounters & db_stat1 = this->hdr.stat[ db_num1 ],
+               & db_stat2 = this->hdr.stat[ db_num2 ];
+  const uint32_t bizyid   = ZOMBIE32 | ctx_id;
 
   if ( ctx_id >= MAX_CTX_ID || ctx_id == 0 )
     return;
 
-  this->hdr.ht_spin_lock( db_num );
+  if ( db_num1 != db_num2 ) {
+    this->hdr.ht_spin_lock( db_num2 );
+    db_stat2 += el.stat2;
+    this->hdr.ht_spin_unlock( db_num2 );
+  }
+
+  this->hdr.ht_spin_lock( db_num1 );
   while ( ( base.key.xchg( bizyid ) & ZOMBIE32 ) != 0 )
     kv_sync_pause();
   while ( ( el.key.xchg( bizyid ) & ZOMBIE32 ) != 0 )
     kv_sync_pause();
-  base.stat += el.stat;
-  db_stat += el.stat;
+  db_stat1 += el.stat1;
+  if ( db_num1 == db_num2 )
+    db_stat1 += el.stat2;
+  base.stat1 += el.stat1;
+  base.stat1 += el.stat2;
   if ( ++el.ctx_seqno == 0 )
     el.ctx_seqno = 1;
   //el.stat.zero();
@@ -721,7 +733,7 @@ HashTab::detach_ctx( uint32_t ctx_id )
   this->hdr.ctx_used.sub( 1 );
   el.key.xchg( 0 );
   base.key.xchg( 0 );
-  this->hdr.ht_spin_unlock( db_num );
+  this->hdr.ht_spin_unlock( db_num1 );
 }
 
 extern "C" {
@@ -760,9 +772,10 @@ kv_update_load( kv_hash_tab_t *ht )
 }
 
 uint32_t
-kv_attach_ctx( kv_hash_tab_t *ht,  uint32_t key,  uint8_t db_num )
+kv_attach_ctx( kv_hash_tab_t *ht,  uint32_t key,  uint8_t db_num1,
+               uint8_t db_num2 )
 {
-  return reinterpret_cast<HashTab *>( ht )->attach_ctx( key, db_num );
+  return reinterpret_cast<HashTab *>( ht )->attach_ctx( key, db_num1, db_num2 );
 }
 
 void

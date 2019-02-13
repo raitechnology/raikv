@@ -22,7 +22,7 @@ shm_attach( const char *mn )
 {
   map = HashTab::attach_map( mn, 0, geom );
   if ( map != NULL ) {
-    ctx_id = map->attach_ctx( 1000 /*::getpid()*/, 0 );
+    ctx_id = map->attach_ctx( 1000 /*::getpid()*/, 0, 0 );
     fputs( print_map_geom( map, ctx_id ), stdout );
   }
 }
@@ -31,7 +31,7 @@ static void
 shm_close( void )
 {
   if ( ctx_id != MAX_CTX_ID ) {
-    HashCounters & stat = map->ctx[ ctx_id ].stat;
+    HashCounters & stat = map->ctx[ ctx_id ].stat1;
     printf( "rd %" PRIu64 ", wr %" PRIu64 ", "
             "sp %" PRIu64 ", ch %" PRIu64 "\n",
             stat.rd, stat.wr, stat.spins, stat.chains );
@@ -222,7 +222,7 @@ main( int argc, char *argv[] )
                 (double) ( totalb - lastb ) / ( (double) ( t2 - t1 ) / NANOSF ),
                 (double) ( allocfail - lastallfail ) /
                   ( (double) ( t2 - t1 ) / NANOSF ),
-                ctx.stat.add, ctx.stat.drop, ctx.stat.add - ctx.stat.drop /*,
+                ctx.stat1.add, ctx.stat1.drop, ctx.stat1.add - ctx.stat1.drop /*,
                 x_seg_values, x_immed_values, x_no_value, x_key_count, x_drops,
                 x_key_count - x_drops*/ );
             t1 = t2;

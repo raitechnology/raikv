@@ -272,15 +272,18 @@ struct MsgChain {
 struct MsgCtx {
   HashTab      & ht;      /* operates on this table */
   ThrCtx       & thr_ctx;
+  HashCounters & dbstat;
   KeyFragment  * kbuf;    /* key to place */
   const uint32_t hash_entry_size;
-  uint32_t       pad;
+  const uint8_t  db_num;
+  uint8_t        pad[ 3 ];
   uint64_t       key,
                  key2;
   MsgHdr       * msg;
   void         * prefetch_ptr;
   ValueGeom      geom;    /* value location */
 
+  MsgCtx( KeyCtx &kctx );
   MsgCtx( HashTab &t,  ThrCtx &thr );
   MsgCtx( HashTab &t,  ThrCtx &thr,  uint32_t sz );
   ~MsgCtx() {}

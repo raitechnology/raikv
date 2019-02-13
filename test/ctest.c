@@ -173,7 +173,7 @@ thr_process( void *data )
   char          * p;
   uint32_t        j;
 
-  t->ctx_id = kv_attach_ctx( ht, t->id, db_num );
+  t->ctx_id = kv_attach_ctx( ht, t->id, db_num, 0 );
   for ( j = 0; j < CTX_COUNT; j++ )
     t->ctx[ j ] = kv_create_key_ctx( ht, t->ctx_id );
   t->wrk = kv_create_ctx_alloc( 8 * 1024, NULL, NULL, 0 );

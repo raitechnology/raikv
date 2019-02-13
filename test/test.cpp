@@ -442,7 +442,7 @@ main( int argc, char *argv[] )
   if ( map == NULL )
     return 1;
 
-  uint32_t ctx_id = map->attach_ctx( ::getpid(), db_num );
+  uint32_t ctx_id = map->attach_ctx( ::getpid(), db_num, 0 );
   if ( ctx_id == MAX_CTX_ID ) {
     printf( "no more ctx available\n" );
     return 3;

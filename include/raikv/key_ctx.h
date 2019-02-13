@@ -99,7 +99,8 @@ struct KeyCtx {
                  flags;      /* KeyCtxFlags */
   HashEntry    * entry;   /* the entry after lookup, may be empty entry if NF*/
   MsgHdr       * msg;     /* the msg header indexed by geom */
-
+                 /* ^^ 8*8 ^^  vv 8*11 + 8*4(geom) + 8 vv */ 
+  HashCounters & stat;
   uint64_t       max_chains, /* drop entries after accumulating max chains */
                  chains,     /* number of chains used to find/acquire */
                  start,   /* key % ht_size */
@@ -114,6 +115,23 @@ struct KeyCtx {
   ValueGeom      geom;    /* values decoded from HashEntry */
   ScratchMem   * wrk;     /* temp work allocation */
 
+  void incr_read( uint64_t cnt = 1 )    { this->stat.rd      += cnt; }
+  void incr_write( uint64_t cnt = 1 )   { this->stat.wr      += cnt; }
+  void incr_spins( uint64_t cnt = 1 )   { this->stat.spins   += cnt; }
+  void incr_chains( uint64_t cnt = 1 )  { this->stat.chains  += cnt; }
+  void incr_add( uint64_t cnt = 1 )     { this->stat.add     += cnt; }
+  void incr_drop( uint64_t cnt = 1 )    { this->stat.drop    += cnt; }
+  void incr_htevict( uint64_t cnt = 1 ) { this->stat.htevict += cnt; }
+  void incr_afail( uint64_t cnt = 1 )   { this->stat.afail   += cnt; }
+  void incr_hit( uint64_t cnt = 1 )     { this->stat.hit     += cnt; }
+  void incr_miss( uint64_t cnt = 1 )    { this->stat.miss    += cnt; }
+  void incr_cuckacq( uint64_t cnt = 1 ) { this->stat.cuckacq += cnt; }
+  void incr_cuckfet( uint64_t cnt = 1 ) { this->stat.cuckfet += cnt; }
+  void incr_cuckmov( uint64_t cnt = 1 ) { this->stat.cuckmov += cnt; }
+  void incr_cuckbiz( uint64_t cnt = 1 ) { this->stat.cuckbiz += cnt; }
+  void incr_cuckret( uint64_t cnt = 1 ) { this->stat.cuckret += cnt; }
+  void incr_cuckmax( uint64_t cnt = 1 ) { this->stat.cuckmax += cnt; }
+
   uint16_t test( uint16_t fl ) const { return ( this->flags & fl ); }
   void set( uint16_t fl )            { this->flags |= fl; }
   void clear( uint16_t fl )          { this->flags &= ~fl; }
@@ -121,7 +139,10 @@ struct KeyCtx {
     return (uint64_t) 1 << this->seg_align_shift;
   }
   KeyCtx( HashTab &t,  ThrCtx &ctx,  KeyFragment *b = NULL );
+  KeyCtx( HashTab &t,  ThrCtx &ctx,  HashCounters &dbstat,  uint8_t dbn,
+          KeyFragment *b = NULL );
   KeyCtx( HashTab &t,  uint32_t id,  KeyFragment *b = NULL );
+  KeyCtx( KeyCtx &kctx );
   ~KeyCtx() {}
 
   /* placement new to deal with broken c++ new[], for example:
