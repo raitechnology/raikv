@@ -4,6 +4,7 @@
 #include <raikv/util.h>
 #include <raikv/hash_entry.h>
 #include <raikv/work.h>
+#include <raikv/ht_stats.h>
 
 /* also include stdint.h, string.h */
 #ifdef __cplusplus
