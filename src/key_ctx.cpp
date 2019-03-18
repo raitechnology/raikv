@@ -1164,11 +1164,11 @@ KeyCtx::append_vector( uint64_t count,  void *vec,  uint64_t *size )
       this->msg->msg_size = msg_size;
     }
 copy_vector:;
-    for ( i = 0; ; ) {
+    for ( i = 0; ; i++ ) {
       *(uint32_t *) (void *) buf = (uint32_t) size[ i ];
       buf = &buf[ sizeof( msg_size_t ) ];
       ::memcpy( buf, ((void **) vec)[ i ], size[ i ] );
-      if ( ++i == count )
+      if ( i + 1 == count )
         break;
       buf = &buf[ align<uint64_t>( size[ i ], sizeof( msg_size_t ) ) ];
     }
