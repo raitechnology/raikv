@@ -102,7 +102,16 @@ main( int argc, char *argv[] )
   RandContent rfill;
   IncrContent xfill;
   Content   * fill;
-  const char * name = "aes";
+  const char * name =
+#if defined( USE_KV_AES_HASH )
+               "aes";
+#elif defined( USE_KV_MEOW_HASH )
+               "meow";
+#elif defined( USE_KV_SPOOKY_HASH )
+               "spooky";
+#else
+               "murmur";
+#endif
   const uint64_t TEST_COUNT = 10000000;
 
   if ( argc == 1 ) {
@@ -114,6 +123,9 @@ cmd_error:;
 #endif
 #if defined( USE_KV_AES_HASH )
              "aes "
+#endif
+#if defined( USE_KV_MEOW_HASH )
+             "meow "
 #endif
 #if defined( USE_KV_SPOOKY_HASH )
              "spooky "
@@ -143,6 +155,11 @@ cmd_error:;
 #if defined( USE_KV_AES_HASH )
   if ( ::strcmp( name, "aes" ) == 0 )
     func = kv_hash_aes128;
+  else
+#endif
+#if defined( USE_KV_MEOW_HASH )
+  if ( ::strcmp( name, "meow" ) == 0 )
+    func = kv_hash_meow128;
   else
 #endif
 #if defined( USE_KV_SPOOKY_HASH )

@@ -15,6 +15,7 @@ typedef void (* kv_hash128_func_t )( const void *p, size_t sz,
 /*#define USE_KV_CITY_HASH*/
 #define USE_KV_SPOOKY_HASH
 #define USE_KV_AES_HASH
+#define USE_KV_MEOW_HASH
 
 #ifdef USE_KV_MURMUR_HASH
 extern uint64_t kv_hash_murmur64( const void *p, size_t sz, uint64_t seed );
@@ -32,6 +33,10 @@ extern void kv_hash_spooky128( const void *p, size_t sz, uint64_t *h1, uint64_t 
 #ifdef USE_KV_AES_HASH
 extern uint64_t kv_hash_aes64( const void *p, size_t sz, uint64_t seed );
 extern void kv_hash_aes128( const void *p, size_t sz, uint64_t *h1, uint64_t *h2 );
+#endif
+#ifdef USE_KV_MEOW_HASH
+extern uint64_t kv_hash_meow64( const void *p, size_t sz, uint64_t seed );
+extern void kv_hash_meow128( const void *p, size_t sz, uint64_t *h1, uint64_t *h2 );
 #endif
 #ifdef __cplusplus
 } /* extern "C" */

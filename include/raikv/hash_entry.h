@@ -19,8 +19,10 @@ extern "C" {
 /*#define KV_DEFAULT_HASH_STR "citymur128"*/
 /*#define KV_DEFAULT_HASH kv_hash_spooky128*/
 /*#define KV_DEFAULT_HASH_STR "spooky128"*/
-#define KV_DEFAULT_HASH kv_hash_aes128
-#define KV_DEFAULT_HASH_STR "aes128"
+/*#define KV_DEFAULT_HASH kv_hash_aes128*/
+/*#define KV_DEFAULT_HASH_STR "aes128"*/
+#define KV_DEFAULT_HASH kv_hash_meow128
+#define KV_DEFAULT_HASH_STR "meow128"
 #endif
 
 typedef struct kv_key_frag_s {
