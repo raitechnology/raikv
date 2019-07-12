@@ -21,6 +21,7 @@ KeyCtx::KeyCtx( HashTab &t, ThrCtx &ctx, KeyFragment *b )
   , seg_align_shift( t.hdr.seg_align_shift )
   , db_num( ctx.db_num1 )
   , inc( 0 )
+  , msg_chain_size( 0 )
   , drop_flags( 0 )
   , flags( KEYCTX_IS_READ_ONLY )
   , entry( 0 )
@@ -45,6 +46,7 @@ KeyCtx::KeyCtx( HashTab &t, ThrCtx &ctx, HashCounters &dbstat,  uint8_t dbn,
   , seg_align_shift( t.hdr.seg_align_shift )
   , db_num( dbn )
   , inc( 0 )
+  , msg_chain_size( 0 )
   , drop_flags( 0 )
   , flags( KEYCTX_IS_READ_ONLY )
   , entry( 0 )
@@ -68,6 +70,7 @@ KeyCtx::KeyCtx( HashTab &t, uint32_t id, KeyFragment *b )
   , seg_align_shift( t.hdr.seg_align_shift )
   , db_num( t.ctx[ id ].db_num1 )
   , inc( 0 )
+  , msg_chain_size( 0 )
   , drop_flags( 0 )
   , flags( KEYCTX_IS_READ_ONLY )
   , entry( 0 )
@@ -91,6 +94,7 @@ KeyCtx::KeyCtx( KeyCtx &kctx )
   , seg_align_shift( kctx.seg_align_shift )
   , db_num( kctx.db_num )
   , inc( 0 )
+  , msg_chain_size( 0 )
   , drop_flags( 0 )
   , flags( KEYCTX_IS_READ_ONLY )
   , entry( 0 )
@@ -438,8 +442,9 @@ KeyCtx::get_chain_msg( ValueGeom &cgeom )
   void   * p;
   uint8_t  tmp_size;
   /* copy msg data into buffer */
-  if ( (p = this->copy_data( this->ht.seg_data( cgeom.segment, cgeom.offset ),
-                             cgeom.size )) == NULL )
+  p = this->ht.seg_data( cgeom.segment, cgeom.offset );
+  if ( ! this->ht.is_valid_region( p, cgeom.size ) ||
+       (p = this->copy_data( p, cgeom.size )) == NULL )
     return NULL;
   /* check that msg is valid */
   cmsg = (MsgHdr *) p;
@@ -495,15 +500,17 @@ KeyCtx::release_data( void )
           ValueGeom mchain;
           this->msg->get_next( i, mchain, this->seg_align_shift );
           if ( mchain.size != 0 ) {
-            MsgHdr *tmp = (MsgHdr *) this->ht.seg_data( mchain.segment,
-                                                        mchain.offset );
-            uint8_t tmp_size;
-            if ( tmp->check_seal( this->key, this->key2, mchain.serial,
-                                   mchain.size, tmp_size ) ) {
-              Segment &seg = this->ht.segment( mchain.segment );
-              tmp->release();
-              seg.msg_count -= 1;
-              seg.avail_size += mchain.size;
+            void * p = this->ht.seg_data( mchain.segment, mchain.offset );
+            if ( this->ht.is_valid_region( p, mchain.size ) ) {
+              MsgHdr * tmp = (MsgHdr *) p;
+              uint8_t tmp_size;
+              if ( tmp->check_seal( this->key, this->key2, mchain.serial,
+                                     mchain.size, tmp_size ) ) {
+                Segment &seg = this->ht.segment( mchain.segment );
+                tmp->release();
+                seg.msg_count -= 1;
+                seg.avail_size += mchain.size;
+              }
             }
           }
         }
@@ -707,8 +714,9 @@ KeyCtx::alloc( void *res,  uint64_t size,  bool copy )
       el.set_value_geom( this->hash_entry_size, msg_ctx.geom,
                          this->seg_align_shift );
       if ( this->msg_chain_size > 0 && cpp != NULL && cp.msg != NULL ) {
-        MsgCtx::copy_chain( cp.msg, msg_ctx.msg, 0, 0, this->msg_chain_size,
-                            this->seg_align_shift );
+        this->msg_chain_size = MsgCtx::copy_chain( cp.msg, msg_ctx.msg, 0, 0,
+                                                   this->msg_chain_size,
+                                                   this->seg_align_shift );
       }
       else {
         this->msg_chain_size = 0;
