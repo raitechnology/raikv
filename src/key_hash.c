@@ -963,16 +963,16 @@ hash_meow128( const void *p, size_t sz, uint64_t *x1, uint64_t *x2 )
   __m128i S2 = *(__m128i *) MeowS2Init;
   __m128i S3 = *(__m128i *) MeowS3Init;
 
+  const uint8_t * Source = (const uint8_t *) p;
+  size_t          Len    = sz;
+  const uint32_t  Len8   = (uint32_t) Len & 15;
+  const uint32_t  Len128 = (uint32_t) Len & 48;
+
   __m128i Mixer = _mm_set_epi64x(*x2 + sz + 1, *x1 - sz);
   S0 ^= Mixer;
   S1 ^= Mixer;
   S2 ^= Mixer;
   S3 ^= Mixer;
-
-  const uint8_t * Source = (const uint8_t *) p;
-  size_t          Len    = sz;
-  const uint32_t  Len8   = (uint32_t) Len & 15;
-  const uint32_t  Len128 = (uint32_t) Len & 48;
 
   while ( Len >= 64 ) {
     S0 = Meow128_AESDEC_Memx2(S0, Source);
