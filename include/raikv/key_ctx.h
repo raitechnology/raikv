@@ -93,10 +93,9 @@ struct KeyCtx {
   const uint8_t  cuckoo_arity,   /* how many cuckoo hash functions */
                  seg_align_shift; /* alignment of segment data */
   uint8_t        db_num,
-                 inc,        /* which hash function: 0 -> cuckoo_arity */
-                 msg_chain_size,
-                 pad2;
-  uint16_t       drop_flags, /* flags from dropped recycle entry */
+                 inc;        /* which hash function: 0 -> cuckoo_arity */
+  uint16_t       msg_chain_size,
+                 drop_flags, /* flags from dropped recycle entry */
                  flags;      /* KeyCtxFlags */
   HashEntry    * entry;   /* the entry after lookup, may be empty entry if NF*/
   MsgHdr       * msg;     /* the msg header indexed by geom */
@@ -217,14 +216,14 @@ struct KeyCtx {
   bool frag_equals( const HashEntry &el ) const;
   /* use __builtin_prefetch() on hash element using this->start as a base */
   void prefetch( uint64_t cnt = 2 ) const;
-  uint8_t get_type( void ) {
-    return this->entry->value_ctr( this->hash_entry_size ).type;
+  uint8_t get_type( void ) const {
+    return this->entry->type;
   }
   uint8_t get_db( void ) {
-    return this->entry->value_ctr( this->hash_entry_size ).db;
+    return this->entry->db;
   }
-  void set_type( uint8_t type ) {
-    this->entry->value_ctr( this->hash_entry_size ).type = type;
+  void set_type( uint8_t t ) {
+    this->entry->type = t;
   }
   KeyStatus get_size( uint64_t &sz ) {
     if ( this->entry->test( FL_IMMEDIATE_VALUE ) ) {

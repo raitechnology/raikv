@@ -440,7 +440,7 @@ KeyCtx::get_chain_msg( ValueGeom &cgeom )
 {
   MsgHdr * cmsg;
   void   * p;
-  uint8_t  tmp_size;
+  uint16_t tmp_size;
   /* copy msg data into buffer */
   p = this->ht.seg_data( cgeom.segment, cgeom.offset );
   if ( ! this->ht.is_valid_region( p, cgeom.size ) ||
@@ -496,14 +496,14 @@ KeyCtx::release_data( void )
            ( (mstatus = this->attach_msg( ATTACH_WRITE )) != KEY_OK ) )
         return mstatus;
       if ( this->msg_chain_size != 0 ) {
-        for ( uint8_t i = 0; i < this->msg_chain_size; i++ ) {
+        for ( uint16_t i = 0; i < this->msg_chain_size; i++ ) {
           ValueGeom mchain;
           this->msg->get_next( i, mchain, this->seg_align_shift );
           if ( mchain.size != 0 ) {
             void * p = this->ht.seg_data( mchain.segment, mchain.offset );
             if ( this->ht.is_valid_region( p, mchain.size ) ) {
               MsgHdr * tmp = (MsgHdr *) p;
-              uint8_t tmp_size;
+              uint16_t tmp_size;
               if ( tmp->check_seal( this->key, this->key2, mchain.serial,
                                      mchain.size, tmp_size ) ) {
                 Segment &seg = this->ht.segment( mchain.segment );
@@ -591,9 +591,8 @@ KeyCtx::seal_msg( void )
     RelativeStamp & rs = this->entry->rela_stamp( this->hash_entry_size );
     this->msg->rela_stamp().u.stamp = rs.u.stamp;
   }
-  ValueCtr &ctr = this->entry->value_ctr( this->hash_entry_size );
-  this->msg->seal( this->serial, ctr.db, ctr.type, this->entry->flags,
-                   this->msg_chain_size );
+  this->msg->seal( this->serial, this->entry->db, this->entry->type,
+                   this->entry->flags, this->msg_chain_size );
 }
 
 KeyStatus
@@ -1217,7 +1216,7 @@ MsgIter::init( KeyCtx &kctx,  uint64_t idx )
       if ( kctx.msg_chain_size > 0 ) {
         ValueGeom mchain, last_mchain;
         mchain.zero(); last_mchain.zero();
-        for ( uint8_t i = 0; ; i++ ) {
+        for ( uint16_t i = 0; ; i++ ) {
           uint64_t seq;
           last_mchain = mchain;
           if ( i < kctx.msg_chain_size ) {
@@ -1265,13 +1264,13 @@ MsgIter::trim( KeyCtx &kctx,  uint64_t &idx )
         this->msg->msg_size = this->buf_size;
     }
     if ( this->chain_num > 0 ) {
-      for ( uint8_t i = this->chain_num; i < kctx.msg_chain_size; i++ ) {
+      for ( uint16_t i = this->chain_num; i < kctx.msg_chain_size; i++ ) {
         ValueGeom mchain;
         kctx.msg->get_next( i, mchain, kctx.seg_align_shift );
         if ( mchain.size != 0 ) {
           MsgHdr *tmp = (MsgHdr *) kctx.ht.seg_data( mchain.segment,
                                                      mchain.offset );
-          uint8_t tmp_size;
+          uint16_t tmp_size;
           if ( tmp->check_seal( kctx.key, kctx.key2, mchain.serial,
                                  mchain.size, tmp_size ) ) {
             Segment &seg = kctx.ht.segment( mchain.segment );

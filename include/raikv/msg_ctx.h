@@ -18,14 +18,17 @@ struct MsgHdr {
               msg_size; /* data size */
   uint64_t    hash,     /* key hash value */
               hash2;    /* second hash value */
+  uint8_t     db,
+              type;
   uint16_t    flags;    /* where is data, how is it aligned */
   KeyFragment key;      /* all of the key */
 
   /* offset to the data */
   static uint64_t hdr_size( const KeyFragment &kb ) {
-    return align<uint64_t>( sizeof( uint32_t ) * 2 +
-                            sizeof( uint64_t ) * 2 +
-                            sizeof( uint16_t ) +
+    return align<uint64_t>( sizeof( uint32_t ) * 2 + /* size, msg_size */
+                            sizeof( uint64_t ) * 2 + /* hash, hash2 */
+                            sizeof( uint8_t )  * 2 + /* db, type */
+                            sizeof( uint16_t ) +     /* flags */
                             kb.keylen + sizeof( kb.keylen ), 8 );
   }
   uint64_t hdr_size( void ) const {
@@ -33,7 +36,7 @@ struct MsgHdr {
   }
   /* calculate space needed, hdr_size calculated from key above */
   static uint64_t alloc_size( uint32_t hdr_size,  uint64_t size,
-                              uint64_t seg_align,  uint8_t chain_size = 0 ) {
+                              uint64_t seg_align,  uint16_t chain_size = 0 ) {
     const size_t ch_size = (size_t) chain_size * sizeof( ValuePtr );
     return align<uint64_t>( hdr_size + size + ch_size +
                       sizeof( RelativeStamp ) + sizeof( ValueCtr ), seg_align );
@@ -50,17 +53,17 @@ struct MsgHdr {
   }
   /* update serial and set seal, allowing readers to access */
   void seal( uint64_t serial,  uint8_t db,  uint8_t type,  uint16_t flags,
-             uint8_t chain_size ) {
+             uint16_t chain_size ) {
     ValueCtr &ctr = this->value_ctr();
     ctr.set_serial( serial );
     ctr.size    = chain_size;
-    ctr.db      = db;
-    ctr.type    = type;
     ctr.seal    = 1;
+    this->db    = db;
+    this->type  = type;
     this->flags = flags; /* clears FL_BUSY */
   }
   /* update serial and set seal, allowing readers to access */
-  void seal2( uint64_t serial,  uint16_t flags,  uint8_t chain_size ) {
+  void seal2( uint64_t serial,  uint16_t flags,  uint16_t chain_size ) {
     ValueCtr &ctr = this->value_ctr();
     ctr.set_serial( serial );
     ctr.size    = chain_size;
@@ -69,7 +72,7 @@ struct MsgHdr {
   }
   /* check that the message has same serial as hash_entry and is not unsealed */
   bool check_seal( uint64_t h,  uint64_t h2,  uint64_t serial,
-                   uint32_t sz,  uint8_t &chain_size ) volatile {
+                   uint32_t sz,  uint16_t &chain_size ) volatile {
     const bool hdr_sealed = ( this->size == sz ) &
                             ( this->hash == h ) &
                             ( this->hash2 == h2 ) &
@@ -88,7 +91,7 @@ struct MsgHdr {
     return false;
   }
   bool check_seal_msg_list( uint64_t h,  uint64_t h2,  uint64_t &serial,
-                            uint32_t sz,  uint8_t &chain_size ) volatile {
+                            uint32_t sz,  uint16_t &chain_size ) volatile {
     const bool hdr_sealed = ( this->size == sz ) &
                             ( this->hash == h ) &
                             ( this->hash2 == h2 ) &
@@ -115,6 +118,8 @@ struct MsgHdr {
     this->msg_size = msz;
     this->hash     = h;
     this->hash2    = h2;
+    this->db       = 0;
+    this->type     = 0;
     this->flags    = fl;
     this->unseal();
   }
@@ -311,7 +316,7 @@ struct MsgCtx {
 
   void prefetch_segment( uint64_t size );
 
-  KeyStatus alloc_segment( void *res,  uint64_t size,  uint8_t chain_size );
+  KeyStatus alloc_segment( void *res,  uint64_t size,  uint16_t chain_size );
 
   void nevermind( void );
 

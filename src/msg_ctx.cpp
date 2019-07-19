@@ -192,7 +192,7 @@ struct GCRunCtx {
             mv_kctx.entry->get_value_geom( this->hash_entry_size,
                                            mv_kctx.geom, this->algn_shft );
             uint8_t  do_mv_msg      = 0;
-            uint8_t  msg_chain_size = 0;
+            uint16_t msg_chain_size = 0;
             uint64_t msg_serial     = mv_kctx.geom.serial;
             if ( msgptr.check_seal( mv_hash, mv_hash2, msg_serial,
                                     msgsize, msg_chain_size ) &&
@@ -247,11 +247,11 @@ struct GCRunCtx {
               if ( seg_is_locked ) {
                 MsgHdr &ref_msg = *(MsgHdr *) (void *)
                                   &refseg[ mv_kctx.geom.offset ];
-                uint8_t ref_chains;
+                uint16_t ref_chains;
                 if ( ref_msg.check_seal( mv_hash, mv_hash2, mv_kctx.geom.serial,
                                          mv_kctx.geom.size, ref_chains ) ) {
                   if ( ref_chains >= msg_chain_size + 1 ) {
-                    uint8_t k = ref_chains - ( msg_chain_size + 1 );
+                    uint16_t k = ref_chains - ( msg_chain_size + 1 );
                     ValueGeom ref_geom;
                     /* unsealing ref_msg may not matter if reader has a copy
                      * already, it may find the chained msg is mutated and then
@@ -346,7 +346,7 @@ struct GCRunCtx {
 };
 
 KeyStatus
-MsgCtx::alloc_segment( void *res,  uint64_t size,  uint8_t chain_size )
+MsgCtx::alloc_segment( void *res,  uint64_t size,  uint16_t chain_size )
 {
   const uint32_t   hdr_size  = MsgHdr::hdr_size( *this->kbuf ),
                    algn_shft = this->ht.hdr.seg_align_shift;

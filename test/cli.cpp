@@ -108,9 +108,9 @@ fix_locks( void )
         status = mcs.recover_lock( el->hash, ZOMBIE64, mcs_id, closure );
         if ( status == MCS_OK ) {
           ValueCtr &ctr = el->value_ctr( hash_entry_size );
-          if ( ctr.seal == 0 || el->seal != ctr.seriallo ) {
+          if ( ctr.seal == 0 || el->ser != (uint16_t) ctr.seriallo ) {
             ctr.seal = 1; /* these are lost with the context thread */
-            el->seal = ctr.seriallo;
+            el->ser = (uint16_t) ctr.seriallo;
           }
           status = mcs.recover_unlock( el->hash, ZOMBIE64, mcs_id, closure );
           if ( status == MCS_OK ) {
@@ -479,35 +479,30 @@ flags_string( uint16_t fl,  uint8_t type,  char *buf )
   if ( type != 0 ) {
     buf = copy_fl( buf, "," );
     switch ( type ) {
-      default: buf = copy_fl( buf, "MD_NODATA" );    break;
-      case 1:  buf = copy_fl( buf, "MD_MESSAGE" );   break;
-      case 2:  buf = copy_fl( buf, "MD_STRING" );    break;
-      case 3:  buf = copy_fl( buf, "MD_OPAQUE" );    break;
-      case 4:  buf = copy_fl( buf, "MD_BOOLEAN" );   break;
-      case 5:  buf = copy_fl( buf, "MD_INT" );       break;
-      case 6:  buf = copy_fl( buf, "MD_UINT" );      break;
-      case 7:  buf = copy_fl( buf, "MD_REAL" );      break;
-      case 8:  buf = copy_fl( buf, "MD_ARRAY" );     break;
-      case 9:  buf = copy_fl( buf, "MD_PARTIAL" );   break;
-      case 10: buf = copy_fl( buf, "MD_IPDATA" );    break;
-      case 11: buf = copy_fl( buf, "MD_SUBJECT" );   break;
-      case 12: buf = copy_fl( buf, "MD_ENUM" );      break;
-      case 13: buf = copy_fl( buf, "MD_TIME" );      break;
-      case 14: buf = copy_fl( buf, "MD_DATE" );      break;
-      case 15: buf = copy_fl( buf, "MD_DATETIME" );  break;
-      case 16: buf = copy_fl( buf, "MD_STAMP" );     break;
-      case 17: buf = copy_fl( buf, "MD_DECIMAL" );   break;
-      case 18: buf = copy_fl( buf, "MD_LIST" );      break;
-      case 19: buf = copy_fl( buf, "MD_HASH" );      break;
-      case 20: buf = copy_fl( buf, "MD_SET" );       break;
-      case 21: buf = copy_fl( buf, "MD_SORTEDSET" ); break;
-      case 22: buf = copy_fl( buf, "MD_STREAM" );    break;
-      case 23: buf = copy_fl( buf, "MD_GEO" );       break;
-      case 24: buf = copy_fl( buf, "MD_HYPERLOGLOG");break;
-      case 25: buf = copy_fl( buf, "MD_PUBSUB" );    break;
-      case 26: buf = copy_fl( buf, "MD_SCRIPT" );    break;
-      case 27: buf = copy_fl( buf, "MD_SERVER" );    break;
-      case 28: buf = copy_fl( buf, "MD_TRANSACTION");break;
+      default: buf = copy_fl( buf, "MD_NODATA" );      break;
+      case 1:  buf = copy_fl( buf, "MD_MESSAGE" );     break;
+      case 2:  buf = copy_fl( buf, "MD_STRING" );      break;
+      case 3:  buf = copy_fl( buf, "MD_OPAQUE" );      break;
+      case 4:  buf = copy_fl( buf, "MD_BOOLEAN" );     break;
+      case 5:  buf = copy_fl( buf, "MD_INT" );         break;
+      case 6:  buf = copy_fl( buf, "MD_UINT" );        break;
+      case 7:  buf = copy_fl( buf, "MD_REAL" );        break;
+      case 8:  buf = copy_fl( buf, "MD_ARRAY" );       break;
+      case 9:  buf = copy_fl( buf, "MD_PARTIAL" );     break;
+      case 10: buf = copy_fl( buf, "MD_IPDATA" );      break;
+      case 11: buf = copy_fl( buf, "MD_SUBJECT" );     break;
+      case 12: buf = copy_fl( buf, "MD_ENUM" );        break;
+      case 13: buf = copy_fl( buf, "MD_TIME" );        break;
+      case 14: buf = copy_fl( buf, "MD_DATE" );        break;
+      case 15: buf = copy_fl( buf, "MD_DATETIME" );    break;
+      case 16: buf = copy_fl( buf, "MD_STAMP" );       break;
+      case 17: buf = copy_fl( buf, "MD_DECIMAL" );     break;
+      case 18: buf = copy_fl( buf, "MD_LIST" );        break;
+      case 19: buf = copy_fl( buf, "MD_HASH" );        break;
+      case 20: buf = copy_fl( buf, "MD_SET" );         break;
+      case 21: buf = copy_fl( buf, "MD_ZSET" );        break;
+      case 22: buf = copy_fl( buf, "MD_GEO" );         break;
+      case 23: buf = copy_fl( buf, "MD_HYPERLOGLOG" ); break;
     }
   }
   *buf = '\0';
@@ -969,6 +964,7 @@ cli( void )
           /*map->hdr.current_stamp = kctx.update_ns;*/
           if ( cmd_char == 'p' || cmd_char == 's' ) {
             if ( (status = kctx.resize( &ptr, sz )) == KEY_OK ) {
+              kctx.set_type( 2 );
               ::memcpy( ptr, data, sz );
               status = print_key_data( kctx, "put", sz );
               if ( do_verbose )

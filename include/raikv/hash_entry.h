@@ -147,12 +147,10 @@ struct ValuePtr { /* packed 128 bit pointer with seg & off & size & serial */
 };
 
 struct ValueCtr { /* packed 64 bit immediate size & serial & seal */
-  static const uint64_t SERIAL_MASK = ( (uint64_t) 1 << 42 ) - 1;
-  uint32_t size     : 8, /* size of immediate or number of values */
-           db       : 8,  /* db number */
-           type     : 5,  /* object type */
+  static const uint64_t SERIAL_MASK = ( (uint64_t) 1 << 48 ) - 1;
+  uint32_t size     : 15, /* size of immediate or number of values */
            seal     : 1,  /* seal check, data is valid */
-           serialhi : 10, /* update serial */
+           serialhi : 16, /* update serial */
            seriallo;
 
   uint64_t get_serial( void ) const {
@@ -172,7 +170,9 @@ struct ValueCtr { /* packed 64 bit immediate size & serial & seal */
     ------------+---------------------+----------
      Header     |  8b = hash          |  0 ->  8   Always present
                 |  8b = hash2         |  8 -> 16       "
-                |  4b = seal          | 16 -> 20       "
+                |  2b = ser           | 16 -> 18       "
+                |  1b = db            | 18 -> 19       "
+                |  1b = type          | 19 -> 20       "
                 |  2b = flags         | 20 -> 22       "
                 |  2b = key len       | 22 -> 24       "
                 |  8b = key part      | 24 -> 32   (Optional)
@@ -192,7 +192,9 @@ struct ValueCtr { /* packed 64 bit immediate size & serial & seal */
     ------------+---------------------+----------
      Header     |  8b = hash          |  0 ->  8   Always present
                 |  8b = hash2         |  8 -> 16       "
-                |  4b = seal          | 16 -> 20       "
+                |  2b = ser           | 16 -> 18       "
+                |  1b = db            | 18 -> 19       "
+                |  1b = type          | 19 -> 20       "
                 |  2b = flags         | 20 -> 22       "
                 |  2b = key len       | 22 -> 24       "
                 |  8b = key part      | 24 -> 32   (Optional if key material
@@ -207,7 +209,9 @@ struct ValueCtr { /* packed 64 bit immediate size & serial & seal */
 struct HashEntry {
   AtomUInt64  hash;   /* the lock and the hash value */
   uint64_t    hash2;  /* more hash (64 -> 128 bit) */
-  uint32_t    seal;   /* matches the serial number at the end of struct */
+  uint16_t    ser;    /* matches the serial number at the end of struct */
+  uint8_t     db,
+              type;
   uint16_t    flags;  /* KeyValueFlags, where is data, alignment */
   KeyFragment key;    /* key, or just the prefix of the key */
 
@@ -223,7 +227,9 @@ struct HashEntry {
   static uint32_t hdr_size_part( void ) { /* 24 */
     return sizeof( AtomUInt64 ) + /* hash */
            sizeof( uint64_t )   + /* hash2 */
-           sizeof( uint32_t )   + /* seal */
+           sizeof( uint16_t )   + /* ser */
+           sizeof( uint8_t  )   + /* db */
+           sizeof( uint8_t  )   + /* type */
            sizeof( uint16_t )   + /* flags */
            sizeof( uint16_t );    /* keylen */
   }
@@ -240,22 +246,22 @@ struct HashEntry {
   void set( uint32_t fl )            { this->flags |= fl; }
   uint32_t test( uint32_t fl ) const { return this->flags & fl; }
   uint64_t unseal_entry( uint32_t hash_entry_size ) {
-    this->seal = 0;
+    this->ser -= 1;
     ValueCtr &ctr = this->value_ctr( hash_entry_size );
     ctr.seal = 0;
     return ctr.get_serial();
   }
   void seal_entry( uint32_t hash_entry_size,  uint64_t serial,  uint8_t db ) {
     ValueCtr &ctr = this->value_ctr( hash_entry_size );
+    this->db = db;
     ctr.set_serial( serial );
-    ctr.db   = db;
     ctr.seal = 1;
-    this->seal = (uint32_t) serial;
+    this->ser = (uint16_t) serial;
   }
   bool check_seal( uint32_t hash_entry_size ) {
     const ValueCtr &ctr = this->value_ctr( hash_entry_size );
     return ( ctr.seal == 1 ) &
-           ( ctr.seriallo == this->seal );
+           ( (uint16_t) ctr.seriallo == this->ser );
   }
   uint8_t cuckoo_inc( void ) const {
     return this->test( FL_CUCKOO_INC ) >> FL_CUCKOO_SHIFT;

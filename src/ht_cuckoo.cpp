@@ -528,7 +528,7 @@ KeyCtx::try_acquire_position( const uint64_t i )
     if ( ! this->test( KEYCTX_IS_CUCKOO_ACQUIRE ) )
       this->incr_write();
     else
-      this->db_num = el->value_ctr( this->hash_entry_size ).db;
+      this->db_num = el->db;
     if ( el->test( FL_DROPPED ) ) {
       this->drop_key   = h;
       this->drop_key2  = el->hash2;
