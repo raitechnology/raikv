@@ -121,10 +121,8 @@ check_thread_ctx( HashTab &map )
           status = mcs.recover_lock( el->hash, ZOMBIE64, mcs_id, closure );
           if ( status == MCS_OK ) {
             ValueCtr &ctr = el->value_ctr( hash_entry_size );
-            if ( ctr.seal == 0 || el->ser != (uint16_t) ctr.seriallo ) {
+            if ( ctr.seal == 0 )
               ctr.seal = 1; /* these are lost with the context thread */
-              el->ser = (uint16_t) ctr.seriallo;
-            }
             status = mcs.recover_unlock( el->hash, ZOMBIE64, mcs_id, closure );
             if ( status == MCS_OK ) {
               printf( "mcs_id %u:%u recovered\n", ctx_id, id );

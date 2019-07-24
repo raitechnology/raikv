@@ -185,15 +185,18 @@ struct KeyCtx {
     else
       this->serial++;
   }
+  /* increment a bunch of serials, when several messages are appended */
   void more_serial( uint64_t count,  uint64_t serial_mask ) {
     if ( this->lock == 0 ) /* new entry, init to key */
       this->serial = ( this->key + count - 1 ) & serial_mask;
     else
       this->serial += count;
   }
+  /* the total serial offset from origin */
   uint64_t get_serial_count( uint64_t serial_mask ) const {
     return ( this->serial - this->key ) & serial_mask;
   }
+  /* set the next serial and return it */
   uint64_t get_next_serial( uint64_t serial_mask ) {
     this->next_serial( serial_mask );
     return this->get_serial_count( serial_mask );
@@ -216,15 +219,27 @@ struct KeyCtx {
   bool frag_equals( const HashEntry &el ) const;
   /* use __builtin_prefetch() on hash element using this->start as a base */
   void prefetch( uint64_t cnt = 2 ) const;
+  /* type indicates the data type of the value */
   uint8_t get_type( void ) const {
     return this->entry->type;
   }
+  /* val is a memcached like external value */
+  uint16_t get_val( void ) const {
+    return this->entry->val;
+  }
+  /* the entry is tagged with the db it belongs to */
   uint8_t get_db( void ) {
     return this->entry->db;
   }
+  /* set the value type */
   void set_type( uint8_t t ) {
     this->entry->type = t;
   }
+  /* set the external memcached value (a application serial or a type) */
+  void set_val( uint16_t v ) {
+    this->entry->val = v;
+  }
+  /* size of the value */
   KeyStatus get_size( uint64_t &sz ) {
     if ( this->entry->test( FL_IMMEDIATE_VALUE ) ) {
       sz = this->entry->value_ctr( this->hash_entry_size ).size;
@@ -234,8 +249,11 @@ struct KeyCtx {
       return this->get_msg_size( sz );
     return KEY_NO_VALUE;
   }
+  /* if in a segment, this is the size */
   KeyStatus get_msg_size( uint64_t &sz );
-  bool is_msg_valid( void ); /* check that msg data is still valid */
+  /* check that msg data is still valid for speculative reads */
+  bool is_msg_valid( void );
+  /* whether message data was updated during a read */
   KeyStatus validate_value( void ) {
     return ( this->msg == NULL || this->is_msg_valid() ) ? KEY_OK : KEY_MUTATED;
   }

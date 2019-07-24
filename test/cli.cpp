@@ -108,9 +108,8 @@ fix_locks( void )
         status = mcs.recover_lock( el->hash, ZOMBIE64, mcs_id, closure );
         if ( status == MCS_OK ) {
           ValueCtr &ctr = el->value_ctr( hash_entry_size );
-          if ( ctr.seal == 0 || el->ser != (uint16_t) ctr.seriallo ) {
+          if ( ctr.seal == 0 ) {
             ctr.seal = 1; /* these are lost with the context thread */
-            el->ser = (uint16_t) ctr.seriallo;
           }
           status = mcs.recover_unlock( el->hash, ZOMBIE64, mcs_id, closure );
           if ( status == MCS_OK ) {
@@ -703,8 +702,8 @@ print_key_data( KeyCtx &kctx,  const char *what,  uint64_t sz )
     seq = kctx.entry->seqno( kctx.hash_entry_size );
     xprintf( 0, ",%lu", seq );
   }
-  xprintf( 0, ":db=%u:inc=%u:sz=%lu%s%s] (%s",
-      kctx.get_db(), kctx.inc,
+  xprintf( 0, ":db=%u:val=%u:inc=%u:sz=%lu%s%s] (%s",
+      kctx.get_db(), kctx.get_val(), kctx.inc,
       sz, upd, exp, flags_string( kctx.entry->flags, kctx.get_type(), fl ) );
   if ( kctx.msg != NULL ) {
     ValueGeom &geom = kctx.geom;
@@ -1198,11 +1197,11 @@ cli( void )
                     ::strcpy( key, kv_key_status_string( status ) );
                   sprintf_stamps( kctx, upd, exp );
                   xprintf( 0,
-                       "[%lu]+%u.%lu %s (%s db=%u:seg=%u:sz=%lu:off=%lu%s%s)\n",
+                "[%lu]+%u.%lu %s (%s db=%u:val=%u:seg=%u:sz=%lu:off=%lu%s%s)\n",
                        kld.pos, kctx.inc, pos_off, key,
                        flags_string( kctx.entry->flags, kctx.get_type(), fl ),
-                       kctx.get_db(), geom.segment, geom.size, geom.offset,
-                       upd, exp );
+                       kctx.get_db(), kctx.get_val(), geom.segment, geom.size,
+                       geom.offset, upd, exp );
                   print_count++;
                 }
                 kld.seg_values++;
@@ -1218,10 +1217,10 @@ cli( void )
                   else
                     ::strcpy( key, kv_key_status_string( status ) );
                   sprintf_stamps( kctx, upd, exp );
-                  xprintf( 0, "[%lu]+%u.%lu %s (%s db=%u %s%s)\n",
+                  xprintf( 0, "[%lu]+%u.%lu %s (%s db=%u val=%u %s%s)\n",
                            kld.pos, kctx.inc, pos_off, key,
                       flags_string( kctx.entry->flags, kctx.get_type(), fl ),
-                      kctx.get_db(), upd, exp );
+                      kctx.get_db(), kctx.get_val(), upd, exp );
                   print_count++;
                 }
               }

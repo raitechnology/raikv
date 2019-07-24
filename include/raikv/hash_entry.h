@@ -170,7 +170,7 @@ struct ValueCtr { /* packed 64 bit immediate size & serial & seal */
     ------------+---------------------+----------
      Header     |  8b = hash          |  0 ->  8   Always present
                 |  8b = hash2         |  8 -> 16       "
-                |  2b = ser           | 16 -> 18       "
+                |  2b = val           | 16 -> 18       "
                 |  1b = db            | 18 -> 19       "
                 |  1b = type          | 19 -> 20       "
                 |  2b = flags         | 20 -> 22       "
@@ -192,7 +192,7 @@ struct ValueCtr { /* packed 64 bit immediate size & serial & seal */
     ------------+---------------------+----------
      Header     |  8b = hash          |  0 ->  8   Always present
                 |  8b = hash2         |  8 -> 16       "
-                |  2b = ser           | 16 -> 18       "
+                |  2b = val           | 16 -> 18       "
                 |  1b = db            | 18 -> 19       "
                 |  1b = type          | 19 -> 20       "
                 |  2b = flags         | 20 -> 22       "
@@ -209,9 +209,9 @@ struct ValueCtr { /* packed 64 bit immediate size & serial & seal */
 struct HashEntry {
   AtomUInt64  hash;   /* the lock and the hash value */
   uint64_t    hash2;  /* more hash (64 -> 128 bit) */
-  uint16_t    ser;    /* matches the serial number at the end of struct */
-  uint8_t     db,
-              type;
+  uint16_t    val;    /* extra value, for memcached external flags */
+  uint8_t     db,     /* which db entry belongs to */
+              type;   /* the type assigned to the object value */
   uint16_t    flags;  /* KeyValueFlags, where is data, alignment */
   KeyFragment key;    /* key, or just the prefix of the key */
 
@@ -227,7 +227,7 @@ struct HashEntry {
   static uint32_t hdr_size_part( void ) { /* 24 */
     return sizeof( AtomUInt64 ) + /* hash */
            sizeof( uint64_t )   + /* hash2 */
-           sizeof( uint16_t )   + /* ser */
+           sizeof( uint16_t )   + /* val */
            sizeof( uint8_t  )   + /* db */
            sizeof( uint8_t  )   + /* type */
            sizeof( uint16_t )   + /* flags */
@@ -246,7 +246,6 @@ struct HashEntry {
   void set( uint32_t fl )            { this->flags |= fl; }
   uint32_t test( uint32_t fl ) const { return this->flags & fl; }
   uint64_t unseal_entry( uint32_t hash_entry_size ) {
-    this->ser -= 1;
     ValueCtr &ctr = this->value_ctr( hash_entry_size );
     ctr.seal = 0;
     return ctr.get_serial();
@@ -256,12 +255,10 @@ struct HashEntry {
     this->db = db;
     ctr.set_serial( serial );
     ctr.seal = 1;
-    this->ser = (uint16_t) serial;
   }
   bool check_seal( uint32_t hash_entry_size ) {
     const ValueCtr &ctr = this->value_ctr( hash_entry_size );
-    return ( ctr.seal == 1 ) &
-           ( (uint16_t) ctr.seriallo == this->ser );
+    return ctr.seal == 1;
   }
   uint8_t cuckoo_inc( void ) const {
     return this->test( FL_CUCKOO_INC ) >> FL_CUCKOO_SHIFT;
