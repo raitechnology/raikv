@@ -51,7 +51,8 @@ SignalHandler sighndl;
 
 void
 test_one( HashTab &map,  uint8_t db,  uint32_t ctx_id,  kv_hash128_func_t func,
-          uint64_t test_count,  bool use_find,  bool use_single )
+          uint64_t test_count,  bool use_find,  bool use_single,
+          bool one_iter )
 {
   HashDeltaCounters stats;
   HashCounters ops, tot;
@@ -95,13 +96,15 @@ test_one( HashTab &map,  uint8_t db,  uint32_t ctx_id,  kv_hash128_func_t func,
       if ( map.sum_ht_thr_delta( stats, ops, tot, ctx_id ) > 0 )
         print_ops( map, ops, ival );
     }
+    if ( one_iter )
+      return;
   }
 }
 
 void
 test_rand( HashTab &map,  uint8_t db,  uint32_t ctx_id,  kv_hash128_func_t func,
            uint64_t test_count,  bool /*use_find*/,  uint32_t prefetch,
-           bool use_single )
+           bool use_single,  bool one_iter )
 {
   HashDeltaCounters stats;
   HashCounters ops, tot;
@@ -149,7 +152,7 @@ test_rand( HashTab &map,  uint8_t db,  uint32_t ctx_id,  kv_hash128_func_t func,
       for ( i = 0; i < test_count; i += stride ) {
         for ( j = 0; j < stride; j++ ) {
           kctx[ j ].set_key_hash( key[ j ] );
-          kctx[ j ].prefetch( 2 );
+          kctx[ j ].prefetch( 1 );
           if ( use_single )
             kctx[ j ].set( KEYCTX_IS_SINGLE_THREAD );
         }
@@ -181,13 +184,15 @@ test_rand( HashTab &map,  uint8_t db,  uint32_t ctx_id,  kv_hash128_func_t func,
       if ( map.sum_ht_thr_delta( stats, ops, tot, ctx_id ) > 0 )
         print_ops( map, ops, ival );
     }
+    if ( one_iter )
+      return;
   }
 }
 
 void
 test_incr( HashTab &map,  uint8_t db,  uint32_t ctx_id,  kv_hash128_func_t func,
            uint64_t test_count,  bool use_find,  uint32_t prefetch,
-           bool use_single )
+           bool use_single,  bool one_iter )
 {
   HashDeltaCounters stats;
   HashCounters ops, tot;
@@ -235,7 +240,7 @@ test_incr( HashTab &map,  uint8_t db,  uint32_t ctx_id,  kv_hash128_func_t func,
         }
         for ( j = 0; j < stride; j++ ) {
           kctx[ j ].set_key_hash( kbar[ j ] );
-          kctx[ j ].prefetch( 2 );
+          kctx[ j ].prefetch( 1 );
           if ( use_single )
             kctx[ j ].set( KEYCTX_IS_SINGLE_THREAD );
         }
@@ -280,13 +285,15 @@ test_incr( HashTab &map,  uint8_t db,  uint32_t ctx_id,  kv_hash128_func_t func,
       if ( map.sum_ht_thr_delta( stats, ops, tot, ctx_id ) > 0 )
         print_ops( map, ops, ival );
     }
+    if ( one_iter )
+      return;
   }
 }
 
 void
 test_int( HashTab &map,  uint8_t db,  uint32_t ctx_id,  kv_hash128_func_t func,
           uint64_t test_count,  bool use_find,  uint32_t prefetch,
-          bool use_single )
+          bool use_single,  bool one_iter )
 {
   HashDeltaCounters stats;
   HashCounters ops, tot;
@@ -338,7 +345,7 @@ test_int( HashTab &map,  uint8_t db,  uint32_t ctx_id,  kv_hash128_func_t func,
         for ( j = 0; j < stride; j++ ) {
           kbar[ j ].set( i + j );
           kctx[ j ].set_key_hash( kbar[ j ] );
-          kctx[ j ].prefetch( 2 );
+          kctx[ j ].prefetch( 1 );
           if ( use_single )
             kctx[ j ].set( KEYCTX_IS_SINGLE_THREAD );
         }
@@ -382,14 +389,14 @@ test_int( HashTab &map,  uint8_t db,  uint32_t ctx_id,  kv_hash128_func_t func,
       if ( map.sum_ht_thr_delta( stats, ops, tot, ctx_id ) > 0 )
         print_ops( map, ops, ival );
     }
+    if ( one_iter )
+      return;
   }
 }
 
 static const char *
-get_arg( int argc, char *argv[], int n, int b, const char *f, const char *def )
+get_arg( int argc, char *argv[], int b, const char *f, const char *def )
 {
-  if ( n > 0 && argc > n && argv[ 1 ][ 0 ] != '-' )
-    return argv[ n ];
   for ( int i = 1; i < argc - b; i++ )
     if ( ::strcmp( f, argv[ i ] ) == 0 )
       return argv[ i + b ];
@@ -406,25 +413,28 @@ main( int argc, char *argv[] )
   uint8_t       db_num;
 
   /* [sysv2m:shm.test] [int] [50] [1] [ins] [0] [0] */
-  const char * mn = get_arg( argc, argv, 1, 1, "-m", "sysv2m:shm.test" ),
-             * te = get_arg( argc, argv, 2, 1, "-t", "int" ),
-             * pc = get_arg( argc, argv, 3, 1, "-p", "50" ),
-             * fe = get_arg( argc, argv, 4, 1, "-f", "1" ),
-             * op = get_arg( argc, argv, 5, 1, "-o", "ins" ),
-             * si = get_arg( argc, argv, 6, 1, "-s", "0" ),
-             * db = get_arg( argc, argv, 7, 1, "-d", "0" ),
-             * he = get_arg( argc, argv, 0, 0, "-h", 0 );
+  const char * mn = get_arg( argc, argv, 1, "-m", "sysv2m:shm.test" ),
+             * te = get_arg( argc, argv, 1, "-t", "int" ),
+             * pc = get_arg( argc, argv, 1, "-p", "50" ),
+             * fe = get_arg( argc, argv, 1, "-f", "1" ),
+             * op = get_arg( argc, argv, 1, "-o", "ins" ),
+             * _1 = get_arg( argc, argv, 0, "-1", 0 ),
+             * si = get_arg( argc, argv, 1, "-s", "0" ),
+             * db = get_arg( argc, argv, 1, "-d", "0" ),
+             * he = get_arg( argc, argv, 0, "-h", 0 );
 
   if ( he != NULL ) {
   cmd_error:;
     fprintf( stderr, "raikv version: %s\n", kv_stringify( KV_VER ) );
     fprintf( stderr,
-"%s [-m map] [-t test] [-p pct] [-f prefetch] [-o oper] [-s sin] [-d db-num]\n"
+  "%s [-m map] [-t test] [-p pct] [-f prefetch] [-o oper] "
+     "[-1] [-s sin] [-d db-num]\n"
   "  map            = name of map file (prefix w/ file:, sysv:, posix:)\n"
   "  test           = test kind: one, int, rand, incr (def: int)\n"
   "  pct            = percent coverage of total hash entries (def: 50%%)\n"
   "  prefetch       = number of prefetches to perform (def: 1)\n"
   "  oper           = find or insert (def: ins)\n"
+  "  -1             = one iteration (def: continue forever)\n"
   "  sin            = single thread, no locking (def: 0)\n"
   "  db-num         = database number to use (def: 0)\n", argv[ 0 ] );
     return 1;
@@ -454,28 +464,30 @@ main( int argc, char *argv[] )
     ( ( (double) map->hdr.ht_size * load_pct ) / 100.0 ) & ~(uint64_t) 15;
   const bool use_find    = ::strncmp( op, "find", 4 ) == 0;
   const bool use_single  = si[ 0 ] != '0';
+  const bool one_iter    = _1 != NULL;
 
   printf( "test: %s\n", te );
   printf( "elem count: %lu\n", test_count );
   printf( "prefetch: %u\n", prefetch );
   printf( "use find: %s\n", use_find ? "yes" : "no" );
   printf( "use single: %s\n", use_single ? "yes" : "no" );
+  printf( "one iter: %s\n", one_iter ? "yes" : "no" );
 
   if ( ::strcmp( te, "one" ) == 0 ) {
     test_one( *map, db_num, ctx_id, func, test_count, use_find,
-              use_single );
+              use_single, one_iter );
   }
   else if ( ::strcmp( te, "rand" ) == 0 ) {
     test_rand( *map, db_num, ctx_id, func, test_count, use_find,
-               prefetch, use_single );
+               prefetch, use_single, one_iter );
   }
   else if ( ::strcmp( te, "incr" ) == 0 ) {
     test_incr( *map, db_num, ctx_id, func, test_count, use_find,
-               prefetch, use_single );
+               prefetch, use_single, one_iter );
   }
   else if ( ::strcmp( te, "int" ) == 0 ) {
     test_int( *map, db_num, ctx_id, func, test_count, use_find,
-               prefetch, use_single );
+               prefetch, use_single, one_iter );
   }
   printf( "bye\n" );
   map->detach_ctx( ctx_id );

@@ -30,6 +30,19 @@ static int xprintf( FILE *out,  const char *format, ... )
   __attribute__((format(printf,2,3)));
 
 static int
+xputs( FILE *out,  const char *s )
+{
+  FILE *o1 = out,
+       *o2 = ( ( out == NULL && ! quiet ) ? stdout : NULL );
+  int sz = 0;
+  if ( o1 != NULL )
+    sz = fputs( s, o1 );
+  if ( o2 != NULL )
+    sz = fputs( s, o2 );
+  return sz;
+}
+
+static int
 xprintf( FILE *out,  const char *format, ... )
 {
   FILE *o1 = out,
@@ -158,7 +171,7 @@ print_stats( uint32_t c )
         stat.cuckfet, stat.cuckmov, stat.cuckbiz, stat.cuckret, stat.cuckmax );
   }
   else {
-    xprintf( 0, "No ctx_id\n" );
+    xputs( 0, "No ctx_id\n" );
   }
 }
 
@@ -184,7 +197,7 @@ print_seg( uint32_t s )
   char key[ 8192 ];
   print_mem( s );
   uint64_t off = 0, seg_size = map->hdr.seg_size();
-  xprintf( 0, "  " );
+  xputs( 0, "  " );
   for ( MsgHdr *msg = (MsgHdr *) map->seg_data( s, off ); ; ) {
     if ( msg->size == 0 )
       break;
@@ -208,7 +221,7 @@ print_seg( uint32_t s )
   if ( dead_size > 0 ) {
     xprintf( 0, "[dead %lu] ", dead_size );
   }
-  xprintf( 0, "\n" );
+  xputs( 0, "\n" );
 }
 
 static void
@@ -747,14 +760,14 @@ dump_key_data( KeyCtx &kctx )
   HexDump hex;
   for ( off = 0; off < size; ) {
     if ( i == 6 && kctx.entry->test( FL_SEGMENT_VALUE ) != 0 ) 
-      xprintf( 0, seglay[ 1 ] );
+      xputs( 0, seglay[ 1 ] );
     else
-      xprintf( 0, layout[ i ] );
+      xputs( 0, layout[ i ] );
     i++;
     if ( i == 5 && kctx.entry->test( FL_SEGMENT_VALUE ) != 0 ) 
-      xprintf( 0, seglay[ 0 ] );
+      xputs( 0, seglay[ 0 ] );
     else
-      xprintf( 0, layout[ i ] );
+      xputs( 0, layout[ i ] );
     i++;
     off = hex.fill_line( ptr, off, size );
     xprintf( 0, "%s\n", hex.line );
@@ -765,15 +778,15 @@ dump_key_data( KeyCtx &kctx )
     size = kctx.msg->size;
     i    = 0;
     hex.reset();
-    xprintf( 0, "-- Msg --\n" );
+    xputs( 0, "-- Msg --\n" );
     for ( off = 0; off < size; ) {
       if ( i < 4 ) {
-        xprintf( 0, msghdr[ i++ ] );
-        xprintf( 0, msghdr[ i++ ] );
+        xputs( 0, msghdr[ i++ ] );
+        xputs( 0, msghdr[ i++ ] );
       }
       else if ( off + 16 >= size ) {
-        xprintf( 0, msgtail[ 0 ] );
-        xprintf( 0, msgtail[ 1 ] );
+        xputs( 0, msgtail[ 0 ] );
+        xputs( 0, msgtail[ 1 ] );
       }
       off = hex.fill_line( ptr, off, size );
       xprintf( 0, "%s\n", hex.line );
