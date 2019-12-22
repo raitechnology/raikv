@@ -137,8 +137,12 @@ struct FileHdr {
     uint64_t set     = (uint64_t) 1 << ( id & 63 ),
              old_val = ptr,
              new_val = old_val | set;
-    if ( ( old_val & set ) == 0 )
-      return kv_sync_cmpxchg( &ptr, old_val, new_val );
+    if ( ( old_val & set ) == 0 ) {
+      if ( kv_sync_cmpxchg( &ptr, old_val, new_val ) ) {
+        kv_acquire_fence();
+        return true;
+      }
+    }
     return false;
   }
   void ht_spin_lock( const uint64_t id ) {
@@ -149,11 +153,14 @@ struct FileHdr {
       while ( ( (old_val = ptr) & set ) != 0 )
         kv_sync_pause();
       new_val = old_val | set;
-      if ( kv_sync_cmpxchg( &ptr, old_val, new_val ) )
+      if ( kv_sync_cmpxchg( &ptr, old_val, new_val ) ) {
+        kv_acquire_fence();
         return;
+      }
     }
   }
   void ht_spin_unlock( const uint64_t id ) {
+    kv_release_fence();
     volatile uint64_t &ptr = this->lockq[ ( id >> 6 ) % LOCKQ_SIZE ];
     uint64_t clr = ~((uint64_t) 1 << ( id & 63 )),
              old_val, new_val;
@@ -210,7 +217,7 @@ struct ThrCtxEntry : public ThrCtxHdr {
 };
 
 struct ThrCtx : public ThrCtxEntry { /* each thread needs one of these */
-#if __cplusplus > 201103L
+#if __cplusplus >= 201103L
   /* 1024b align */
   static_assert( HT_THR_CTX_SIZE == sizeof( ThrCtxEntry ), "ctx hdr size" );
 #endif
@@ -271,11 +278,11 @@ struct HashHdr : public FileHdr, public DBHdr {
 
 struct HashTab {
   HashHdr hdr;
-#if __cplusplus > 201103L
+#if __cplusplus >= 201103L
   static_assert( HT_HDR_SIZE == sizeof( HashHdr ), "ht hdr size");
 #endif
   ThrCtx ctx[ MAX_CTX_ID ];
-#if __cplusplus > 201103L
+#if __cplusplus >= 201103L
   static_assert( HT_CTX_SIZE == sizeof( ThrCtx ) * MAX_CTX_ID, "ht ctx size" );
 #endif
   /* tab size is this->hdr.ht_size * this->hdr.hash_entry_size,
@@ -298,6 +305,16 @@ public:
   }
   HashEntry *get_entry( uint64_t i ) {
     return this->get_entry( i, this->hdr.hash_entry_size );
+  }
+  /* prefetch key k by calc ht_mod( k ) */
+  void prefetch( uint64_t k,  bool for_read ) const {
+    static const int locality = 1; /* 0 is non, 1 is low, 2 moderate, 3 high */
+    const void * p = (void *)
+            this->get_entry( this->hdr.ht_mod( k ), this->hdr.hash_entry_size );
+    if ( for_read )
+      __builtin_prefetch( p, 0, locality );
+    else
+      __builtin_prefetch( p, 1, locality );
   }
   /* mem is shm via mmap(): new HashTab( mmap( fd ) ) */
   void * operator new( size_t, void *ptr ) { return ptr; }

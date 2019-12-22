@@ -211,6 +211,22 @@ rai::kv::current_realtime_ns( void )
   return ts.tv_sec * (uint64_t) 1000000000 + ts.tv_nsec;
 }
 
+uint64_t
+rai::kv::current_realtime_ms( void )
+{
+  timespec ts;
+  clock_gettime( CLOCK_REALTIME, &ts );
+  return ts.tv_sec * (uint64_t) 1000 + ts.tv_nsec / 1000000;
+}
+
+uint64_t
+rai::kv::current_realtime_us( void )
+{
+  timespec ts;
+  clock_gettime( CLOCK_REALTIME, &ts );
+  return ts.tv_sec * (uint64_t) 1000000 + ts.tv_nsec / 1000;
+}
+
 double
 rai::kv::current_realtime_s( void )
 {
@@ -228,6 +244,22 @@ rai::kv::current_realtime_coarse_ns( void )
   timespec ts;
   clock_gettime( CLOCK_REALTIME_COARSE, &ts );
   return ts.tv_sec * (uint64_t) 1000000000 + ts.tv_nsec;
+}
+
+uint64_t
+rai::kv::current_realtime_coarse_ms( void )
+{
+  timespec ts;
+  clock_gettime( CLOCK_REALTIME_COARSE, &ts );
+  return ts.tv_sec * (uint64_t) 1000 + ts.tv_nsec / 1000000;
+}
+
+uint64_t
+rai::kv::current_realtime_coarse_us( void )
+{
+  timespec ts;
+  clock_gettime( CLOCK_REALTIME_COARSE, &ts );
+  return ts.tv_sec * (uint64_t) 1000000 + ts.tv_nsec / 1000;
 }
 
 double
@@ -263,11 +295,23 @@ double kv_current_monotonic_coarse_s( void ) {
 uint64_t kv_current_realtime_ns( void ) {
   return rai::kv::current_realtime_ns();
 }
+uint64_t kv_current_realtime_ms( void ) {
+  return rai::kv::current_realtime_ms();
+}
+uint64_t kv_current_realtime_us( void ) {
+  return rai::kv::current_realtime_us();
+}
 double kv_current_realtime_s( void ) {
   return rai::kv::current_realtime_s();
 }
 uint64_t kv_current_realtime_coarse_ns( void ) {
   return rai::kv::current_realtime_coarse_ns();
+}
+uint64_t kv_current_realtime_coarse_ms( void ) {
+  return rai::kv::current_realtime_coarse_ms();
+}
+uint64_t kv_current_realtime_coarse_us( void ) {
+  return rai::kv::current_realtime_coarse_us();
 }
 
 static kv_signal_handler_t * the_sh;

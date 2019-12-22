@@ -26,10 +26,11 @@ endif
 # the compiler and linker
 CC          ?= gcc
 CXX         ?= g++
-cc          := $(CC)
+cc          := $(CC) -std=c11
 cpp         := $(CXX)
-cppflags    := -fno-rtti -fno-exceptions
+cppflags    := -std=c++11 -fno-rtti -fno-exceptions
 arch_cflags := -mavx -maes -fno-omit-frame-pointer
+#arch_cflags := -mavx -maes -mprefetchwt1 -fno-omit-frame-pointer
 cpplink     := $(CC)
 gcc_wflags  := -Wall -Wextra -Werror -pedantic
 fpicflags   := -fPIC

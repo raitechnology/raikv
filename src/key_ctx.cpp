@@ -281,19 +281,25 @@ KeyCtx::get_key( KeyFragment *&b )
 }
 
 void
-KeyCtx::prefetch( uint64_t cnt ) const
+KeyCtx::prefetch( bool for_read ) const
 {
-  /* I believe rw is ignored, locality may have moderate effects, but it is
-   * hard to measure accurately */
-  static const int rw = 1;       /* 0 is prepare for write, 1 is read */
-  static const int locality = 2; /* 0 is non, 1 is low, 2 is moderate, 3 high*/
-  const uint8_t * p = (uint8_t *) (void *)
-                      this->ht.get_entry( this->start, this->hash_entry_size ),
-                * e = (uint8_t *) &p[ cnt * this->hash_entry_size ];
-  do {
-    __builtin_prefetch( p, rw, locality );
-    p = &p[ 64 ];
-  } while ( p < e );
+/* -march=broadwell -mprefetchwt1 (https://stackoverflow.com/questions/40513280/what-is-the-effect-of-second-argument-in-builtin-prefetch)
+ * prefetchwt1     [rdi]    #   __builtin_prefetch(p,1,2);  // KNL only
+   prefetchw       [rdi]    #   __builtin_prefetch(p,1,3);
+   prefetcht0      [rdi]    #   __builtin_prefetch(p,0,3);
+   prefetcht1      [rdi]    #   __builtin_prefetch(p,0,2);
+   prefetcht2      [rdi]    #   __builtin_prefetch(p,0,1); <- used below
+   prefetchnta     [rdi]    #   __builtin_prefetch(p,0,0);
+ */
+  static const int locality = 1; /* 0 is non, 1 is low, 2 is moderate, 3 high*/
+  const void * p = (void *)
+                   this->ht.get_entry( this->start, this->hash_entry_size );
+  /* could not measure any difference with different prefetch instructions:
+   * prefetch 4 overlap hashing, subtracts 97ns for write, 67ns for read */
+  if ( for_read )
+    __builtin_prefetch( p, 0, locality );
+  else
+    __builtin_prefetch( p, 1, locality );
 }
 
 /* release the Key's entry in ht[] */
@@ -1390,7 +1396,7 @@ KeyCtx::update_stamps( uint64_t exp_ns,  uint64_t upd_ns )
     return KEY_OK;
   /* make room for rela stamp by moving value ptr up */
   if ( el.test( FL_EXPIRE_STAMP | FL_UPDATE_STAMP ) == 0 ) {
-    uint8_t fl = 0;
+    uint32_t fl = 0;
     if ( exp_ns != 0 ) fl |= FL_EXPIRE_STAMP;
     if ( upd_ns != 0 ) fl |= FL_UPDATE_STAMP;
     this->reorganize_entry( el, fl );
@@ -1428,7 +1434,7 @@ KeyCtx::update_stamps( uint64_t exp_ns,  uint64_t upd_ns )
 }
 
 KeyStatus
-KeyCtx::reorganize_entry( HashEntry &el,  uint16_t new_fl )
+KeyCtx::reorganize_entry( HashEntry &el,  uint32_t new_fl )
 {
   HashEntry *cpy = (HashEntry *) this->copy_data( &el, this->hash_entry_size );
   if ( cpy == NULL )
@@ -1687,9 +1693,9 @@ kv_set_hash( kv_key_ctx_t *kctx,  uint64_t k,  uint64_t k2 )
 }
 
 void
-kv_prefetch( kv_key_ctx_t *kctx,  uint64_t cnt )
+kv_prefetch( kv_key_ctx_t *kctx,  uint8_t for_read )
 {
-  reinterpret_cast<KeyCtx *>( kctx )->prefetch( cnt );
+  reinterpret_cast<KeyCtx *>( kctx )->prefetch( for_read ? true : false );
 }
 
 kv_key_status_t

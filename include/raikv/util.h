@@ -17,9 +17,13 @@ uint64_t kv_current_monotonic_coarse_ns( void ); /* nanosecs */
 double kv_current_monotonic_coarse_s( void ); /* seconds + fraction (52b prec) */
 
 uint64_t kv_current_realtime_ns( void ); /* nanosecs */
+uint64_t kv_current_realtime_ms( void ); /* millisecs */
+uint64_t kv_current_realtime_us( void ); /* microsecs */
 double kv_current_realtime_s( void ); /* seconds + fraction (52b prec) */
 
 uint64_t kv_current_realtime_coarse_ns( void ); /* nanosecs */
+uint64_t kv_current_realtime_coarse_ms( void ); /* millisecs */
+uint64_t kv_current_realtime_coarse_us( void ); /* microsecs */
 double kv_current_realtime_coarse_s( void ); /* seconds + fraction (52b pr) */
 
 typedef struct kv_signal_handler_s {
@@ -128,9 +132,13 @@ uint64_t current_monotonic_coarse_ns( void ); /* nanosecs */
 double current_monotonic_coarse_s( void ); /* seconds + fraction (52b prec) */
 
 uint64_t current_realtime_ns( void ); /* nanosecs */
+uint64_t current_realtime_ms( void ); /* millisecs */
+uint64_t current_realtime_us( void ); /* microsecs */
 double current_realtime_s( void ); /* seconds + fraction (52b prec) */
 
 uint64_t current_realtime_coarse_ns( void ); /* nanosecs */
+uint64_t current_realtime_coarse_ms( void ); /* millisecs */
+uint64_t current_realtime_coarse_us( void ); /* microsecs */
 double current_realtime_coarse_s( void ); /* seconds + fraction (52b pr) */
 
  /* round 10001 to 10K, 10000123 to 10M */

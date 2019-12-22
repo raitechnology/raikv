@@ -47,7 +47,7 @@ loop( uint64_t my_id )
 {
   CtxOwner closure( ctx );
   Ctx &me = ctx[ my_id ];
-  while ( ! go.val )
+  while ( ! go )
     kv_sync_pause();
 
   for ( uint32_t i = 0; i < 1000000; i++ ) {

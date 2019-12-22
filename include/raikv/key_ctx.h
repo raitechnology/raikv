@@ -218,7 +218,7 @@ struct KeyCtx {
   }
   bool frag_equals( const HashEntry &el ) const;
   /* use __builtin_prefetch() on hash element using this->start as a base */
-  void prefetch( uint64_t cnt = 2 ) const;
+  void prefetch( bool for_read = true ) const;
   /* type indicates the data type of the value */
   uint8_t get_type( void ) const {
     return this->entry->type;
@@ -377,7 +377,7 @@ struct KeyCtx {
   /* fetch a messsge from a message list value */
   KeyStatus msg_value( uint64_t &from_idx,  uint64_t &to_idx,
                        void *data,  uint64_t *size );
-  KeyStatus reorganize_entry( HashEntry &el,  uint16_t new_fl );
+  KeyStatus reorganize_entry( HashEntry &el,  uint32_t new_fl );
   /* set the base seqno and remove msgs < idx */
   KeyStatus trim_msg( uint64_t idx );
   /* value + a copy of value header which is validated as current and
@@ -490,7 +490,7 @@ void kv_release_key_ctx( kv_key_ctx_t *kctx );
 
 void kv_set_key( kv_key_ctx_t *kctx,  kv_key_frag_t *kbuf );
 void kv_set_hash( kv_key_ctx_t *kctx,  uint64_t k,  uint64_t k2 );
-void kv_prefetch( kv_key_ctx_t *kctx,  uint64_t cnt );
+void kv_prefetch( kv_key_ctx_t *kctx,  uint8_t for_read );
 
 /* status = kv_acquire( kctx );
  * if ( status == KEY_OK ) {

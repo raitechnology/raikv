@@ -119,7 +119,7 @@ Segment::get_mem_seg_delta( MemDeltaCounters &stat,  uint16_t align_shift ) cons
 {
   MemCounters current;
   uint64_t x, y;
-  this->get_position( this->ring.val, align_shift, x, y );
+  this->get_position( this->ring, align_shift, x, y );
   current.offset       = x;
   current.msg_count    = this->msg_count;
   current.avail_size   = this->avail_size;

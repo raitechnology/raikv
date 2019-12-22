@@ -18,10 +18,40 @@ extern "C" {
  * https://software.intel.com/en-us/articles/benefitting-power-and-performance-sleep-loops */
 #define kv_sync_pause() __asm__ __volatile__( "pause":::"memory" )
 
+/* volatile not really necessary, use kv_sync_load(), kv_sync_store() */
 typedef volatile uint64_t kv_atom_uint64_t;
 typedef volatile uint32_t kv_atom_uint32_t;
 typedef volatile uint16_t kv_atom_uint16_t;
 typedef volatile uint8_t  kv_atom_uint8_t;
+
+#if __cplusplus >= 201103L || __STDC_VERSION__ >= 201112L
+
+/* atomics for spin locks and counters, requires gcc -std=c11 */
+#define kv_sync_xchg( a, new_val ) \
+  __atomic_exchange_n( a, new_val, __ATOMIC_RELAXED )
+
+#define kv_sync_cmpxchg( a, old_val, new_val ) \
+  __atomic_compare_exchange_n( a, &old_val, new_val, 0, __ATOMIC_RELAXED, \
+                               __ATOMIC_RELAXED )
+#define kv_sync_add( a, val ) \
+  __atomic_add_fetch( a, val, __ATOMIC_RELAXED )
+
+#define kv_sync_sub( a, val ) \
+  __atomic_sub_fetch( a, val, __ATOMIC_RELAXED )
+
+#define kv_sync_store( a, val ) \
+  __atomic_store_n( a, val, __ATOMIC_RELAXED )
+
+#define kv_sync_load( a ) \
+  __atomic_load_n( a, __ATOMIC_RELAXED )
+
+#define kv_acquire_fence() \
+  __atomic_thread_fence( __ATOMIC_ACQUIRE )
+
+#define kv_release_fence() \
+  __atomic_thread_fence( __ATOMIC_RELEASE )
+
+#else
 
 /* atomics for spin locks and counters, requires gcc 4.3 */
 #define kv_sync_xchg( a, new_val ) \
@@ -36,6 +66,19 @@ typedef volatile uint8_t  kv_atom_uint8_t;
 #define kv_sync_sub( a, val ) \
   __sync_fetch_and_sub( a, val )
 
+#define kv_sync_store( a, val ) \
+  *(a) = val
+
+#define kv_sync_load( a ) \
+  *(a)
+
+#define kv_acquire_fence() /* nothing for x86 */
+
+#define kv_release_fence() /* nothing for x86 */
+
+/* probably should assert arch == x86 */
+#endif
+
 #ifdef __cplusplus
 }
 #endif
@@ -47,7 +90,8 @@ namespace kv {
 /*#define TEST_ATOM_SPEED 1*/
 template <class Int>
 struct Atom {
-  volatile Int val;
+  private: volatile Int val;
+  public:
   /* swap values, return the old value, spins until succeeds */
   Int xchg( Int new_val ) {
 #ifdef TEST_ATOM_SPEED
@@ -88,14 +132,28 @@ struct Atom {
     return kv_sync_sub( &this->val, sub_val );
 #endif
   }
+  void store( Int new_val ) {
+#ifdef TEST_ATOM_SPEED
+    this->val = new_val;
+#else
+    kv_sync_store( &this->val, new_val );
+#endif
+  }
+  Int load( void ) const {
+#ifdef TEST_ATOM_SPEED
+    return this->val;
+#else
+    return kv_sync_load( &this->val );
+#endif
+  }
   /* conveniences */
   Atom &operator++() { this->add( 1 ); return *this; }
   Atom &operator--() { this->sub( 1 ); return *this; }
   Atom &operator+=( const Int &i ) { this->add( i ); return *this; }
   Atom &operator-=( const Int &i ) { this->sub( i ); return *this; }
-  Atom &operator=( const Int &i ) { this->val = i; return *this; }
-  Int operator&( const Int &i ) const { return this->val & i; }
-  operator Int() const { return this->val; }
+  Atom &operator=( const Int &i ) { this->store( i ); return *this; }
+  Int operator&( const Int &i ) const { return this->load() & i; }
+  operator Int() const { return this->load(); }
 };
 
 typedef struct Atom<uint64_t> AtomUInt64; /* a hash value */
@@ -212,6 +270,7 @@ struct MCSLock {
       v = wait;
     }
     this->val = v; /* val does not have lock bit set */
+    kv_acquire_fence();
     return v;
   }
 
@@ -220,7 +279,7 @@ struct MCSLock {
                    const Int my_id,  uint64_t &spin ) {
     this->lock_id = id + 1;
     for (;;) {
-      Int v = link.val;
+      Int v = link;
       if ( ( v & locked_bit ) != 0 ) {
         this->lock_id = 0;
         return v; /* lock is not free */
@@ -228,6 +287,7 @@ struct MCSLock {
       /* try to acquire it */
       if ( link.cmpxchg( v, my_id | locked_bit ) ) {
         this->val = v;
+        kv_acquire_fence();
         return v; /* success */
       }
       spin++;
@@ -238,6 +298,7 @@ struct MCSLock {
   /* release lock and wake waiters */
   void release( Atom<Int> &link,  const Int v,  const Int locked_bit,
                 const Int my_id,  uint64_t &spin,  Owner &closure ) {
+    kv_release_fence();
     /* set lock=val if no one else is waiting */
     if ( ! link.cmpxchg( my_id | locked_bit, v ) ) {
       Int waiting;

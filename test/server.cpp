@@ -112,8 +112,8 @@ check_thread_ctx( HashTab &map )
         MCSStatus status;
         printf(
         "ctx %u: pid %u, mcs %u, val 0x%lx, lock 0x%lx, next 0x%lx, link %lu\n",
-                 ctx_id, pid, id, mcs.val.val, mcs.lock.val, mcs.next.val,
-                 mcs.lock_id );
+                 ctx_id, pid, id, mcs.val.load(), mcs.lock.load(),
+                 mcs.next.load(), mcs.lock_id );
         if ( mcs.lock_id != 0 ) {
           HashEntry *el = map.get_entry( mcs.lock_id - 1,
                                          map.hdr.hash_entry_size );

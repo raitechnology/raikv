@@ -112,7 +112,7 @@ fix_locks( void )
       MCSStatus status;
       xprintf( 0,
       "ctx %u: pid %u, mcs %u, val 0x%lx, lock 0x%lx, next 0x%lx, link %lu\n",
-               c, pid, id, mcs.val.val, mcs.lock.val, mcs.next.val,
+               c, pid, id, mcs.val.load(), mcs.lock.load(), mcs.next.load(),
                mcs.lock_id );
       if ( mcs.lock_id != 0 ) {
         HashEntry *el = map->get_entry( mcs.lock_id - 1,
@@ -181,12 +181,12 @@ print_mem( uint32_t s )
   if ( s < map->hdr.nsegs ) {
     Segment &seg = map->segment( s );
     uint64_t x, y;
-    seg.get_position( seg.ring.val, map->hdr.seg_align_shift, x, y );
+    seg.get_position( seg.ring, map->hdr.seg_align_shift, x, y );
     xprintf( 0, "seg(%u): off=%lu, next=%lu:%lu, msg_count=%lu, "
              "avail_size=%lu, move_msgs=%lu, move_size=%lu, evict_msgs=%lu, "
-             "evict_size=%lu\n", s, seg.seg_off, x, y, seg.msg_count.val,
-             seg.avail_size.val, seg.move_msgs, seg.move_size, seg.evict_msgs,
-             seg.evict_size );
+             "evict_size=%lu\n", s, seg.seg_off, x, y, seg.msg_count.load(),
+             seg.avail_size.load(), seg.move_msgs, seg.move_size,
+             seg.evict_msgs, seg.evict_size );
   }
 }
 
@@ -515,6 +515,7 @@ flags_string( uint16_t fl,  uint8_t type,  char *buf )
       case 21: buf = copy_fl( buf, "MD_ZSET" );        break;
       case 22: buf = copy_fl( buf, "MD_GEO" );         break;
       case 23: buf = copy_fl( buf, "MD_HYPERLOGLOG" ); break;
+      case 24: buf = copy_fl( buf, "MD_STREAM" );      break;
     }
   }
   *buf = '\0';

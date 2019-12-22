@@ -106,7 +106,7 @@ process_key_frags( thr_data_t *t )
       if ( t->xh[ i ].hash != 0 ) {
         kv_set_key( t->ctx[ j ], t->xh[ i ].frag );
         kv_set_hash( t->ctx[ j ], t->xh[ i ].hash, t->xh[ i ].hash2 );
-        kv_prefetch( t->ctx[ j ], 1 );
+        kv_prefetch( t->ctx[ j ], 0 );
         src[ j ] = i;
         j++;
       }

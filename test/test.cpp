@@ -3,8 +3,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#define __STDC_FORMAT_MACROS
-#include <inttypes.h>
 
 #include <raikv/shm_ht.h>
 #include <raikv/key_buf.h>
@@ -152,7 +150,7 @@ test_rand( HashTab &map,  uint8_t db,  uint32_t ctx_id,  kv_hash128_func_t func,
       for ( i = 0; i < test_count; i += stride ) {
         for ( j = 0; j < stride; j++ ) {
           kctx[ j ].set_key_hash( key[ j ] );
-          kctx[ j ].prefetch( 1 );
+          kctx[ j ].prefetch( false );
           if ( use_single )
             kctx[ j ].set( KEYCTX_IS_SINGLE_THREAD );
         }
@@ -240,7 +238,7 @@ test_incr( HashTab &map,  uint8_t db,  uint32_t ctx_id,  kv_hash128_func_t func,
         }
         for ( j = 0; j < stride; j++ ) {
           kctx[ j ].set_key_hash( kbar[ j ] );
-          kctx[ j ].prefetch( 1 );
+          kctx[ j ].prefetch( use_find );
           if ( use_single )
             kctx[ j ].set( KEYCTX_IS_SINGLE_THREAD );
         }
@@ -345,7 +343,7 @@ test_int( HashTab &map,  uint8_t db,  uint32_t ctx_id,  kv_hash128_func_t func,
         for ( j = 0; j < stride; j++ ) {
           kbar[ j ].set( i + j );
           kctx[ j ].set_key_hash( kbar[ j ] );
-          kctx[ j ].prefetch( 1 );
+          kctx[ j ].prefetch( use_find );
           if ( use_single )
             kctx[ j ].set( KEYCTX_IS_SINGLE_THREAD );
         }

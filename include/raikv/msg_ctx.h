@@ -197,7 +197,7 @@ struct Segment {
     uint64_t avail = this->avail_size;
     if ( how_aggressive >= 1 && alloc_size > avail )
       return false;
-    uint64_t cur  = this->ring.val,
+    uint64_t cur  = this->ring,
              x, y,
              used = ring_size - avail;
     /* presume that the caller does check for size < ring_size */
@@ -226,7 +226,7 @@ struct Segment {
   }
 
   bool try_lock( uint16_t align_shift,  uint64_t &pos ) {
-    uint64_t cur  = this->ring.val,
+    uint64_t cur  = this->ring,
              x, y;
     /* presume that the caller does check for size < ring_size */
     get_position( cur, align_shift, x, y );
