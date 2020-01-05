@@ -103,7 +103,7 @@ CuckooAltHash::find_cuckoo_path( CuckooPosition &cp )
   uint64_t           key, key2, p, rng_bits, boff;
   uint32_t           inc, off, tos, maxtos, tos_bits,
                      fetch_cnt = 0, acquire_cnt = 0, move_cnt = 0,
-                     busy_cnt = 0, retry;
+                     /*busy_cnt = 0,*/ retry;
   KeyStatus          status;
 
   if ( kv_unlikely( fpmod.mod_frac[ 0 ] == 0 ) ) /* init fixed point mod */
@@ -144,7 +144,7 @@ CuckooAltHash::find_cuckoo_path( CuckooPosition &cp )
       if ( status != KEY_OK ) {
         if ( status != KEY_BUSY ) /* if KEY_NOT_FOUND, try acquire again */
           goto key_busy;
-        busy_cnt++;
+        /*busy_cnt++;*/
         continue; /* skip this node, is acquired by something else */
       }
       /* trying to move this key */
@@ -278,7 +278,7 @@ CuckooAltHash::find_cuckoo_path( CuckooPosition &cp )
                   kctx.incr_cuckacq( acquire_cnt );
                   kctx.incr_cuckfet( fetch_cnt );
                   kctx.incr_cuckmov( move_cnt );
-                  kctx.incr_cuckbiz( busy_cnt );
+                  /*kctx.incr_cuckbiz( busy_cnt );*/
                   return status;
                 }
                 status = fr_kctx.try_acquire_position( vis->from_pos );
@@ -320,7 +320,7 @@ CuckooAltHash::find_cuckoo_path( CuckooPosition &cp )
                   to_kctx.lock       = 0;
                   to_kctx.drop_key   = DROPPED_HASH;
                   to_kctx.drop_key2  = 0;
-                  busy_cnt++;
+                  /*busy_cnt++;*/
                   break;
                 }
               }
@@ -330,7 +330,7 @@ CuckooAltHash::find_cuckoo_path( CuckooPosition &cp )
               to_kctx.drop_flags = FL_DROPPED;
               to_kctx.drop_key   = DROPPED_HASH;
               to_kctx.drop_key2  = 0;
-              busy_cnt++;
+              /*busy_cnt++;*/
             }
             fr_kctx.release();
           }
@@ -360,7 +360,7 @@ key_busy:;
   kctx.incr_cuckacq( acquire_cnt );
   kctx.incr_cuckfet( fetch_cnt );
   kctx.incr_cuckmov( move_cnt );
-  kctx.incr_cuckbiz( busy_cnt );
+  /*kctx.incr_cuckbiz( busy_cnt );*/
   if ( retry == MAX_CUCKOO_RETRY ) {
     kctx.incr_cuckmax( 1 );
     return KEY_HT_FULL;

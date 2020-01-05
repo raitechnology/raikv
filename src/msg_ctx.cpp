@@ -198,6 +198,8 @@ struct GCRunCtx {
                                     msgsize, msg_chain_size ) &&
                  mv_kctx.geom.segment == this->seg_num &&
                  mv_kctx.geom.offset == this->i ) {
+#if 0
+              /* make the application expire entries */
               bool isexp = msgptr.is_expired( this->ht );
               if ( isexp ) {
                 mv_kctx.tombstone();
@@ -212,6 +214,8 @@ struct GCRunCtx {
               else {
                 do_mv_msg = 1;
               }
+#endif
+              do_mv_msg = 1;
             }
             else if ( mv_kctx.entry->test( FL_MSG_LIST ) &&
                       msgptr.check_seal_msg_list( mv_hash, mv_hash2,

@@ -161,14 +161,14 @@ print_stats( uint32_t c )
       }
     }
     xprintf( 0, "ctx %u%c:  pid %u, read %lu, write %lu, spin %lu, chains %lu, "
-            "add %lu, drop %lu, htevict %lu, afail %lu, hit %lu, miss %lu, "
-            "cuckacq %lu, cuckfet %lu, cuckmov %lu, cuckbiz %lu cuckret %lu "
+            "add %lu, drop %lu, expire %lu, htevict %lu, afail %lu, hit %lu, "
+            "miss %lu, cuckacq %lu, cuckfet %lu, cuckmov %lu, cuckret %lu "
             "cuckmax %lu\n",
         c, ( c == ctx_id ? '*' :
              ( alive == 2 ? '+' : ( alive == 1 ? '?' : '/' ) ) ),
         pid, stat.rd, stat.wr, stat.spins, stat.chains, stat.add, stat.drop,
-        stat.htevict, stat.afail, stat.hit, stat.miss, stat.cuckacq,
-        stat.cuckfet, stat.cuckmov, stat.cuckbiz, stat.cuckret, stat.cuckmax );
+        stat.expire, stat.htevict, stat.afail, stat.hit, stat.miss, stat.cuckacq,
+        stat.cuckfet, stat.cuckmov, stat.cuckret, stat.cuckmax );
   }
   else {
     xputs( 0, "No ctx_id\n" );

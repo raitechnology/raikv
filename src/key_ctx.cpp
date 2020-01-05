@@ -198,6 +198,7 @@ KeyCtx::find( const uint64_t spin_wait )
   return this->find_cuckoo_single_thread( this->key, this->start );
 }
 
+/* mark as dropped */
 KeyStatus
 KeyCtx::tombstone( void )
 {
@@ -210,6 +211,32 @@ KeyCtx::tombstone( void )
     this->entry->clear( FL_EXPIRE_STAMP | FL_UPDATE_STAMP |
                         FL_SEQNO | FL_MSG_LIST );
     this->incr_drop();
+    this->drop_key   = this->lock;
+    this->drop_key2  = this->key2;
+    this->drop_flags = this->entry->flags;
+    this->lock = 0; /* prevent second drop */
+  }
+  return KEY_OK;
+}
+
+/* just like tombstone except incr expire */
+KeyStatus
+KeyCtx::expire( void )
+{
+  if ( this->lock != 0 ) {
+    KeyStatus status;
+    if ( (status = this->release_data()) != KEY_OK )
+      return status;
+    this->serial = 0;
+    this->entry->set( FL_DROPPED );
+    this->entry->clear( FL_EXPIRE_STAMP | FL_UPDATE_STAMP |
+                        FL_SEQNO | FL_MSG_LIST );
+    this->incr_drop();
+    this->incr_expire();
+    this->drop_key   = this->lock;
+    this->drop_key2  = this->key2;
+    this->drop_flags = this->entry->flags;
+    this->lock = 0; /* prevent second drop */
   }
   return KEY_OK;
 }
@@ -318,8 +345,8 @@ KeyCtx::release( void )
               k    = this->key;
   /* if no data was inserted, mark the entry as tombstone */
   if ( this->lock == 0 ) { /* if it's new */
-    if ( el.flags == FL_NO_ENTRY ) { /* don't keep keys with no data */
-      this->entry = NULL;
+    /* don't keep keys with no data */
+    if ( el.flags == FL_NO_ENTRY || el.test( FL_DROPPED ) ) {
       /* was already dropped, use pre-existing key and flags */
       if ( this->drop_key != 0 ) {
         k        = this->drop_key;
@@ -346,7 +373,6 @@ done:;
   ctx.get_mcs_lock( this->mcs_id ).release( el.hash, k, ZOMBIE64,
                                             this->mcs_id, spin, closure );
   ctx.release_mcs_lock( this->mcs_id );
-  //__sync_mfence(); /* push the updates to memory */
   this->incr_spins( spin );
   this->entry     = NULL;
   this->msg       = NULL;
@@ -1070,6 +1096,7 @@ return_msg:;
   return status;
 }
 
+/* append a vector of size[ i ] elements: vec[ i ] -> msg @ size[ i ] */
 KeyStatus
 KeyCtx::append_vector( uint64_t count,  void *vec,  uint64_t *size )
 {
@@ -1562,6 +1589,29 @@ KeyCtx::get_stamps( uint64_t &exp_ns,  uint64_t &upd_ns )
   return KEY_OK;
 }
 
+KeyStatus
+KeyCtx::check_expired( void )
+{
+  HashEntry & el = *this->entry;
+  uint64_t    exp_ns, upd_ns;
+
+  switch ( el.test( FL_EXPIRE_STAMP | FL_UPDATE_STAMP ) ) {
+    default:
+      return KEY_OK;
+    case FL_EXPIRE_STAMP:
+      exp_ns = el.rela_stamp( this->hash_entry_size ).u.stamp;
+      break;
+    case FL_UPDATE_STAMP | FL_EXPIRE_STAMP:
+      el.rela_stamp( this->hash_entry_size ).get(
+        this->ht.hdr.create_stamp, this->ht.hdr.current_stamp,
+        exp_ns, upd_ns );
+      break;
+  }
+  if ( exp_ns < this->ht.hdr.current_stamp )
+    return KEY_EXPIRED;
+  return KEY_OK;
+}
+
 extern "C" {
 const char *
 kv_key_status_string( kv_key_status_t status )
@@ -1585,6 +1635,7 @@ kv_key_status_string( kv_key_status_t status )
     case KEY_PATH_SEARCH:   return "KEY_PATH_SEARCH";
     case KEY_USE_DROP:      return "KEY_USE_DROP";
     case KEY_NOT_MSG:       return "KEY_NOT_MSG";
+    case KEY_EXPIRED:       return "KEY_EXPIRED";
     case KEY_MAX_STATUS:    return "KEY_MAX_STATUS";
   }
   return "unknown";
@@ -1613,6 +1664,7 @@ kv_key_status_description( kv_key_status_t status )
     case KEY_PATH_SEARCH:   return "need a path search to acquire cuckoo entry";
     case KEY_USE_DROP:      return "ok to use drop, end of chain";
     case KEY_NOT_MSG:       return "message size out of range";
+    case KEY_EXPIRED:       return "key expired stamp less than current time";
     case KEY_MAX_STATUS:    return "maximum status";
   }
   return "unknown";

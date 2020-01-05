@@ -42,13 +42,13 @@ struct HashCounters {
           spins,      /* count of spins to acquire locks */
           chains,     /* count of chain links traversed to find/acquire items */
           add, drop,  /* count of new entries, count of dropped entries */
+          expire,     /* count of expired entries dropped */
           htevict,    /* count of evictions */
           afail,      /* write failed to allocate data (too big or no space) */
           hit, miss,  /* hit when data was found, miss when not found */
           cuckacq,    /* cuckoo path acquire ops */
           cuckfet,    /* cuckoo path fetch to find a path */
           cuckmov,    /* cuckoo path move items to new locations */
-          cuckbiz,    /* cuckoo path busy when move targets are acquired */
           cuckret,    /* cuckoo path retry when a path search failed */
           cuckmax;    /* cuckoo path max retry, could be cycle */
 

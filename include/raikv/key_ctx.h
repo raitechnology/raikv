@@ -30,7 +30,8 @@ typedef enum kv_key_status_e {
   KEY_PATH_SEARCH   = 15, /* need a path search to acquire cuckoo entry */
   KEY_USE_DROP      = 16, /* ok to use drop, end of chain */
   KEY_NOT_MSG       = 17, /* message size out of range */
-  KEY_MAX_STATUS    = 18  /* maximum status code */
+  KEY_EXPIRED       = 18, /* if expire timer is less than current time */
+  KEY_MAX_STATUS    = 19  /* maximum status code */
 } kv_key_status_t;
 
 /* string versions of the above */
@@ -121,6 +122,7 @@ struct KeyCtx {
   void incr_chains( uint64_t cnt = 1 )  { this->stat.chains  += cnt; }
   void incr_add( uint64_t cnt = 1 )     { this->stat.add     += cnt; }
   void incr_drop( uint64_t cnt = 1 )    { this->stat.drop    += cnt; }
+  void incr_expire( uint64_t cnt = 1 )  { this->stat.expire  += cnt; }
   void incr_htevict( uint64_t cnt = 1 ) { this->stat.htevict += cnt; }
   void incr_afail( uint64_t cnt = 1 )   { this->stat.afail   += cnt; }
   void incr_hit( uint64_t cnt = 1 )     { this->stat.hit     += cnt; }
@@ -128,7 +130,6 @@ struct KeyCtx {
   void incr_cuckacq( uint64_t cnt = 1 ) { this->stat.cuckacq += cnt; }
   void incr_cuckfet( uint64_t cnt = 1 ) { this->stat.cuckfet += cnt; }
   void incr_cuckmov( uint64_t cnt = 1 ) { this->stat.cuckmov += cnt; }
-  void incr_cuckbiz( uint64_t cnt = 1 ) { this->stat.cuckbiz += cnt; }
   void incr_cuckret( uint64_t cnt = 1 ) { this->stat.cuckret += cnt; }
   void incr_cuckmax( uint64_t cnt = 1 ) { this->stat.cuckmax += cnt; }
 
@@ -301,6 +302,8 @@ struct KeyCtx {
   /*KeyStatus drop( void );*/
   /* mark key dropped after lock is acquired, deletes value data */
   KeyStatus tombstone( void );
+  /* like tombstone and incr expired */
+  KeyStatus expire( void );
   /* start a new read only operation */
   void init_find( void ) {
     this->chains = 0; /* count of chains */
@@ -369,14 +372,16 @@ struct KeyCtx {
    * table, but copied data;  if acquire() is used, ptr will reference the shm
    * table data */
   KeyStatus value( void *ptr,  uint64_t &size );
-  /* append data to message list */
+  /* append to message list, returns a ptr in *(void **) res to size mem */
   KeyStatus append_msg( void *res,  uint64_t size );
+  /* append a vector of count elems, where vec[ i ] -> msg @ size[ i ] */
   KeyStatus append_vector( uint64_t count,  void *vec,  uint64_t *size );
   /* get the geoms of the chained messages */
   ValueGeom *get_msg_chain( uint8_t i,  ValueGeom &buf );
   /* fetch a messsge from a message list value */
   KeyStatus msg_value( uint64_t &from_idx,  uint64_t &to_idx,
                        void *data,  uint64_t *size );
+  /* move hash entry elements within the struct without losing values */
   KeyStatus reorganize_entry( HashEntry &el,  uint32_t new_fl );
   /* set the base seqno and remove msgs < idx */
   KeyStatus trim_msg( uint64_t idx );
@@ -390,6 +395,13 @@ struct KeyCtx {
   KeyStatus clear_stamps( bool clr_exp,  bool clr_upd );
   /* get stamps, zero if don't exist */
   KeyStatus get_stamps( uint64_t &exp_ns,  uint64_t &upd_ns );
+  /* check if has a stamp */
+  bool is_expired( void ) {
+    return this->entry->test( FL_EXPIRE_STAMP ) != 0 &&
+           this->check_expired() == KEY_EXPIRED;
+  }
+  /* test if hash entry expire timer < ht.hdr.current_stamp */
+  KeyStatus check_expired( void );
   /* release the data used by entry */
   KeyStatus release_data( void );
   /* release the data used by dropped entry when chain == max_chains */

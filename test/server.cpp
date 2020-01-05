@@ -31,7 +31,7 @@ print_ops( HashTab &map,  HashTabStats &hts,  uint32_t &ctr )
 
   if ( ( ctr++ % 16 ) == 0 )
     printf( "   op/s   1/ops chns    get    put   spin ht va  "
-            "entry    GC  evic   hits   miss\n" );
+            "entry    GC  drop   hits   miss\n" );
 
   double op, ns, ch;
   if ( ops.rd + ops.wr == 0 ) {
@@ -59,7 +59,7 @@ print_ops( HashTab &map,  HashTabStats &hts,  uint32_t &ctr )
          (uint32_t) ( map.hdr.value_load * 100.0 + 0.5 ),
          mstring( tot.add - tot.drop, buf5, 1000 ),
          mstring( (double) chg.move_msgs / ival, buf6, 1000 ),
-         mstring( (double) ops.htevict / ival, buf7, 1000 ),
+         mstring( (double) ops.drop / ival, buf7, 1000 ),
          mstring( (double) ops.hit / ival, buf8, 1000 ),
          mstring( (double) ops.miss / ival, buf9, 1000 ) );
 }
