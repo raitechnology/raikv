@@ -31,7 +31,7 @@ xnprintf( char *&b,  size_t &sz,  const char *format, ... )
 static char default_buf[ 4 * 1024 ]; /* should be about 3k */
 char *
 rai::kv::print_map_geom( HashTab *map,  uint32_t ctx_id,  char *buf,
-                         size_t buflen )
+                         size_t buflen ) noexcept
 {
   char sbuf[ 64 ];
   if ( buf == NULL ) {

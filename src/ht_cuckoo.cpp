@@ -27,7 +27,7 @@ cuckoo_incr( uint64_t &state0,  uint64_t &state1 )
 }
 
 CuckooAltHash *
-CuckooAltHash::create( KeyCtx &kctx )
+CuckooAltHash::create( KeyCtx &kctx ) noexcept
 {
   void * p = kctx.wrk->alloc( CuckooAltHash::size( kctx.cuckoo_arity ) );
   if ( p == NULL )
@@ -37,7 +37,7 @@ CuckooAltHash::create( KeyCtx &kctx )
 
 void
 CuckooAltHash::calc_hash( KeyCtx &kctx,  const uint64_t key,
-                          const uint64_t key2,  const uint64_t start_pos )
+                       const uint64_t key2,  const uint64_t start_pos ) noexcept
 {
   const uint64_t buckets = kctx.cuckoo_buckets;
   uint64_t       seed = cuckoo_hash_seed ^ key2;
@@ -79,7 +79,7 @@ CuckooAltHash::calc_hash( KeyCtx &kctx,  const uint64_t key,
 }
 
 KeyStatus
-CuckooAltHash::find_cuckoo_path( CuckooPosition &cp )
+CuckooAltHash::find_cuckoo_path( CuckooPosition &cp ) noexcept
 {
   static const uint32_t node_size = /*buckets*/8 * /*arity*/4 * 36, /* 1152 */
                         stk_size  = /*buckets*/8 * /*arity*/4 * 12; /* 384 */
@@ -369,7 +369,7 @@ key_busy:;
 }
 
 KeyStatus
-KeyCtx::acquire_cuckoo( const uint64_t k,  const uint64_t start_pos )
+KeyCtx::acquire_cuckoo( const uint64_t k,  const uint64_t start_pos ) noexcept
 {
   CuckooPosition cp( *this );
   KeyStatus status;
@@ -395,7 +395,8 @@ KeyCtx::acquire_cuckoo( const uint64_t k,  const uint64_t start_pos )
 }
 
 KeyStatus
-KeyCtx::try_acquire_cuckoo( const uint64_t k,  const uint64_t start_pos )
+KeyCtx::try_acquire_cuckoo( const uint64_t k,
+                            const uint64_t start_pos ) noexcept
 {
   CuckooPosition cp( *this );
   KeyStatus status;
@@ -411,7 +412,7 @@ KeyCtx::try_acquire_cuckoo( const uint64_t k,  const uint64_t start_pos )
 
 KeyStatus
 KeyCtx::acquire_cuckoo_single_thread( const uint64_t k,
-                                      const uint64_t start_pos )
+                                      const uint64_t start_pos ) noexcept
 {
   CuckooPosition cp( *this );
   KeyStatus status;
@@ -434,7 +435,7 @@ KeyCtx::acquire_cuckoo_single_thread( const uint64_t k,
 
 KeyStatus
 KeyCtx::find_cuckoo( const uint64_t k,  const uint64_t start_pos,
-                     const uint64_t spin_wait )
+                     const uint64_t spin_wait ) noexcept
 {
   CuckooPosition cp( *this );
   cp.start();
@@ -443,7 +444,8 @@ KeyCtx::find_cuckoo( const uint64_t k,  const uint64_t start_pos,
 }
 
 KeyStatus
-KeyCtx::find_cuckoo_single_thread( const uint64_t k,  const uint64_t start_pos )
+KeyCtx::find_cuckoo_single_thread( const uint64_t k,
+                                   const uint64_t start_pos ) noexcept
 {
   CuckooPosition cp( *this );
   cp.start();
@@ -452,7 +454,7 @@ KeyCtx::find_cuckoo_single_thread( const uint64_t k,  const uint64_t start_pos )
 }
 
 KeyStatus
-CuckooPosition::next_hash( uint64_t &pos,  const bool is_find )
+CuckooPosition::next_hash( uint64_t &pos,  const bool is_find ) noexcept
 {
   if ( ++this->inc != this->kctx.cuckoo_arity ) {
     if ( this->h == NULL ) {
@@ -474,7 +476,7 @@ CuckooPosition::next_hash( uint64_t &pos,  const bool is_find )
 }
 
 void
-CuckooPosition::restore_inc( uint64_t pos )
+CuckooPosition::restore_inc( uint64_t pos ) noexcept
 {
   if ( this->h != NULL ) {
     for ( uint8_t inc = 0; inc < this->kctx.cuckoo_arity; inc++ ) {
@@ -490,7 +492,7 @@ CuckooPosition::restore_inc( uint64_t pos )
 }
 
 void
-KeyCtx::get_pos_info( uint64_t &natural_pos,  uint64_t &pos_off )
+KeyCtx::get_pos_info( uint64_t &natural_pos,  uint64_t &pos_off ) noexcept
 {
   natural_pos = this->ht.hdr.ht_mod( this->key );
   pos_off = KeyCtx::calc_offset( natural_pos, this->pos, this->ht_size );
@@ -509,7 +511,7 @@ KeyCtx::get_pos_info( uint64_t &natural_pos,  uint64_t &pos_off )
 
 /* spin on ht[ i ] until it is fetchable */
 KeyStatus
-KeyCtx::try_acquire_position( const uint64_t i )
+KeyCtx::try_acquire_position( const uint64_t i ) noexcept
 {
   ThrCtx    & ctx = this->thr_ctx;
   HashEntry * el;          /* current ht[] ptr */

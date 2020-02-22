@@ -45,7 +45,8 @@ struct LinearPosition {
    so that no other thread can pass by while this thread is on the
    same chain */
 KeyStatus
-KeyCtx::acquire_linear_probe( const uint64_t k,  const uint64_t start_pos )
+KeyCtx::acquire_linear_probe( const uint64_t k,
+                              const uint64_t start_pos ) noexcept
 {
   LinearPosition lp( *this );
 
@@ -54,7 +55,7 @@ KeyCtx::acquire_linear_probe( const uint64_t k,  const uint64_t start_pos )
 
 KeyStatus
 KeyCtx::acquire_linear_probe_single_thread( const uint64_t k,
-                                            const uint64_t start_pos )
+                                            const uint64_t start_pos ) noexcept
 {
   LinearPosition lp( *this );
 
@@ -63,7 +64,8 @@ KeyCtx::acquire_linear_probe_single_thread( const uint64_t k,
 
 /* similar to acquire() but bail if can't acquire without getting in line */
 KeyStatus
-KeyCtx::try_acquire_linear_probe( const uint64_t k,  const uint64_t start_pos )
+KeyCtx::try_acquire_linear_probe( const uint64_t k,
+                                  const uint64_t start_pos ) noexcept
 {
   LinearPosition lp( *this );
 
@@ -73,7 +75,7 @@ KeyCtx::try_acquire_linear_probe( const uint64_t k,  const uint64_t start_pos )
 /* find key for read only access without locking slot */
 KeyStatus
 KeyCtx::find_linear_probe( const uint64_t k,  const uint64_t start_pos,
-                           const uint64_t spin_wait )
+                           const uint64_t spin_wait ) noexcept
 {
   LinearPosition lp( *this );
 
@@ -82,7 +84,7 @@ KeyCtx::find_linear_probe( const uint64_t k,  const uint64_t start_pos,
 
 KeyStatus
 KeyCtx::find_linear_probe_single_thread( const uint64_t k,
-                                         const uint64_t start_pos )
+                                         const uint64_t start_pos ) noexcept
 {
   LinearPosition lp( *this );
 
@@ -121,7 +123,7 @@ fetch_hash_entry( void *p,  void *q,  uint32_t sz )
 /* spin on ht[ i ] until it is fetchable */
 KeyStatus
 KeyCtx::fetch_position( const uint64_t i,  const uint64_t spin_wait,
-                        const bool is_scan )
+                        const bool is_scan ) noexcept
 {
   HashEntry * cpy  = this->get_work_entry();
   uint64_t    spin = 0,

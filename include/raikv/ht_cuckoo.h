@@ -138,9 +138,9 @@ struct CuckooPosition {
   void unlock_cuckoo_path( void ) { /* release cuckoo path search */
     this->kctx.ht.hdr.ht_spin_unlock( this->kctx.key );
   }
-  KeyStatus next_hash( uint64_t &pos,  const bool is_find );
+  KeyStatus next_hash( uint64_t &pos,  const bool is_find ) noexcept;
 
-  void restore_inc( uint64_t pos );
+  void restore_inc( uint64_t pos ) noexcept;
 };
 
 struct CuckooAltHash {
@@ -157,11 +157,11 @@ struct CuckooAltHash {
   static size_t size( uint8_t arity ) {
     return sizeof( CuckooAltHash ) + sizeof( uint64_t ) * arity * 3;
   }
-  static CuckooAltHash *create( KeyCtx &kctx );
+  static CuckooAltHash *create( KeyCtx &kctx ) noexcept;
 
   void calc_hash( KeyCtx &kctx,  const uint64_t key,
-                  const uint64_t key2,  const uint64_t start_pos );
-  KeyStatus find_cuckoo_path( CuckooPosition &kpos );
+                  const uint64_t key2,  const uint64_t start_pos ) noexcept;
+  KeyStatus find_cuckoo_path( CuckooPosition &kpos ) noexcept;
 };
 
 }

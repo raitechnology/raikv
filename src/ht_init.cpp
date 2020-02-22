@@ -44,7 +44,7 @@ static void remove_closed( void *p ) {
 }
 
 /* the constructor initializes the memory, only used in one thread context */
-HashTab::HashTab( const char *map_name,  const HashTabGeom &geom )
+HashTab::HashTab( const char *map_name,  const HashTabGeom &geom ) noexcept
 {
   this->initialize( map_name, geom );
 }
@@ -58,7 +58,7 @@ static const char ALLOC_TYPE = 'a', /* types that go in the SHM_TYPE_IDX pos */
 /* zero the shm ht context, this does not determine whether some other
    thread is using it */
 void
-HashTab::initialize( const char *map_name,  const HashTabGeom &geom )
+HashTab::initialize( const char *map_name,  const HashTabGeom &geom ) noexcept
 {
   uint64_t tab_size,  /* mem used by ht[] */
            data_size, /* mem used by segment[] */
@@ -236,7 +236,7 @@ HashTab::initialize( const char *map_name,  const HashTabGeom &geom )
 }
 
 HashTab *
-HashTab::alloc_map( HashTabGeom &geom )
+HashTab::alloc_map( HashTabGeom &geom ) noexcept
 {
   void * p = ::malloc( geom.map_size );
   if ( p == NULL )
@@ -299,7 +299,7 @@ static int do_file_open( const char *f,  int fl,  mode_t m ) {
    server initializes */
 HashTab *
 HashTab::create_map( const char *map_name,  uint8_t facility,
-                     HashTabGeom &geom )
+                     HashTabGeom &geom ) noexcept
 {
   const char * fn         = map_name;
   uint64_t     page_align = (uint64_t) ::sysconf( _SC_PAGESIZE ),
@@ -450,7 +450,7 @@ HashTab::create_map( const char *map_name,  uint8_t facility,
    server initializes */
 HashTab *
 HashTab::attach_map( const char *map_name,  uint8_t facility,
-                     HashTabGeom &geom )
+                     HashTabGeom &geom ) noexcept
 {
   const char * fn = map_name;
   HashHdr      hdr;
@@ -562,7 +562,7 @@ HashTab::attach_map( const char *map_name,  uint8_t facility,
 }
 
 void
-HashTab::operator delete( void *ptr )
+HashTab::operator delete( void *ptr ) noexcept
 {
   if ( ptr != NULL ) {
     if ( is_closed( ptr ) )
@@ -575,7 +575,7 @@ HashTab::operator delete( void *ptr )
 }
 
 int
-HashTab::close_map( void )
+HashTab::close_map( void ) noexcept
 {
   uint64_t page_align = (uint64_t) ::sysconf( _SC_PAGESIZE ),
            map_size;
@@ -624,7 +624,8 @@ HashTab::close_map( void )
 
 /* find a new thread entry, key should be non-zero */
 uint32_t
-HashTab::attach_ctx( uint32_t key,  uint8_t db_num1,  uint8_t db_num2 )
+HashTab::attach_ctx( uint32_t key,  uint8_t db_num1,
+                     uint8_t db_num2 ) noexcept
 {
   ThrCtx * el;
   uint32_t i     = this->hdr.next_ctx.add( 1 ) % MAX_CTX_ID,
@@ -668,7 +669,7 @@ HashTab::attach_ctx( uint32_t key,  uint8_t db_num1,  uint8_t db_num2 )
 }
 
 void
-HashTab::retire_ht_thr_stats( uint32_t ctx_id )
+HashTab::retire_ht_thr_stats( uint32_t ctx_id ) noexcept
 {
   ThrCtx       & el      = this->ctx[ ctx_id ],
                & base    = this->ctx[ 0 ];
@@ -697,7 +698,7 @@ HashTab::retire_ht_thr_stats( uint32_t ctx_id )
 
 /* detach thread */
 void
-HashTab::detach_ctx( uint32_t ctx_id )
+HashTab::detach_ctx( uint32_t ctx_id ) noexcept
 {
   ThrCtx       & el       = this->ctx[ ctx_id ],
                & base     = this->ctx[ 0 ];

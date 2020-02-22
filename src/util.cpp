@@ -39,7 +39,7 @@ xor_random_bytes( void *out,  uint16_t outsz,  void *in,  uint16_t insz )
 }
 
 bool
-rai::kv::rand::fill_urandom_bytes( void *buf,  uint16_t sz )
+rai::kv::rand::fill_urandom_bytes( void *buf,  uint16_t sz ) noexcept
 {
   /* static pattern, doesn't change from run to run */
   static uint64_t counter = 100001;
@@ -92,7 +92,7 @@ rai::kv::rand::fill_urandom_bytes( void *buf,  uint16_t sz )
 }
 
 bool
-rai::kv::rand::xorshift1024star::init( void *seed,  uint16_t sz )
+rai::kv::rand::xorshift1024star::init( void *seed,  uint16_t sz ) noexcept
 {
   this->p = 0;
   if ( sz == 0 )
@@ -103,7 +103,7 @@ rai::kv::rand::xorshift1024star::init( void *seed,  uint16_t sz )
 }
 
 uint64_t
-rai::kv::rand::xorshift1024star::next( void )
+rai::kv::rand::xorshift1024star::next( void ) noexcept
 {
   const uint64_t s0 = this->state[ this->p ];
   uint64_t       s1 = this->state[ this->p = (this->p + 1) & 15 ];
@@ -113,7 +113,7 @@ rai::kv::rand::xorshift1024star::next( void )
 }
 
 bool
-rai::kv::rand::xoroshiro128plus::init( void *seed,  uint16_t sz )
+rai::kv::rand::xoroshiro128plus::init( void *seed,  uint16_t sz ) noexcept
 {
   if ( sz == 0 )
     return fill_urandom_bytes( this->state, sizeof( this->state ) );
@@ -124,7 +124,7 @@ rai::kv::rand::xoroshiro128plus::init( void *seed,  uint16_t sz )
 
 char *
 rai::kv::timestamp( uint64_t ns,  int precision,  char *buf,
-                    size_t len,  const char *fmt )
+                    size_t len,  const char *fmt ) noexcept
 {
   static const char *default_fmt = "%Y-%m-%d %H:%M:%S";
   static const uint64_t ONE_NS = 1000 * 1000 * 1000;
@@ -153,7 +153,7 @@ rai::kv::timestamp( uint64_t ns,  int precision,  char *buf,
 }
 
 uint64_t
-rai::kv::get_rdtsc( void )
+rai::kv::get_rdtsc( void ) noexcept
 {
    uint32_t lo, hi;
   __asm__ __volatile__("rdtsc" : "=a" (lo), "=d" (hi));
@@ -161,7 +161,7 @@ rai::kv::get_rdtsc( void )
 }
 
 uint64_t
-rai::kv::get_rdtscp( void )
+rai::kv::get_rdtscp( void ) noexcept
 {
    uint32_t lo, hi;
   __asm__ __volatile__("rdtscp" : "=a" (lo), "=d" (hi));
@@ -169,7 +169,7 @@ rai::kv::get_rdtscp( void )
 }
 
 uint64_t
-rai::kv::current_monotonic_time_ns( void )
+rai::kv::current_monotonic_time_ns( void ) noexcept
 {
   timespec ts;
   clock_gettime( CLOCK_MONOTONIC, &ts );
@@ -177,7 +177,7 @@ rai::kv::current_monotonic_time_ns( void )
 }
 
 double
-rai::kv::current_monotonic_time_s( void )
+rai::kv::current_monotonic_time_s( void ) noexcept
 {
   timespec ts;
   clock_gettime( CLOCK_MONOTONIC, &ts );
@@ -185,7 +185,7 @@ rai::kv::current_monotonic_time_s( void )
 }
 
 uint64_t
-rai::kv::current_monotonic_coarse_ns( void )
+rai::kv::current_monotonic_coarse_ns( void ) noexcept
 {
 #ifndef CLOCK_MONOTONIC_COARSE
 #define CLOCK_MONOTONIC_COARSE 6
@@ -196,7 +196,7 @@ rai::kv::current_monotonic_coarse_ns( void )
 }
 
 double
-rai::kv::current_monotonic_coarse_s( void )
+rai::kv::current_monotonic_coarse_s( void ) noexcept
 {
   timespec ts;
   clock_gettime( CLOCK_MONOTONIC_COARSE, &ts );
@@ -204,7 +204,7 @@ rai::kv::current_monotonic_coarse_s( void )
 }
 
 uint64_t
-rai::kv::current_realtime_ns( void )
+rai::kv::current_realtime_ns( void ) noexcept
 {
   timespec ts;
   clock_gettime( CLOCK_REALTIME, &ts );
@@ -212,7 +212,7 @@ rai::kv::current_realtime_ns( void )
 }
 
 uint64_t
-rai::kv::current_realtime_ms( void )
+rai::kv::current_realtime_ms( void ) noexcept
 {
   timespec ts;
   clock_gettime( CLOCK_REALTIME, &ts );
@@ -220,7 +220,7 @@ rai::kv::current_realtime_ms( void )
 }
 
 uint64_t
-rai::kv::current_realtime_us( void )
+rai::kv::current_realtime_us( void ) noexcept
 {
   timespec ts;
   clock_gettime( CLOCK_REALTIME, &ts );
@@ -228,7 +228,7 @@ rai::kv::current_realtime_us( void )
 }
 
 double
-rai::kv::current_realtime_s( void )
+rai::kv::current_realtime_s( void ) noexcept
 {
   timespec ts;
   clock_gettime( CLOCK_REALTIME, &ts );
@@ -236,7 +236,7 @@ rai::kv::current_realtime_s( void )
 }
 
 uint64_t
-rai::kv::current_realtime_coarse_ns( void )
+rai::kv::current_realtime_coarse_ns( void ) noexcept
 {
 #ifndef CLOCK_REALTIME_COARSE
 #define CLOCK_REALTIME_COARSE 5
@@ -247,7 +247,7 @@ rai::kv::current_realtime_coarse_ns( void )
 }
 
 uint64_t
-rai::kv::current_realtime_coarse_ms( void )
+rai::kv::current_realtime_coarse_ms( void ) noexcept
 {
   timespec ts;
   clock_gettime( CLOCK_REALTIME_COARSE, &ts );
@@ -255,7 +255,7 @@ rai::kv::current_realtime_coarse_ms( void )
 }
 
 uint64_t
-rai::kv::current_realtime_coarse_us( void )
+rai::kv::current_realtime_coarse_us( void ) noexcept
 {
   timespec ts;
   clock_gettime( CLOCK_REALTIME_COARSE, &ts );
@@ -263,7 +263,7 @@ rai::kv::current_realtime_coarse_us( void )
 }
 
 double
-rai::kv::current_realtime_coarse_s( void )
+rai::kv::current_realtime_coarse_s( void ) noexcept
 {
   timespec ts;
   clock_gettime( CLOCK_REALTIME_COARSE, &ts );
@@ -360,13 +360,13 @@ kv_sighndl_install( kv_signal_handler_t *sh )
 }
 
 void
-SignalHandler::install( void )
+SignalHandler::install( void ) noexcept
 {
   kv_sighndl_install( this );
 }
 
 char *
-rai::kv::mem_to_string( int64_t m,  char *b,  int64_t k )
+rai::kv::mem_to_string( int64_t m,  char *b,  int64_t k ) noexcept
 {
   char * s = b;
   size_t i = 0;
@@ -404,7 +404,7 @@ uint64_digits( uint64_t v )
 }
 
 size_t
-rai::kv::uint64_to_string( uint64_t v,  char *buf )
+rai::kv::uint64_to_string( uint64_t v,  char *buf ) noexcept
 {
   const size_t len = uint64_digits( v );
   buf[ len ] = '\0';
@@ -419,7 +419,7 @@ rai::kv::uint64_to_string( uint64_t v,  char *buf )
 }
 
 size_t
-rai::kv::int64_to_string( int64_t v,  char *buf )
+rai::kv::int64_to_string( int64_t v,  char *buf ) noexcept
 {
   size_t len = 0;
   if ( v < 0 ) { len++; *buf++ = '-'; v = -v; }
@@ -427,7 +427,7 @@ rai::kv::int64_to_string( int64_t v,  char *buf )
 }
 
 uint64_t
-rai::kv::string_to_uint64( const char *b,  size_t len )
+rai::kv::string_to_uint64( const char *b,  size_t len ) noexcept
 {
   /* max is 1844674407,3709551615, this table doesnn't overflow 32bits */
   static const uint32_t pow10[] = {     10000U * 10000U * 10,
@@ -467,7 +467,7 @@ rai::kv::string_to_uint64( const char *b,  size_t len )
 }
 
 int64_t
-rai::kv::string_to_int64( const char *b,  size_t len )
+rai::kv::string_to_int64( const char *b,  size_t len ) noexcept
 {
   uint64_t x;
   bool     is_neg = false;

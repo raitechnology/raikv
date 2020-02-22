@@ -19,11 +19,11 @@ struct MemCounters {
   MemCounters() { this->zero(); }
   void zero( void ) { ::memset( this, 0, sizeof( *this ) ); }
 
-  MemCounters& operator=( const MemCounters &x );
-  MemCounters& operator+=( const MemCounters &x );
-  MemCounters& operator-=( const MemCounters &x );
-  bool operator==( int i );
-  bool operator!=( int i );
+  MemCounters& operator=( const MemCounters &x ) noexcept;
+  MemCounters& operator+=( const MemCounters &x ) noexcept;
+  MemCounters& operator-=( const MemCounters &x ) noexcept;
+  bool operator==( int i ) noexcept;
+  bool operator!=( int i ) noexcept;
 };
 
 struct MemDeltaCounters {
@@ -34,7 +34,7 @@ struct MemDeltaCounters {
 
   MemDeltaCounters() {}
 
-  void get_mem_delta( const MemCounters &cnts );
+  void get_mem_delta( const MemCounters &cnts ) noexcept;
 };
 
 struct HashCounters {
@@ -56,11 +56,11 @@ struct HashCounters {
   HashCounters( const HashCounters &cnt ) { *this = cnt; }
   void zero( void ) { ::memset( this, 0, sizeof( *this ) ); }
 
-  HashCounters& operator=( const HashCounters &x );
-  HashCounters& operator+=( const HashCounters &x );
-  HashCounters& operator-=( const HashCounters &x );
-  bool operator==( int i );
-  bool operator!=( int i );
+  HashCounters& operator=( const HashCounters &x ) noexcept;
+  HashCounters& operator+=( const HashCounters &x ) noexcept;
+  HashCounters& operator-=( const HashCounters &x ) noexcept;
+  bool operator==( int i ) noexcept;
+  bool operator!=( int i ) noexcept;
 };
 
 struct HashDeltaCounters {
@@ -69,7 +69,7 @@ struct HashDeltaCounters {
   HashDeltaCounters() {}
   void zero( void ) { this->last.zero(); this->delta.zero(); }
 
-  void get_ht_delta( const HashCounters &stat );
+  void get_ht_delta( const HashCounters &stat ) noexcept;
 };
 
 struct HashTab;
@@ -98,9 +98,9 @@ struct HashTabStats {
     this->hops.zero(); this->htot.zero();
     this->mops.zero(); this->mtot.zero();
   }
-  static HashTabStats * create( HashTab &ht );
+  static HashTabStats * create( HashTab &ht ) noexcept;
 
-  bool fetch( void ); /* calculate a new interval, return true if new stats */
+  bool fetch( void ) noexcept; /* calculate a new ival, ret true if new stats */
 };
 
 } /* namespace kv */

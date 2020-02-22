@@ -222,7 +222,7 @@ struct ThrCtx : public ThrCtxEntry { /* each thread needs one of these */
   static_assert( HT_THR_CTX_SIZE == sizeof( ThrCtxEntry ), "ctx hdr size" );
 #endif
   bool get_ht_thr_delta( HashDeltaCounters &stat,  uint8_t &db,
-                         uint32_t &seqno ) const;
+                         uint32_t &seqno ) const noexcept;
   uint64_t next_mcs_lock( void ) {
     uint32_t id = ( this->mcs_used == 0 ) ? 0 :
                   ( 64 - __builtin_clzl( this->mcs_used ) );
@@ -319,48 +319,49 @@ public:
   /* mem is shm via mmap(): new HashTab( mmap( fd ) ) */
   void * operator new( size_t, void *ptr ) { return ptr; }
   /* delete does close if shm, free() if alloced */
-  void operator delete( void *ptr );
+  void operator delete( void *ptr ) noexcept;
   /* static header string for this version, sigs for different memory models */
   static const char shared_mem_sig[ 16 ], alloced_mem_sig[ 16 ];
   /* close calls munmap(), 'this' is no longer valid */
-  int close_map( void );
+  int close_map( void ) noexcept;
 private:
   /* calls initialize() */
-  HashTab( const char *map_name,  const HashTabGeom &geom );
+  HashTab( const char *map_name,  const HashTabGeom &geom ) noexcept;
   /* this could be used to reinitialize */
-  void initialize( const char *map_name,  const HashTabGeom &geom );
+  void initialize( const char *map_name,  const HashTabGeom &geom ) noexcept;
 public:
   /* allocate new map using malloc */
-  static HashTab *alloc_map( HashTabGeom &geom );
+  static HashTab *alloc_map( HashTabGeom &geom ) noexcept;
   /* initialize new map using shm file name, kv_facility bits */
   static HashTab *create_map( const char *map_name,  uint8_t facility,
-                              HashTabGeom &geom ); /* create using geom */
+                              HashTabGeom &geom ) noexcept; /* mk using geom */
   /* attaches existing map using shm file name, kv_facility bits */
   static HashTab *attach_map( const char *map_name,  uint8_t facility,
-                              HashTabGeom &geom ); /* return geom */
+                              HashTabGeom &geom ) noexcept; /* return geom */
   /* a shared usage context for stats and signals */
-  uint32_t attach_ctx( uint32_t key,  uint8_t db_num1,  uint8_t db_num2 );
+  uint32_t attach_ctx( uint32_t key,  uint8_t db_num1,
+                       uint8_t db_num2 ) noexcept;
   /* sum ctx[0] and hdr.stats[db] stats and zero ctx[ctx_id] stats */
-  void retire_ht_thr_stats( uint32_t ctx_id );
+  void retire_ht_thr_stats( uint32_t ctx_id ) noexcept;
   /* free the shared usage context */
-  void detach_ctx( uint32_t ctx_id );
+  void detach_ctx( uint32_t ctx_id ) noexcept;
   /* calculate load of ht and set this->hdr.current_load */
-  void update_load( void );
+  void update_load( void ) noexcept;
   /* accumulate stats just for ctx_id with delta change */
   bool sum_ht_thr_delta( HashDeltaCounters &stats,  HashCounters &ops,
-                         HashCounters &tot,  uint32_t ctx_id ) const;
+                         HashCounters &tot,  uint32_t ctx_id ) const noexcept;
   /* accumulate stats just for db */
-  bool get_db_stats( HashCounters &tot,  uint8_t db_num ) const;
+  bool get_db_stats( HashCounters &tot,  uint8_t db_num ) const noexcept;
   /* accumulate memory usage stats of each segment and return true if changed
    * stats[] should be sized by this->hdr.nsegs */
   bool sum_mem_deltas( MemDeltaCounters *stats,  MemCounters &chg,
-                       MemCounters &tot ) const;
+                       MemCounters &tot ) const noexcept;
   /* get the start of a data segment */
   Segment &segment( uint32_t i ) {
     return this->hdr.seg[ i ];
   }
   /* walk segment an reclaim memory */
-  bool gc_segment( ThrCtx &ctx,  uint32_t i,  GCStats &stats );
+  bool gc_segment( ThrCtx &ctx,  uint32_t i,  GCStats &stats ) noexcept;
 
   void *seg_data( uint32_t i,  uint64_t off ) const {
     /*return &((uint8_t *) this)[ this->segment( i ).seg_off + off ];*/
@@ -374,7 +375,7 @@ public:
 };
 
 char *print_map_geom( HashTab *map,  uint32_t ctx_id, char *buf = 0,
-                      size_t buflen = 0 );
+                      size_t buflen = 0 ) noexcept;
 } /* namespace kv */
 } /* namespace rai */
 #endif /* __cplusplus */

@@ -9,7 +9,7 @@ using namespace kv;
 
 void
 RelativeStamp::set( uint64_t base,  uint64_t clock,  uint64_t exp,
-                    uint64_t upd )
+                    uint64_t upd ) noexcept
 {
   uint64_t ns        = 0;
   uint64_t secs      = 0;
@@ -56,7 +56,7 @@ RelativeStamp::set( uint64_t base,  uint64_t clock,  uint64_t exp,
 
 void
 RelativeStamp::get( uint64_t base,  uint64_t clock,  uint64_t &exp,
-                    uint64_t &upd )
+                    uint64_t &upd ) noexcept
 {
   uint64_t secs, ns, res, qtr, qbase;
   uint32_t exp_shift, upd_shift;

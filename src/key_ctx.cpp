@@ -108,7 +108,7 @@ KeyCtx::KeyCtx( KeyCtx &kctx )
 }
 
 void
-KeyCtx::switch_db( uint8_t db_num )
+KeyCtx::switch_db( uint8_t db_num ) noexcept
 {
   this->ht.retire_ht_thr_stats( this->thr_ctx.ctx_id );
   this->db_num = db_num;
@@ -116,7 +116,7 @@ KeyCtx::switch_db( uint8_t db_num )
 }
 
 void
-KeyCtx::set_hash( uint64_t k,  uint64_t k2 )
+KeyCtx::set_hash( uint64_t k,  uint64_t k2 ) noexcept
 {
   this->key   = k;
   this->key2  = k2;
@@ -124,7 +124,7 @@ KeyCtx::set_hash( uint64_t k,  uint64_t k2 )
 }
 
 void
-KeyCtx::set_key_hash( KeyFragment &b )
+KeyCtx::set_key_hash( KeyFragment &b ) noexcept
 {
   uint64_t k, k2;
   this->ht.hdr.get_hash_seed( this->db_num, k, k2 );
@@ -134,7 +134,7 @@ KeyCtx::set_key_hash( KeyFragment &b )
 }
 
 KeyCtx *
-KeyCtx::new_array( HashTab &t,  uint32_t id,  void *b,  size_t bsz )
+KeyCtx::new_array( HashTab &t,  uint32_t id,  void *b,  size_t bsz ) noexcept
 {
   KeyCtxBuf *p = (KeyCtxBuf *) b;
   if ( p == NULL ) {
@@ -152,7 +152,7 @@ KeyCtx::new_array( HashTab &t,  uint32_t id,  void *b,  size_t bsz )
 
 /* acquire lock for a key, if KEY_OK, set entry at &ht[ key % ht_size ] */
 KeyStatus
-KeyCtx::acquire( void )
+KeyCtx::acquire( void ) noexcept
 {
   this->init_acquire();
   if ( this->test( KEYCTX_IS_SINGLE_THREAD ) == 0 ) {
@@ -168,7 +168,7 @@ KeyCtx::acquire( void )
 
 /* try to acquire lock for a key without waiting */
 KeyStatus
-KeyCtx::try_acquire( void )
+KeyCtx::try_acquire( void ) noexcept
 {
   this->init_acquire();
   if ( this->test( KEYCTX_IS_SINGLE_THREAD ) == 0 ) {
@@ -184,7 +184,7 @@ KeyCtx::try_acquire( void )
 
 /* if find locates key, returns KEY_OK, sets entry at &ht[ key % ht_size ] */
 KeyStatus
-KeyCtx::find( const uint64_t spin_wait )
+KeyCtx::find( const uint64_t spin_wait ) noexcept
 {
   this->init_find();
   if ( this->test( KEYCTX_IS_SINGLE_THREAD ) == 0 ) {
@@ -200,7 +200,7 @@ KeyCtx::find( const uint64_t spin_wait )
 
 /* mark as dropped */
 KeyStatus
-KeyCtx::tombstone( void )
+KeyCtx::tombstone( void ) noexcept
 {
   if ( this->lock != 0 ) { /* if it's not new */
     KeyStatus status;
@@ -221,7 +221,7 @@ KeyCtx::tombstone( void )
 
 /* just like tombstone except incr expire */
 KeyStatus
-KeyCtx::expire( void )
+KeyCtx::expire( void ) noexcept
 {
   if ( this->lock != 0 ) {
     KeyStatus status;
@@ -242,7 +242,7 @@ KeyCtx::expire( void )
 }
 
 bool
-KeyCtx::frag_equals( const HashEntry &el ) const
+KeyCtx::frag_equals( const HashEntry &el ) const noexcept
 {
   KeyFragment &kb = *this->kbuf;
   if ( el.test( FL_IMMEDIATE_KEY ) )
@@ -251,7 +251,7 @@ KeyCtx::frag_equals( const HashEntry &el ) const
 }
 
 void *
-KeyCtx::copy_data( void *data,  uint64_t sz )
+KeyCtx::copy_data( void *data,  uint64_t sz ) noexcept
 {
   void *p = this->wrk->alloc( sz );
   if ( p != NULL ) {
@@ -262,7 +262,7 @@ KeyCtx::copy_data( void *data,  uint64_t sz )
 }
 
 KeyStatus
-KeyCtx::get_key( KeyFragment *&b )
+KeyCtx::get_key( KeyFragment *&b ) noexcept
 {
   KeyStatus mstatus;
 
@@ -308,7 +308,7 @@ KeyCtx::get_key( KeyFragment *&b )
 }
 
 void
-KeyCtx::prefetch( bool for_read ) const
+KeyCtx::prefetch( bool for_read ) const noexcept
 {
 /* -march=broadwell -mprefetchwt1 (https://stackoverflow.com/questions/40513280/what-is-the-effect-of-second-argument-in-builtin-prefetch)
  * prefetchwt1     [rdi]    #   __builtin_prefetch(p,1,2);  // KNL only
@@ -331,7 +331,7 @@ KeyCtx::prefetch( bool for_read ) const
 
 /* release the Key's entry in ht[] */
 void
-KeyCtx::release( void )
+KeyCtx::release( void ) noexcept
 {
   if ( this->test( KEYCTX_IS_READ_ONLY | KEYCTX_IS_SINGLE_THREAD ) != 0 ) {
     if ( this->test( KEYCTX_IS_READ_ONLY ) == 0 )
@@ -346,7 +346,9 @@ KeyCtx::release( void )
   /* if no data was inserted, mark the entry as tombstone */
   if ( this->lock == 0 ) { /* if it's new */
     /* don't keep keys with no data */
-    if ( el.flags == FL_NO_ENTRY || el.test( FL_DROPPED ) ) {
+    if ( el.test( FL_SEGMENT_VALUE | FL_IMMEDIATE_VALUE |
+                  FL_IMMEDIATE_KEY | FL_PART_KEY ) == 0 ||
+         el.test( FL_DROPPED ) ) {
       /* was already dropped, use pre-existing key and flags */
       if ( this->drop_key != 0 ) {
         k        = this->drop_key;
@@ -381,7 +383,7 @@ done:;
 }
 
 void
-KeyCtx::release_single_thread( void )
+KeyCtx::release_single_thread( void ) noexcept
 {
   if ( this->test( KEYCTX_IS_READ_ONLY ) != 0 )
     return;
@@ -424,7 +426,7 @@ done:;
 }
 
 KeyStatus
-KeyCtx::attach_msg( AttachType upd )
+KeyCtx::attach_msg( AttachType upd ) noexcept
 {
   /* if result of find(), do not have write access */
   if ( this->test( KEYCTX_IS_READ_ONLY ) ) {
@@ -468,7 +470,7 @@ KeyCtx::attach_msg( AttachType upd )
 }
 
 MsgHdr *
-KeyCtx::get_chain_msg( ValueGeom &cgeom )
+KeyCtx::get_chain_msg( ValueGeom &cgeom ) noexcept
 {
   MsgHdr * cmsg;
   void   * p;
@@ -487,7 +489,7 @@ KeyCtx::get_chain_msg( ValueGeom &cgeom )
 }
 
 KeyStatus
-KeyCtx::get_msg_size( uint64_t &sz )
+KeyCtx::get_msg_size( uint64_t &sz ) noexcept
 {
   KeyStatus mstatus;
   if ( this->msg == NULL &&
@@ -507,7 +509,7 @@ KeyCtx::get_msg_size( uint64_t &sz )
 }
 
 bool
-KeyCtx::is_msg_valid( void )
+KeyCtx::is_msg_valid( void ) noexcept
 {
   return this->msg->check_seal( this->key, this->key2, this->geom.serial,
                                 this->geom.size, this->msg_chain_size );
@@ -515,7 +517,7 @@ KeyCtx::is_msg_valid( void )
 
 /* release the data in the segment for GC */
 KeyStatus
-KeyCtx::release_data( void )
+KeyCtx::release_data( void ) noexcept
 {
   if ( this->test( KEYCTX_IS_READ_ONLY ) )
     return KEY_WRITE_ILLEGAL;
@@ -615,7 +617,7 @@ KeyCtx::release_evict( void )
 #endif
 /* validate the msg data by setting the crc */
 void
-KeyCtx::seal_msg( void )
+KeyCtx::seal_msg( void ) noexcept
 {
   if ( this->msg == NULL && this->attach_msg( ATTACH_WRITE ) != KEY_OK )
     return;
@@ -628,7 +630,7 @@ KeyCtx::seal_msg( void )
 }
 
 KeyStatus
-KeyCtx::update_entry( void *res,  uint64_t size,  HashEntry &el )
+KeyCtx::update_entry( void *res,  uint64_t size,  HashEntry &el ) noexcept
 {
   KeyFragment  & kb       = *this->kbuf;
   const uint32_t hdr_size = HashEntry::hdr_size( kb );
@@ -689,7 +691,7 @@ KeyCtx::update_entry( void *res,  uint64_t size,  HashEntry &el )
 
 /* return a contiguous memory space for data attached to the Key ht[] entry */
 KeyStatus
-KeyCtx::alloc( void *res,  uint64_t size,  bool copy )
+KeyCtx::alloc( void *res,  uint64_t size,  bool copy ) noexcept
 {
   if ( this->test( KEYCTX_IS_READ_ONLY ) )
     return KEY_WRITE_ILLEGAL;
@@ -785,7 +787,7 @@ KeyCtx::alloc( void *res,  uint64_t size,  bool copy )
 }
 
 KeyStatus
-KeyCtx::load( MsgCtx &msg_ctx )
+KeyCtx::load( MsgCtx &msg_ctx ) noexcept
 {
   if ( this->test( KEYCTX_IS_READ_ONLY ) )
     return KEY_WRITE_ILLEGAL;
@@ -808,7 +810,7 @@ KeyCtx::load( MsgCtx &msg_ctx )
 }
 
 KeyStatus
-KeyCtx::add_msg_chain( MsgCtx &msg_ctx )
+KeyCtx::add_msg_chain( MsgCtx &msg_ctx ) noexcept
 {
   MsgChain next;
   if ( this->test( KEYCTX_IS_READ_ONLY ) )
@@ -846,7 +848,7 @@ KeyCtx::add_msg_chain( MsgCtx &msg_ctx )
 }
 
 KeyStatus
-KeyCtx::resize( void *res,  uint64_t size,  bool copy )
+KeyCtx::resize( void *res,  uint64_t size,  bool copy ) noexcept
 {
   if ( this->test( KEYCTX_IS_READ_ONLY ) )
     return KEY_WRITE_ILLEGAL;
@@ -896,7 +898,7 @@ KeyCtx::resize( void *res,  uint64_t size,  bool copy )
 
 /* get the value associated with the key */
 KeyStatus
-KeyCtx::value( void *data,  uint64_t &size )
+KeyCtx::value( void *data,  uint64_t &size ) noexcept
 {
   if ( this->entry == NULL )
     return KEY_NO_VALUE;
@@ -939,7 +941,8 @@ KeyCtx::value( void *data,  uint64_t &size )
 
 /* get the value associated with the key */
 KeyStatus
-KeyCtx::value_copy( void *data,  uint64_t &size,  void *cp,  uint64_t &cplen )
+KeyCtx::value_copy( void *data,  uint64_t &size,  void *cp,
+                    uint64_t &cplen ) noexcept
 {
   if ( this->entry == NULL )
     return KEY_NO_VALUE;
@@ -997,7 +1000,7 @@ typedef uint32_t msg_size_t;
 
 /* append a message to entry */
 KeyStatus
-KeyCtx::append_msg( void *res,  uint64_t size )
+KeyCtx::append_msg( void *res,  uint64_t size ) noexcept
 {
   if ( this->test( KEYCTX_IS_READ_ONLY ) )
     return KEY_WRITE_ILLEGAL;
@@ -1098,7 +1101,7 @@ return_msg:;
 
 /* append a vector of size[ i ] elements: vec[ i ] -> msg @ size[ i ] */
 KeyStatus
-KeyCtx::append_vector( uint64_t count,  void *vec,  uint64_t *size )
+KeyCtx::append_vector( uint64_t count,  void *vec,  uint64_t *size ) noexcept
 {
   if ( this->test( KEYCTX_IS_READ_ONLY ) )
     return KEY_WRITE_ILLEGAL;
@@ -1217,7 +1220,7 @@ copy_vector:;
 }
 
 bool
-MsgIter::init( KeyCtx &kctx,  uint64_t idx )
+MsgIter::init( KeyCtx &kctx,  uint64_t idx ) noexcept
 {
   HashEntry & el = *kctx.entry;
   /* serial is inclusive */
@@ -1284,7 +1287,7 @@ MsgIter::init( KeyCtx &kctx,  uint64_t idx )
 }
 
 bool
-MsgIter::trim( KeyCtx &kctx,  uint64_t &idx )
+MsgIter::trim( KeyCtx &kctx,  uint64_t &idx ) noexcept
 {
   HashEntry & el = *kctx.entry;
   if ( this->seek( idx ) ) {
@@ -1321,7 +1324,7 @@ MsgIter::trim( KeyCtx &kctx,  uint64_t &idx )
 }
 
 bool
-MsgIter::seek( uint64_t &idx )
+MsgIter::seek( uint64_t &idx ) noexcept
 {
   if ( idx < this->seqno )
     idx = this->seqno;
@@ -1334,7 +1337,7 @@ MsgIter::seek( uint64_t &idx )
 }
 
 bool
-MsgIter::first( void )
+MsgIter::first( void ) noexcept
 {
   if ( this->msg_off + sizeof( msg_size_t ) > this->buf_size ) {
     this->status = KEY_NOT_FOUND;
@@ -1350,7 +1353,7 @@ MsgIter::first( void )
 }
 
 bool
-MsgIter::next( void )
+MsgIter::next( void ) noexcept
 {
   this->msg_off += align<msg_size_t>( this->msg_size, sizeof( msg_size_t ) ) +
                    sizeof( msg_size_t );
@@ -1361,7 +1364,7 @@ MsgIter::next( void )
 /* get the value associated with the msg at index idx */
 KeyStatus
 KeyCtx::msg_value( uint64_t &from_idx,  uint64_t &to_idx,
-                   void *data,  uint64_t *size )
+                   void *data,  uint64_t *size ) noexcept
 {
   if ( this->entry == NULL )
     return KEY_NO_VALUE;
@@ -1386,7 +1389,7 @@ KeyCtx::msg_value( uint64_t &from_idx,  uint64_t &to_idx,
 }
 
 KeyStatus
-KeyCtx::trim_msg( uint64_t new_seqno )
+KeyCtx::trim_msg( uint64_t new_seqno ) noexcept
 {
   if ( this->entry == NULL )
     return KEY_NO_VALUE;
@@ -1415,7 +1418,7 @@ KeyCtx::trim_msg( uint64_t new_seqno )
 }
 
 KeyStatus
-KeyCtx::update_stamps( uint64_t exp_ns,  uint64_t upd_ns )
+KeyCtx::update_stamps( uint64_t exp_ns,  uint64_t upd_ns ) noexcept
 {
   HashEntry & el = *this->entry;
 
@@ -1461,7 +1464,7 @@ KeyCtx::update_stamps( uint64_t exp_ns,  uint64_t upd_ns )
 }
 
 KeyStatus
-KeyCtx::reorganize_entry( HashEntry &el,  uint32_t new_fl )
+KeyCtx::reorganize_entry( HashEntry &el,  uint32_t new_fl ) noexcept
 {
   HashEntry *cpy = (HashEntry *) this->copy_data( &el, this->hash_entry_size );
   if ( cpy == NULL )
@@ -1494,8 +1497,9 @@ KeyCtx::reorganize_entry( HashEntry &el,  uint32_t new_fl )
     void * tmp;
     if ( (mstatus = mctx.alloc_segment( &tmp, new_size, 0 )) != KEY_OK )
       return mstatus;
-    el.clear( FL_IMMEDIATE_VALUE );
-    el.set( FL_SEGMENT_VALUE );
+    /* clear key in case segment value pointer overwrites it */
+    el.clear( FL_IMMEDIATE_VALUE | FL_IMMEDIATE_KEY );
+    el.set( FL_SEGMENT_VALUE | FL_PART_KEY );
     mctx.geom.serial = this->serial;
     this->geom = mctx.geom;
     el.set_value_geom( this->hash_entry_size, mctx.geom,
@@ -1503,20 +1507,39 @@ KeyCtx::reorganize_entry( HashEntry &el,  uint32_t new_fl )
     this->msg = mctx.msg;
     this->msg->msg_size = sz;
     ::memcpy( this->msg->ptr( hdr_size ), cpy->immediate_value(), sz );
+
+    /* check whether key fits */
+    tl = el.trail_offset( this->hash_entry_size );
+    hd = el.hdr_size( *this->kbuf );
+    if ( hd <= tl ) { /* it fits, copy it */
+      el.copy_key( *this->kbuf );
+      el.clear( FL_PART_KEY );
+      el.set( FL_IMMEDIATE_KEY );
+    }
   }
-  if ( hd > tl ) { /* can only have part key */
-    el.set( FL_PART_KEY );
-    el.clear( FL_IMMEDIATE_KEY );
-  }
-  else {
-    el.set( FL_IMMEDIATE_KEY );
-    el.clear( FL_PART_KEY );
+  else { /* check whether new alignment overwrites the key */
+    if ( hd > tl ) { /* if can only have part key */
+      if ( el.test( FL_IMMEDIATE_KEY ) ) {
+        el.set( FL_PART_KEY );
+        el.clear( FL_IMMEDIATE_KEY );
+      }
+    }
+    else { /* key fits, copy it back */
+      if ( el.test( FL_PART_KEY ) && this->kbuf != NULL ) {
+        hd = el.hdr_size( *this->kbuf );
+        if ( hd <= tl ) { /* it fits */
+          el.set( FL_IMMEDIATE_KEY );
+          el.clear( FL_PART_KEY );
+          el.copy_key( *this->kbuf );
+        }
+      }
+    }
   }
   return KEY_OK;
 }
 
 KeyStatus
-KeyCtx::clear_stamps( bool clr_exp,  bool clr_upd )
+KeyCtx::clear_stamps( bool clr_exp,  bool clr_upd ) noexcept
 {
   HashEntry     & el   = *this->entry;
   RelativeStamp & rela = el.rela_stamp( this->hash_entry_size );
@@ -1562,7 +1585,7 @@ KeyCtx::clear_stamps( bool clr_exp,  bool clr_upd )
 }
 
 KeyStatus
-KeyCtx::get_stamps( uint64_t &exp_ns,  uint64_t &upd_ns )
+KeyCtx::get_stamps( uint64_t &exp_ns,  uint64_t &upd_ns ) noexcept
 {
   HashEntry     & el   = *this->entry;
   RelativeStamp & rela = el.rela_stamp( this->hash_entry_size );
@@ -1590,7 +1613,7 @@ KeyCtx::get_stamps( uint64_t &exp_ns,  uint64_t &upd_ns )
 }
 
 KeyStatus
-KeyCtx::check_expired( void )
+KeyCtx::check_expired( void ) noexcept
 {
   HashEntry & el = *this->entry;
   uint64_t    exp_ns, upd_ns;

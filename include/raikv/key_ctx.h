@@ -154,20 +154,20 @@ struct KeyCtx {
    * if ( kctx == NULL ) fatal( "no memory" );
    * delete kctx; // same as free( kctx )
    */
-  static KeyCtx * new_array( HashTab &t,  uint32_t id,  void *b,  size_t bsz );
-
+  static KeyCtx * new_array( HashTab &t,  uint32_t id,  void *b,
+                             size_t bsz ) noexcept;
   void * operator new( size_t, void *ptr ) { return ptr; }
   void operator delete( void *ptr ) { ::free( ptr ); }
-  void switch_db( uint8_t db_num );
+  void switch_db( uint8_t db_num ) noexcept;
   /* set key, this does not hash the key, use set_hash() afterwards */
   void set_key( KeyFragment &b ) { this->kbuf = &b; }
   /* set hash value, no key arg, usually done as:
    * kctx.set_hash( kctx.kbuf->hash( ht.hdr.hash_key_seed ) ),
    * this function is separate from the key because there may not be a key or
    * the hash may be precomputed using vector functions or client resources */
-  void set_hash( uint64_t k,  uint64_t k2 );
+  void set_hash( uint64_t k,  uint64_t k2 ) noexcept;
   /* set key and hash by using set_key() then b.hash() to compute hash value */
-  void set_key_hash( KeyFragment &b );
+  void set_key_hash( KeyFragment &b ) noexcept;
   /* used for find() operations where data is copied from ht to local buffers */
   void init_work( ScratchMem *a ) {
     if ( a != NULL ) {
@@ -207,9 +207,9 @@ struct KeyCtx {
     return (HashEntry *) this->wrk->alloc( this->hash_entry_size );
   }
   /* copy value using this->wrk->alloc() */
-  void *copy_data( void *data,  uint64_t sz );
+  void *copy_data( void *data,  uint64_t sz ) noexcept;
   /* copy current key to KeyFragment reference */
-  KeyStatus get_key( KeyFragment *&b );
+  KeyStatus get_key( KeyFragment *&b ) noexcept;
   /* compare hash entry to kbuf, true if kbuf == NULL, when hash is perfect */
   bool equals( const HashEntry &el ) const {
     return el.hash2 == this->key2;
@@ -217,9 +217,9 @@ struct KeyCtx {
       return true;
     return this->frag_equals( el );*/
   }
-  bool frag_equals( const HashEntry &el ) const;
+  bool frag_equals( const HashEntry &el ) const noexcept;
   /* use __builtin_prefetch() on hash element using this->start as a base */
-  void prefetch( bool for_read = true ) const;
+  void prefetch( bool for_read = true ) const noexcept;
   /* type indicates the data type of the value */
   uint8_t get_type( void ) const {
     return this->entry->type;
@@ -251,9 +251,9 @@ struct KeyCtx {
     return KEY_NO_VALUE;
   }
   /* if in a segment, this is the size */
-  KeyStatus get_msg_size( uint64_t &sz );
+  KeyStatus get_msg_size( uint64_t &sz ) noexcept;
   /* check that msg data is still valid for speculative reads */
-  bool is_msg_valid( void );
+  bool is_msg_valid( void ) noexcept;
   /* whether message data was updated during a read */
   KeyStatus validate_value( void ) {
     return ( this->msg == NULL || this->is_msg_valid() ) ? KEY_OK : KEY_MUTATED;
@@ -263,13 +263,13 @@ struct KeyCtx {
     this->init_work( a );
     return this->acquire();
   }
-  KeyStatus acquire( void );
+  KeyStatus acquire( void ) noexcept;
   /* try to acquire lock for a key without waiting */
   KeyStatus try_acquire( ScratchMem *a ) {
     this->init_work( a );
     return this->try_acquire();
   }
-  KeyStatus try_acquire( void );
+  KeyStatus try_acquire( void ) noexcept;
 
   void init_acquire( void ) {
     this->chains    = 0; /* count of chains */
@@ -277,20 +277,23 @@ struct KeyCtx {
     this->msg       = NULL; 
   }
   /* acquire using linear probing  */
-  KeyStatus acquire_linear_probe( const uint64_t k,  const uint64_t start_pos );
+  KeyStatus acquire_linear_probe( const uint64_t k,
+                                  const uint64_t start_pos ) noexcept;
   /* acquire using cuckoo */
-  KeyStatus acquire_cuckoo( const uint64_t k,  const uint64_t start_pos );
+  KeyStatus acquire_cuckoo( const uint64_t k,
+                            const uint64_t start_pos ) noexcept;
   /* acquire using linear probing  */
   KeyStatus try_acquire_linear_probe( const uint64_t k,
-                                      const uint64_t start_pos );
+                                      const uint64_t start_pos ) noexcept;
   /* acquire using cuckoo */
-  KeyStatus try_acquire_cuckoo( const uint64_t k,  const uint64_t start_pos );
+  KeyStatus try_acquire_cuckoo( const uint64_t k,
+                                const uint64_t start_pos ) noexcept;
   /* acquire using linear probing  */
   KeyStatus acquire_linear_probe_single_thread( const uint64_t k,
-                                                const uint64_t start_pos );
+                                            const uint64_t start_pos ) noexcept;
   /* acquire using cuckoo */
   KeyStatus acquire_cuckoo_single_thread( const uint64_t k,
-                                          const uint64_t start_pos );
+                                          const uint64_t start_pos ) noexcept;
   /* templated for ht acquire search */
   template <class Position, bool is_blocking>
   KeyStatus acquire( const uint64_t k,  uint64_t i,  Position &next );
@@ -301,9 +304,9 @@ struct KeyCtx {
   /* drop key after lock is acquired, deletes value data */
   /*KeyStatus drop( void );*/
   /* mark key dropped after lock is acquired, deletes value data */
-  KeyStatus tombstone( void );
+  KeyStatus tombstone( void ) noexcept;
   /* like tombstone and incr expired */
-  KeyStatus expire( void );
+  KeyStatus expire( void ) noexcept;
   /* start a new read only operation */
   void init_find( void ) {
     this->chains = 0; /* count of chains */
@@ -315,7 +318,7 @@ struct KeyCtx {
     this->init_work( a );
     return this->find( spin_wait );
   }
-  KeyStatus find( const uint64_t spin_wait = 0 );
+  KeyStatus find( const uint64_t spin_wait = 0 ) noexcept;
   /* templated for ht find search */
   template <class Position>
   KeyStatus find( const uint64_t k,  uint64_t i,  const uint64_t spin_wait,
@@ -324,14 +327,14 @@ struct KeyCtx {
   KeyStatus find_single_thread( const uint64_t k, uint64_t i,  Position &next );
   /* find in ht using linear probing */
   KeyStatus find_linear_probe( const uint64_t k,  const uint64_t start_pos,
-                               const uint64_t spin_wait );
+                               const uint64_t spin_wait ) noexcept;
   KeyStatus find_cuckoo( const uint64_t k,  const uint64_t start_pos,
-                         const uint64_t spin_wait );
+                         const uint64_t spin_wait ) noexcept;
   /* find in ht using linear probing */
   KeyStatus find_linear_probe_single_thread( const uint64_t k,
-                                             const uint64_t start_pos );
+                                            const uint64_t start_pos ) noexcept;
   KeyStatus find_cuckoo_single_thread( const uint64_t k,
-                                       const uint64_t start_pos );
+                                       const uint64_t start_pos ) noexcept;
   /* get item at ht[ i ] */
   KeyStatus fetch( ScratchMem *a,  const uint64_t i,
                    const uint64_t spin_wait = 0,
@@ -345,9 +348,9 @@ struct KeyCtx {
     return this->fetch_position( i, spin_wait, is_scan );
   }
   KeyStatus fetch_position( const uint64_t i,  const uint64_t spin_wait,
-                            const bool is_scan );
+                            const bool is_scan ) noexcept;
   /* exclusive access to a position */
-  KeyStatus try_acquire_position( const uint64_t i );
+  KeyStatus try_acquire_position( const uint64_t i ) noexcept;
 
   struct CopyData {
     void    * data;
@@ -356,70 +359,71 @@ struct KeyCtx {
     ValueGeom geom;
   };
   /* update the hash entry */
-  KeyStatus update_entry( void *res,  uint64_t size,  HashEntry &el );
+  KeyStatus update_entry( void *res,  uint64_t size,  HashEntry &el ) noexcept;
   /* allocate memory for hash, releases data that may be allocated */
-  KeyStatus alloc( void *res,  uint64_t size,  bool copy = false );
+  KeyStatus alloc( void *res,  uint64_t size,  bool copy = false ) noexcept;
   /* copy value segment location to hash entry */
-  KeyStatus load( MsgCtx &msg_ctx );
+  KeyStatus load( MsgCtx &msg_ctx ) noexcept;
   /* chain value segment location to hash entry at head */
-  KeyStatus add_msg_chain( MsgCtx &msg_ctx );
+  KeyStatus add_msg_chain( MsgCtx &msg_ctx ) noexcept;
   /* resizes memory, could return already alloced memory if fits,
    * does not copy data to newly allocated space (maybe it should) */
-  KeyStatus resize( void *res,  uint64_t size,  bool copy = false );
+  KeyStatus resize( void *res,  uint64_t size,  bool copy = false ) noexcept;
   /* value returns KEY_OK if has data and set ptrs to a reference, either
    * immediate or segment ex: char *s; if ( kctx.get( &s, sz ) == KEY_OK )
    * printf( "%s\n", s ); if find() is used, ptr will not reference data in the
    * table, but copied data;  if acquire() is used, ptr will reference the shm
    * table data */
-  KeyStatus value( void *ptr,  uint64_t &size );
+  KeyStatus value( void *ptr,  uint64_t &size ) noexcept;
   /* append to message list, returns a ptr in *(void **) res to size mem */
-  KeyStatus append_msg( void *res,  uint64_t size );
+  KeyStatus append_msg( void *res,  uint64_t size ) noexcept;
   /* append a vector of count elems, where vec[ i ] -> msg @ size[ i ] */
-  KeyStatus append_vector( uint64_t count,  void *vec,  uint64_t *size );
+  KeyStatus append_vector( uint64_t count,  void *vec,
+                           uint64_t *size ) noexcept;
   /* get the geoms of the chained messages */
-  ValueGeom *get_msg_chain( uint8_t i,  ValueGeom &buf );
+  ValueGeom *get_msg_chain( uint8_t i,  ValueGeom &buf ) noexcept;
   /* fetch a messsge from a message list value */
   KeyStatus msg_value( uint64_t &from_idx,  uint64_t &to_idx,
-                       void *data,  uint64_t *size );
+                       void *data,  uint64_t *size ) noexcept;
   /* move hash entry elements within the struct without losing values */
-  KeyStatus reorganize_entry( HashEntry &el,  uint32_t new_fl );
+  KeyStatus reorganize_entry( HashEntry &el,  uint32_t new_fl ) noexcept;
   /* set the base seqno and remove msgs < idx */
-  KeyStatus trim_msg( uint64_t idx );
+  KeyStatus trim_msg( uint64_t idx ) noexcept;
   /* value + a copy of value header which is validated as current and
    * unmolested by mutators (which can and will happen) */
   KeyStatus value_copy( void *ptr,  uint64_t &size,  void *cp,
-                        uint64_t &cplen );
+                        uint64_t &cplen ) noexcept;
   /* update timestamp if not zero */
-  KeyStatus update_stamps( uint64_t exp_ns,  uint64_t upd_ns );
+  KeyStatus update_stamps( uint64_t exp_ns,  uint64_t upd_ns ) noexcept;
   /* clear one or both timestamps */
-  KeyStatus clear_stamps( bool clr_exp,  bool clr_upd );
+  KeyStatus clear_stamps( bool clr_exp,  bool clr_upd ) noexcept;
   /* get stamps, zero if don't exist */
-  KeyStatus get_stamps( uint64_t &exp_ns,  uint64_t &upd_ns );
+  KeyStatus get_stamps( uint64_t &exp_ns,  uint64_t &upd_ns ) noexcept;
   /* check if has a stamp */
   bool is_expired( void ) {
     return this->entry->test( FL_EXPIRE_STAMP ) != 0 &&
            this->check_expired() == KEY_EXPIRED;
   }
   /* test if hash entry expire timer < ht.hdr.current_stamp */
-  KeyStatus check_expired( void );
+  KeyStatus check_expired( void ) noexcept;
   /* release the data used by entry */
-  KeyStatus release_data( void );
+  KeyStatus release_data( void ) noexcept;
   /* release the data used by dropped entry when chain == max_chains */
   /*KeyStatus release_evict( void );*/
   /* set msg field to the segment data */
   enum AttachType { ATTACH_READ = 0, ATTACH_WRITE = 1 };
   /* fetch and set this->msg, validate it */
-  KeyStatus attach_msg( AttachType upd );
+  KeyStatus attach_msg( AttachType upd ) noexcept;
   /* get any msg data attached to current key, copy and validate it */
-  MsgHdr *get_chain_msg( ValueGeom &cgeom );
+  MsgHdr *get_chain_msg( ValueGeom &cgeom ) noexcept;
   /* crc the message */
-  void seal_msg( void );
+  void seal_msg( void ) noexcept;
   /* release the hash entry */
-  void release( void );
+  void release( void ) noexcept;
   /* release the hash entry */
-  void release_single_thread( void );
+  void release_single_thread( void ) noexcept;
   /* get the position info for the current key */
-  void get_pos_info( uint64_t &natural_pos,  uint64_t &pos_offset );
+  void get_pos_info( uint64_t &natural_pos,  uint64_t &pos_offset ) noexcept;
   /* distance between x and y, where y is a linear probe position after x */
   static uint64_t calc_offset( uint64_t x,  uint64_t y,  uint64_t ht_size ) {
     if ( y >= x )
@@ -449,11 +453,11 @@ struct MsgIter {
     this->status   = KEY_OK;
   }
 
-  bool init( KeyCtx &kctx,  uint64_t idx );
-  bool trim( KeyCtx &kctx,  uint64_t &idx );
-  bool seek( uint64_t &idx );
-  bool first( void );
-  bool next( void );
+  bool init( KeyCtx &kctx,  uint64_t idx ) noexcept;
+  bool trim( KeyCtx &kctx,  uint64_t &idx ) noexcept;
+  bool seek( uint64_t &idx ) noexcept;
+  bool first( void ) noexcept;
+  bool next( void ) noexcept;
 
   void get_msg( uint64_t &sz,  void *&b ) {
     sz = this->msg_size;

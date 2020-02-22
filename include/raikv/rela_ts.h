@@ -98,9 +98,10 @@ struct RelativeStamp {
              (uint64_t) this->u.x.updatelo;
     shft = this->u.x.update_shift;
   }
-  void set( uint64_t base,  uint64_t clock,  uint64_t exp,  uint64_t upd );
-
-  void get( uint64_t base,  uint64_t clock,  uint64_t &exp,  uint64_t &upd );
+  void set( uint64_t base,  uint64_t clock,  uint64_t exp,
+            uint64_t upd ) noexcept;
+  void get( uint64_t base,  uint64_t clock,  uint64_t &exp,
+            uint64_t &upd ) noexcept;
 };
 
 } /* kv */

@@ -31,74 +31,74 @@ memsum( const Int *t,  size_t k )
 }
 
 HashCounters&
-HashCounters::operator=( const HashCounters &x )
+HashCounters::operator=( const HashCounters &x ) noexcept
 {
   ::memcpy( this, &x, sizeof( *this ) );
   return *this;
 }
 
 HashCounters&
-HashCounters::operator+=( const HashCounters &x )
+HashCounters::operator+=( const HashCounters &x ) noexcept
 {
   memadd<int64_t>( &this->rd, &x.rd, sizeof( *this ) );
   return *this;
 }
 
 HashCounters&
-HashCounters::operator-=( const HashCounters &x )
+HashCounters::operator-=( const HashCounters &x ) noexcept
 {
   memsub<int64_t>( &this->rd, &x.rd, sizeof( *this ) );
   return *this;
 }
 
 bool
-HashCounters::operator==( int i ) /* intended for: if ( *this == 0 ) */
+HashCounters::operator==( int i ) noexcept /* intended for: if ( *this == 0 ) */
 {
   return memsum<int64_t>( &this->rd, sizeof( *this ) ) == (int64_t) i;
 }
 
 bool
-HashCounters::operator!=( int i )
+HashCounters::operator!=( int i ) noexcept
 {
   return ! this->operator==( i );
 }
 
 MemCounters&
-MemCounters::operator=( const MemCounters &x )
+MemCounters::operator=( const MemCounters &x ) noexcept
 {
   ::memcpy( this, &x, sizeof( *this ) );
   return *this;
 }
 
 MemCounters&
-MemCounters::operator+=( const MemCounters &x )
+MemCounters::operator+=( const MemCounters &x ) noexcept
 {
   memadd<int64_t>( &this->offset, &x.offset, sizeof( *this ) );
   return *this;
 }
 
 MemCounters&
-MemCounters::operator-=( const MemCounters &x )
+MemCounters::operator-=( const MemCounters &x ) noexcept
 {
   memsub<int64_t>( &this->offset, &x.offset, sizeof( *this ) );
   return *this;
 }
 
 bool
-MemCounters::operator==( int i ) /* intended for: if ( *this == 0 ) */
+MemCounters::operator==( int i ) noexcept /* intended for: if ( *this == 0 ) */
 {
   return memsum<int64_t>( &this->offset, sizeof( *this ) ) == (uint32_t) i;
 }
 
 bool
-MemCounters::operator!=( int i )
+MemCounters::operator!=( int i ) noexcept
 {
   return ! this->operator==( i );
 }
 
 /* saves current state so that a delta is last time this was called */
 void
-HashDeltaCounters::get_ht_delta( const HashCounters &stat )
+HashDeltaCounters::get_ht_delta( const HashCounters &stat ) noexcept
 {
   HashCounters current = stat; /* copy these, they are volatile */
   this->delta  = current;
@@ -107,7 +107,7 @@ HashDeltaCounters::get_ht_delta( const HashCounters &stat )
 }
 
 void
-MemDeltaCounters::get_mem_delta( const MemCounters &cnts )
+MemDeltaCounters::get_mem_delta( const MemCounters &cnts ) noexcept
 {
   this->delta  = cnts;
   this->delta -= this->last;
@@ -115,7 +115,8 @@ MemDeltaCounters::get_mem_delta( const MemCounters &cnts )
 }
 
 void
-Segment::get_mem_seg_delta( MemDeltaCounters &stat,  uint16_t align_shift ) const
+Segment::get_mem_seg_delta( MemDeltaCounters &stat,
+                            uint16_t align_shift ) const noexcept
 {
   MemCounters current;
   uint64_t x, y;
@@ -157,7 +158,7 @@ HashTab::sum_ht_thr_deltas( HashDeltaCounters *stats,  HashCounters &ops,
 #endif
 bool
 HashTab::sum_ht_thr_delta( HashDeltaCounters &stats,  HashCounters &ops,
-                           HashCounters &tot,  uint32_t ctx_id ) const
+                           HashCounters &tot,  uint32_t ctx_id ) const noexcept
 {
   uint32_t seqno;
   uint8_t db;
@@ -175,7 +176,7 @@ HashTab::sum_ht_thr_delta( HashDeltaCounters &stats,  HashCounters &ops,
 
 bool
 ThrCtx::get_ht_thr_delta( HashDeltaCounters &stat,  uint8_t &db,
-                          uint32_t &seqno ) const
+                          uint32_t &seqno ) const noexcept
 {
   for (;;) {
     while ( ( this->key & ZOMBIE32 ) != 0 )
@@ -195,7 +196,7 @@ ThrCtx::get_ht_thr_delta( HashDeltaCounters &stat,  uint8_t &db,
 
 bool
 HashTab::sum_mem_deltas( MemDeltaCounters *stats,  MemCounters &chg,
-                         MemCounters &tot ) const
+                         MemCounters &tot ) const noexcept
 {
   const uint16_t align_shift = this->hdr.seg_align_shift;
   chg.zero();
@@ -209,7 +210,7 @@ HashTab::sum_mem_deltas( MemDeltaCounters *stats,  MemCounters &chg,
 }
 
 bool
-HashTab::get_db_stats( HashCounters &tot,  uint8_t db_num ) const
+HashTab::get_db_stats( HashCounters &tot,  uint8_t db_num ) const noexcept
 {
   size_t i;
   tot = this->hdr.stat[ db_num ];
@@ -225,7 +226,7 @@ HashTab::get_db_stats( HashCounters &tot,  uint8_t db_num ) const
 }
 
 void
-HashTab::update_load( void )
+HashTab::update_load( void ) noexcept
 {
   double   ht_load    = 0,
            value_load = 0,
@@ -279,7 +280,7 @@ MemDeltaCounters::new_array( size_t sz )
 }
 #endif
 HashTabStats *
-HashTabStats::create( HashTab &ht )
+HashTabStats::create( HashTab &ht ) noexcept
 {
   size_t sz = sizeof( HashTabStats ) +
               sizeof( HashDeltaCounters ) * MAX_CTX_ID +
@@ -303,7 +304,7 @@ HashTabStats::create( HashTab &ht )
 }
 
 bool
-HashTabStats::fetch( void )
+HashTabStats::fetch( void ) noexcept
 {
   bool   b = false;
   double t = current_monotonic_coarse_s();

@@ -9,17 +9,17 @@
 using namespace rai;
 using namespace kv;
 
-MsgCtx::MsgCtx( HashTab &t,  ThrCtx &thr,  uint32_t sz )
+MsgCtx::MsgCtx( HashTab &t,  ThrCtx &thr,  uint32_t sz ) noexcept
       : ht( t ), thr_ctx( thr ), dbstat( thr.stat1 ), kbuf( 0 ),
         hash_entry_size( sz ), db_num( thr.db_num1 ), key( 0 ),
         msg( 0 ), prefetch_ptr( 0 ) {}
 
-MsgCtx::MsgCtx( HashTab &t,  ThrCtx &thr )
+MsgCtx::MsgCtx( HashTab &t,  ThrCtx &thr ) noexcept
       : ht( t ), thr_ctx( thr ), dbstat( thr.stat1 ), kbuf( 0 ),
         hash_entry_size( t.hdr.hash_entry_size ), db_num( thr.db_num1 ),
         key( 0 ), msg( 0 ), prefetch_ptr( 0 ) {}
 
-MsgCtx::MsgCtx( KeyCtx &kctx )
+MsgCtx::MsgCtx( KeyCtx &kctx ) noexcept
       : ht( kctx.ht ), thr_ctx( kctx.thr_ctx ), dbstat( kctx.stat ), kbuf( 0 ),
         hash_entry_size( kctx.hash_entry_size ), db_num( kctx.db_num ),
         key( 0 ), msg( 0 ), prefetch_ptr( 0 ) {}
@@ -35,7 +35,7 @@ MsgCtx::set_key_hash( KeyFragment &b )
 }
 #endif
 MsgCtx *
-MsgCtx::new_array( HashTab &t,  uint32_t id,  void *b,  size_t bsz )
+MsgCtx::new_array( HashTab &t,  uint32_t id,  void *b,  size_t bsz ) noexcept
 {
   MsgCtxBuf *p = (MsgCtxBuf *) b;
   if ( p == NULL ) {
@@ -52,7 +52,7 @@ MsgCtx::new_array( HashTab &t,  uint32_t id,  void *b,  size_t bsz )
 }
 
 void
-MsgCtx::prefetch_segment( uint64_t /*size*/ )
+MsgCtx::prefetch_segment( uint64_t /*size*/ ) noexcept
 {
   static const int rw = 1;       /* 0 is prepare for write, 1 is read */
   static const int locality = 2; /* 0 is non, 1 is low, 2 is moderate, 3 high*/
@@ -71,7 +71,7 @@ MsgCtx::prefetch_segment( uint64_t /*size*/ )
 }
 
 uint8_t
-MsgCtx::add_chain( MsgChain &next )
+MsgCtx::add_chain( MsgChain &next ) noexcept
 {
   const uint32_t algn_shft = this->ht.hdr.seg_align_shift;
   uint8_t        cnt       = next.msg->value_ctr().size;
@@ -81,7 +81,7 @@ MsgCtx::add_chain( MsgChain &next )
 }
 
 bool
-MsgHdr::is_expired( const HashTab &ht )
+MsgHdr::is_expired( const HashTab &ht ) noexcept
 {
   switch ( this->test( FL_EXPIRE_STAMP | FL_UPDATE_STAMP ) ) {
     case FL_EXPIRE_STAMP:
@@ -98,7 +98,7 @@ MsgHdr::is_expired( const HashTab &ht )
 }
 
 void
-MsgCtx::nevermind( void )
+MsgCtx::nevermind( void ) noexcept
 {
   if ( this->msg != NULL ) {
     this->msg->release();
@@ -350,7 +350,8 @@ struct GCRunCtx {
 };
 
 KeyStatus
-MsgCtx::alloc_segment( void *res,  uint64_t size,  uint16_t chain_size )
+MsgCtx::alloc_segment( void *res,  uint64_t size,
+                       uint16_t chain_size ) noexcept
 {
   const uint32_t   hdr_size  = MsgHdr::hdr_size( *this->kbuf ),
                    algn_shft = this->ht.hdr.seg_align_shift;
@@ -452,7 +453,7 @@ MsgCtx::alloc_segment( void *res,  uint64_t size,  uint16_t chain_size )
 }
 
 bool
-HashTab::gc_segment( ThrCtx &ctx,  uint32_t seg_num,  GCStats &stats )
+HashTab::gc_segment( ThrCtx &ctx,  uint32_t seg_num,  GCStats &stats ) noexcept
 {
   if ( seg_num >= this->hdr.nsegs )
     return false;

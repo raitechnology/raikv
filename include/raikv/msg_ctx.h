@@ -161,7 +161,7 @@ struct MsgHdr {
                              ( ( (size_t) i + 1 ) * sizeof( ValuePtr ) ) ) );
     vp.get( geom, align_shift );
   }
-  bool is_expired( const HashTab &ht );
+  bool is_expired( const HashTab &ht ) noexcept;
 };
 
 struct Segment {
@@ -245,7 +245,8 @@ struct Segment {
              newy = ( new_off >> align_shift );
     this->ring = newx | newy; /* set x == y, then others can lock segment */
   }
-  void get_mem_seg_delta( MemDeltaCounters &stat,  uint16_t align_shift ) const;
+  void get_mem_seg_delta( MemDeltaCounters &stat,
+                          uint16_t align_shift ) const noexcept;
 };
 
 /* a context to allocate memory from a segment for later linking into ht[] */
@@ -288,9 +289,9 @@ struct MsgCtx {
   void         * prefetch_ptr;
   ValueGeom      geom;    /* value location */
 
-  MsgCtx( KeyCtx &kctx );
-  MsgCtx( HashTab &t,  ThrCtx &thr );
-  MsgCtx( HashTab &t,  ThrCtx &thr,  uint32_t sz );
+  MsgCtx( KeyCtx &kctx ) noexcept;
+  MsgCtx( HashTab &t,  ThrCtx &thr ) noexcept;
+  MsgCtx( HashTab &t,  ThrCtx &thr,  uint32_t sz ) noexcept;
   ~MsgCtx() {}
   /* placement new to deal with broken c++ new[], for example:
    * MsgCtxBuf kctxbuf[ 8 ];
@@ -300,8 +301,8 @@ struct MsgCtx {
    * if ( kctx == NULL ) fatal( "no memory" );
    * delete kctx; // same as free( kctx )
    */
-  static MsgCtx * new_array( HashTab &t,  uint32_t id,  void *b,  size_t bsz );
-
+  static MsgCtx * new_array( HashTab &t,  uint32_t id,  void *b,
+                             size_t bsz ) noexcept;
   void * operator new( size_t, void *ptr ) { return ptr; }
   /* no allocated objects within this structure */
   void operator delete( void *ptr ) { ::free( ptr ); }
@@ -312,13 +313,11 @@ struct MsgCtx {
     this->key  = k;
     this->key2 = k2;
   }
-  /*void set_key_hash( KeyFragment &b );*/
+  void prefetch_segment( uint64_t size ) noexcept;
 
-  void prefetch_segment( uint64_t size );
-
-  KeyStatus alloc_segment( void *res,  uint64_t size,  uint16_t chain_size );
-
-  void nevermind( void );
+  KeyStatus alloc_segment( void *res,  uint64_t size,
+                           uint16_t chain_size ) noexcept;
+  void nevermind( void ) noexcept;
 
   static size_t copy_chain( const MsgHdr *from,  MsgHdr *to,  size_t i,
                             size_t j,  size_t cnt,  const uint32_t algn_shft ) {
@@ -331,7 +330,7 @@ struct MsgCtx {
     }
     return j;
   }
-  uint8_t add_chain( MsgChain &next );
+  uint8_t add_chain( MsgChain &next ) noexcept;
 };
 
 struct GCStats {

@@ -52,7 +52,7 @@ kv_release_ctx_alloc( kv_work_alloc_t *ctx_alloc )
 }
 
 ScratchMem::MBlock *
-ScratchMem::alloc_block( void )
+ScratchMem::alloc_block( void ) noexcept
 {
   MBlock *blk = NULL;
   if ( this->free_cnt > 0 ) {
@@ -72,7 +72,7 @@ ScratchMem::alloc_block( void )
 }
 
 void 
-ScratchMem::release_block( MBlock *blk )
+ScratchMem::release_block( MBlock *blk ) noexcept
 {
   this->blk_list.pop( blk );
   if ( this->free_cnt < this->slack_count ) {
@@ -86,7 +86,7 @@ ScratchMem::release_block( MBlock *blk )
 }
 
 void
-ScratchMem::release_all( void )
+ScratchMem::release_all( void ) noexcept
 {
   this->reset();
   this->free_cnt  = 0;
@@ -96,7 +96,7 @@ ScratchMem::release_all( void )
 }
 
 void
-ScratchMem::reset_slow( void )
+ScratchMem::reset_slow( void ) noexcept
 {
   if ( this->block_cnt > 0 ) {
     this->blk_list.hd->off2 = this->alloc_size;
@@ -111,7 +111,7 @@ ScratchMem::reset_slow( void )
 }
 
 void *
-ScratchMem::alloc_slow( size_t sz )
+ScratchMem::alloc_slow( size_t sz ) noexcept
 {
   MemHdr * hdr;
   size_t   used = align<size_t>( sz + sizeof( MemHdr ), sizeof( MemHdr ) );
@@ -149,7 +149,7 @@ ScratchMem::alloc_slow( size_t sz )
 }
 
 void *
-ScratchMem::big_alloc( size_t sz )
+ScratchMem::big_alloc( size_t sz ) noexcept
 {
   size_t used = align<size_t>( sz + sizeof( BigBlock ), sizeof( BigBlock ) );
   BigBlock *big = (BigBlock *) this->kv_big_alloc( this->closure, used );
@@ -164,7 +164,7 @@ ScratchMem::big_alloc( size_t sz )
 }
 
 void
-ScratchMem::release( void *p )
+ScratchMem::release( void *p ) noexcept
 {
   MemHdr * hdr = (MemHdr *) ( (uint8_t *) p - sizeof( MemHdr ) );
   size_t   off;

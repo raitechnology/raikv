@@ -106,15 +106,15 @@ struct ScratchMem {
       this->release_all();
   }
 
-  void release_all( void );
-  MBlock *alloc_block( void );      /* alloc or reuse a block */
-  void release_block( MBlock *m );  /* free or save an empty block */
+  void release_all( void ) noexcept;
+  MBlock *alloc_block( void ) noexcept;      /* alloc or reuse a block */
+  void release_block( MBlock *m ) noexcept;  /* free or save an empty block */
   void reset( void ) {              /* reset all allocs */
     this->fast_off = 0;
     if ( ! this->fast )
       this->reset_slow();
   }
-  void reset_slow( void );
+  void reset_slow( void ) noexcept;
   void *alloc( size_t sz ) {        /* get new mem */
     if ( this->fast ) {
       void *cur = &((char *) this->fast_buf)[ this->fast_off ];
@@ -124,9 +124,9 @@ struct ScratchMem {
     }
     return this->alloc_slow( sz );
   }
-  void *alloc_slow( size_t sz );
-  void *big_alloc( size_t sz );   /* get new mem larger than alloc_size */
-  static void release( void *p ); /* release ptr returned by alloc() */
+  void *alloc_slow( size_t sz ) noexcept;
+  void *big_alloc( size_t sz ) noexcept;   /* get mem larger than alloc_size */
+  static void release( void *p ) noexcept; /* release ptr returned by alloc() */
 };
 
 struct BufAlign64 {
