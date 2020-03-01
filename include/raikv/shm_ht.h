@@ -28,8 +28,29 @@ typedef enum kv_facility_e {
   KV_HUGE_1GB  = 16  /* use 1gb pages */
 } kv_facility_t;
 
+/* +----- +-----
+ * | Hash | FileHdr 64 * 3     = 192
+ * | Hdr  |   lockq            = 832                 -> 1 K | HT_FILE_HDR_SIZE
+ * |      +-----
+ * |      | DBHdr
+ * |      |   seed[ 256 ]       = 256 * 16  = 4 K
+ * |      |   HashStats[ 256 ]  = 256 * 128 = 32 K ( pad 12 K )
+ * |      |   ThrDBStat[ 1024 ] = 1024 * 16 = 16 K   -> 64 K | DB_HDR_SIZE
+ * |      +----
+ * |      | Segment[ 2032 ] * 64 = 130048            -> 127 K  (192 - (1+64))
+ * |      |                                          == 192 K HT_HDR_SIZE
+ * +------+----
+ * | ThrCtx[ 128 ]
+ * |   ThrCtxHdr        = 64
+ * |   ThrMCSLock[30]   = 960 -> 1024 - 64           == 128 K HT_CTX_SIZE
+ * | HashStats[ 1024 ]  = 128 * 1024                 == 128 K HT_STATS_SIZE
+ * +-----
+ */
+
 /* used as error return for kv_attach_ctx() */
 #define KV_NO_CTX_ID        ((uint32_t) -1)
+/* used as error return for kv_attach_db() */
+#define KV_NO_DBSTAT_ID     ((uint32_t) -1)
 /* hdr of map file */
 #define KV_HT_FILE_HDR_SIZE 1024
 /* how big each thread context is */
@@ -42,8 +63,14 @@ typedef enum kv_facility_e {
 #define KV_DB_HDR_SIZE      ( 64 * 1024 )
 /* max db count */
 #define KV_DB_COUNT         256
+/* max ctx db open */
+#define KV_STAT_COUNT       1024
+/* ht stats count * size */
+#define KV_HT_STATS_SIZE    ( 128 * 1024 )
 /* the maximum thread context id */
 #define KV_MAX_CTX_ID       ( KV_HT_CTX_SIZE / KV_HT_THR_CTX_SIZE )
+/* shm_attach( shm_string ) */
+#define KV_DEFAULT_SHM      "sysv2m:shm.test"
 
 #ifdef __cplusplus
 }
@@ -54,20 +81,22 @@ namespace rai {
 namespace kv {
 
                     /* sizeof( FileHdr ) */
-static const size_t HT_FILE_HDR_SIZE      = KV_HT_FILE_HDR_SIZE,
+static const size_t HT_FILE_HDR_SIZE      = KV_HT_FILE_HDR_SIZE, /* 1024 */
                     /* sizeof( ThrCtx ) */
-                    HT_THR_CTX_SIZE       = KV_HT_THR_CTX_SIZE,
+                    HT_THR_CTX_SIZE       = KV_HT_THR_CTX_SIZE,  /* 1024 */
                     /* FileHdr( 1024b ) + Segment[ 2032 ] each 64b */
-                    HT_HDR_SIZE           = KV_HT_HDR_SIZE,
+                    HT_HDR_SIZE           = KV_HT_HDR_SIZE,      /* 192 k */
                     /* ThrCtx[ 128 ] each 1024b containing ThrMCSLock[ 56 ] */
-                    HT_CTX_SIZE           = KV_HT_CTX_SIZE,
-                    DB_HDR_SIZE           = KV_DB_HDR_SIZE,
-                    DB_COUNT              = KV_DB_COUNT,
+                    HT_CTX_SIZE           = KV_HT_CTX_SIZE,      /* 128 k */
+                    HT_STATS_SIZE         = KV_HT_STATS_SIZE,    /* 128 k */
+                    DB_HDR_SIZE           = KV_DB_HDR_SIZE,      /* 64 k */
+                    DB_COUNT              = KV_DB_COUNT,         /* 256 */
                     /* ThrCtx[] size */
-                    MAX_CTX_ID            = HT_CTX_SIZE / HT_THR_CTX_SIZE,
+                    MAX_CTX_ID            = HT_CTX_SIZE /        /* 128 k / */
+                                            HT_THR_CTX_SIZE,     /* 1024 = 128*/
+                    MAX_STAT_ID           = KV_STAT_COUNT,
                     /* FileHdr::name[] size */
                     MAX_FILE_HDR_NAME_LEN = 64/*sig hdr*/ - 16/*sig*/;
-
 /* hdr size should be 256b */
 struct FileHdr {
              /* first 64b, not referenced very much */
@@ -107,9 +136,12 @@ struct FileHdr {
              log2_ht_size,    /* ht_size <= 1 << log2_ht_size */
              ht_mod_shift,    /* mod calc: ( ( k & mask ) * frac ) >> shift */
              cuckoo_arity;    /* number of hash functions used, <= 1 linear */
+  /* when db attached to thr ctx[], db_opened[] is set */
+  static const uint64_t DB_OPENED_SIZE = DB_COUNT / 64;
+  uint64_t   db_opened[ DB_OPENED_SIZE ];
   /* spin locks */
   static const uint64_t LOCKQ_SIZE =
-    ( KV_HT_FILE_HDR_SIZE - 64 * 3 ) / sizeof( uint64_t );
+    ( KV_HT_FILE_HDR_SIZE - 64 * 3 ) / sizeof( uint64_t ) - DB_OPENED_SIZE;
   uint64_t   lockq[ LOCKQ_SIZE ];
 
   /* max( ht load, value load ) */
@@ -131,87 +163,80 @@ struct FileHdr {
     return ( ( k & this->ht_mod_mask ) * this->ht_mod_fraction ) >>
            this->ht_mod_shift;
   }
-  /* spin locks using the lockq[] bits in the header, cacheline[ 13 ] at off 3 */
-  bool ht_spin_trylock( const uint64_t id ) {
-    volatile uint64_t &ptr = this->lockq[ ( id >> 6 ) % LOCKQ_SIZE ];
-    uint64_t set     = (uint64_t) 1 << ( id & 63 ),
-             old_val = ptr,
-             new_val = old_val | set;
-    if ( ( old_val & set ) == 0 ) {
-      if ( kv_sync_cmpxchg( &ptr, old_val, new_val ) ) {
-        kv_acquire_fence();
-        return true;
-      }
-    }
-    return false;
+  bool test_db_opened(  const uint8_t db ) {
+    volatile uint64_t &ptr = this->db_opened[ ( db >> 6 ) % DB_OPENED_SIZE ];
+    uint64_t mask = (uint64_t) 1 << ( db & 63 );
+    return ( ptr & mask ) != 0;
   }
+  void set_db_opened( const uint8_t db ) {
+    volatile uint64_t &ptr = this->db_opened[ ( db >> 6 ) % DB_OPENED_SIZE ];
+    uint64_t mask = (uint64_t) 1 << ( db & 63 );
+    while ( ( ptr & mask ) == 0 )
+      kv_sync_bit_try_lock( &ptr, mask );
+  }
+  /* spin locks using the lockq[] bits in the header, cacheline[ 13 ] at off 3*/
+  bool ht_spin_trylock( const uint64_t id ) {
+    return kv_sync_bit_try_lock( &this->lockq[ ( id >> 6 ) % LOCKQ_SIZE ],
+                                 (uint64_t) 1 << ( id & 63 ) );
+  }
+  /* lock for protecting db_stat[ id ] */
   void ht_spin_lock( const uint64_t id ) {
-    volatile uint64_t &ptr = this->lockq[ ( id >> 6 ) % LOCKQ_SIZE ];
-    uint64_t set = (uint64_t) 1 << ( id & 63 ),
-             old_val, new_val;
-    for (;;) {
-      while ( ( (old_val = ptr) & set ) != 0 )
-        kv_sync_pause();
-      new_val = old_val | set;
-      if ( kv_sync_cmpxchg( &ptr, old_val, new_val ) ) {
-        kv_acquire_fence();
-        return;
-      }
-    }
+    return kv_sync_bit_spin_lock( &this->lockq[ ( id >> 6 ) % LOCKQ_SIZE ],
+                                  (uint64_t) 1 << ( id & 63 ) );
   }
   void ht_spin_unlock( const uint64_t id ) {
-    kv_release_fence();
+    return kv_sync_bit_spin_unlock( &this->lockq[ ( id >> 6 ) % LOCKQ_SIZE ],
+                                    (uint64_t) 1 << ( id & 63 ) );
+  }
+  /* lock 64 at a time, for protecting db_stat[ id .. id + 64 ] */
+  void ht_spin_lock64( const uint64_t id ) {
     volatile uint64_t &ptr = this->lockq[ ( id >> 6 ) % LOCKQ_SIZE ];
-    uint64_t clr = ~((uint64_t) 1 << ( id & 63 )),
-             old_val, new_val;
+    uint64_t old_val = 0;
     for (;;) {
-      old_val = ptr;
-      new_val = old_val & clr;
-      if ( kv_sync_cmpxchg( &ptr, old_val, new_val ) )
+      while ( ptr != 0 )
+        kv_sync_pause();
+      if ( kv_sync_cmpxchg( &ptr, old_val, ~(uint64_t) 0 ) ) {
+        kv_acquire_fence();
         return;
-      kv_sync_pause();
+      }
     }
+  }
+  void ht_spin_unlock64( const uint64_t id ) {
+    kv_release_fence();
+    this->lockq[ ( id >> 6 ) % LOCKQ_SIZE ] = 0;
   }
 };
 
 typedef struct kv_geom_s HashTabGeom;
-static const uint32_t ZOMBIE32 = 0x80000000U;
 
 struct ThrCtxOwner; /* MCSLock used for hash table entry ownership */
 struct ThrMCSLock : public MCSLock<uint64_t, ThrCtxOwner> {};
 
 struct ThrCtxHdr {
-  AtomUInt32             key; /* zero free, zombie32 dropped, otherwise used */
+  AtomUInt64             key; /* zero free, zombie32 dropped, otherwise used */
+  uint64_t               mcs_used;  /* bit mask of used locks (64>MCS_CNT=30) */
   uint32_t               ctx_id,    /* the ctx id that holds a ht[] locks */
                          ctx_pid,   /* process id (getpid())*/
-                         ctx_thrid; /* thread id (syscall(SYS_gettid)) */
+                         ctx_thrid, /* thread id (syscall(SYS_gettid)) */
+                         db_stat_hd,/* list of db stat */
+                         db_stat_tl,
+                         ctx_seqno, /* least recently used counter */
+                         pad1;
+  uint16_t               seg_num,   /* use seg until exhausted */
+                         pad2;
   rand::xoroshiro128plus rng;       /* rand state initialized on creation */
-
-  HashCounters           stat1,     /* stats for this thread context */
-                         stat2;
-  uint32_t               ctx_seqno; /* least recently used counter */
-  uint16_t               seg_num;   /* use seg until exhausted */
-  uint8_t                db_num1,   /* ctx attached to this db */
-                         db_num2;
-
-  uint64_t               mcs_used,  /* bit mask of used locks (64 > MCS_CNT=53)*/
-                         pad[ 2 ];
-  /* 16(int32) + 16(rng) + 256(stat) + 32(uint64) = 320 */
+  /* 4*7=28(int32) 2*2=4(int16) + 8*2=16(int64) + 16(rng) = 64 */
 };
 
 struct ThrCtxEntry : public ThrCtxHdr {
-  static const uint32_t MCS_CNT  = /* 1024 - 320 = 704 / 32 = 22 mcs */
+  static const uint32_t MCS_CNT  = /* 1024 - 64 = 960 / 32 = 30 mcs */
     ( HT_THR_CTX_SIZE - sizeof( ThrCtxHdr ) ) / sizeof( ThrMCSLock );
   static const uint32_t MCS_SHIFT = 16,
                         MCS_MASK  = ( 1 << MCS_SHIFT ) - 1;
   ThrMCSLock mcs[ MCS_CNT ]; /* a queue of ctx waiting for ht.entry[ x ] */
 
   void zero( void ) {
-    this->stat1.zero();
-    this->stat2.zero();
     this->mcs_used = 0;
-    this->db_num1 = 0;
-    this->db_num2 = 0;
     ::memset( this->mcs, 0, sizeof( this->mcs ) );
   }
 };
@@ -221,8 +246,6 @@ struct ThrCtx : public ThrCtxEntry { /* each thread needs one of these */
   /* 1024b align */
   static_assert( HT_THR_CTX_SIZE == sizeof( ThrCtxEntry ), "ctx hdr size" );
 #endif
-  bool get_ht_thr_delta( HashDeltaCounters &stat,  uint8_t &db,
-                         uint32_t &seqno ) const noexcept;
   uint64_t next_mcs_lock( void ) {
     uint32_t id = ( this->mcs_used == 0 ) ? 0 :
                   ( 64 - __builtin_clzl( this->mcs_used ) );
@@ -258,32 +281,56 @@ struct ThrCtxOwner { /* closure for MCSLock to find the owner of a lock */
   }
 };
 
-struct DBHdr {
-  struct { uint64_t hash1, hash2; } seed[ DB_COUNT ];
-  HashCounters stat[ DB_COUNT ];
-  uint8_t pad[ DB_HDR_SIZE -
-    ( ( sizeof( HashCounters ) + sizeof( uint64_t ) * 2 ) * DB_COUNT ) ];
+struct ThrStatLink {
+  AtomUInt8 busy,
+            used;
+  uint8_t   db_num,
+            pad;
+  uint32_t  ctx_id,
+            next,
+            back;
+  /* 4 * 3 + 4 = 16 */
+};
 
-  void get_hash_seed( uint8_t db_num,  uint64_t &h1,  uint64_t &h2 ) const {
-    h1 = this->seed[ db_num ].hash1;
-    h2 = this->seed[ db_num ].hash2;
+struct HashSeed {
+  uint64_t hash1, hash2;
+  void get( uint64_t &h1,  uint64_t &h2 ) const {
+    h1 = this->hash1; h2 = this->hash2;
+  }
+  void hash( KeyFragment &kb,  uint64_t &h1,  uint64_t &h2 ) const {
+    h1 = this->hash1; h2 = this->hash2;
+    kb.hash( h1, h2 );
+  }
+};
+
+struct DBHdr {
+  HashSeed     seed[ DB_COUNT ];         /* db hash seeds 4 K */
+  HashCounters db_stat[ DB_COUNT ];      /* one for each db            32 K */
+  ThrStatLink  stat_link[ MAX_STAT_ID ]; /* one for each open db       16 K */
+
+  uint8_t pad[ DB_HDR_SIZE - /* 12 K */
+    ( ( sizeof( HashCounters ) + sizeof( uint64_t ) * 2 ) * DB_COUNT
+    + ( sizeof( ThrStatLink ) * MAX_STAT_ID ) ) ];
+
+  void get_hash_seed( uint8_t db_num,  HashSeed &hs ) const {
+    hs = this->seed[ db_num ];
   }
 };
 
 struct HashHdr : public FileHdr, public DBHdr {
   static const uint32_t SHM_MAX_SEG_COUNT = ( HT_HDR_SIZE -
     ( sizeof( FileHdr ) + sizeof( DBHdr ) ) ) / sizeof( Segment );
-  Segment seg[ SHM_MAX_SEG_COUNT ];
+  Segment seg[ SHM_MAX_SEG_COUNT ]; /* pointers to segment alloc info */
 };
 
 struct HashTab {
-  HashHdr hdr;
+  HashHdr      hdr; /* FileHdr, seed[], db_stat[], stat_link[], seg[] */
+  ThrCtx       ctx[ MAX_CTX_ID ];
+  HashCounters stats[ MAX_STAT_ID ];
 #if __cplusplus >= 201103L
   static_assert( HT_HDR_SIZE == sizeof( HashHdr ), "ht hdr size");
-#endif
-  ThrCtx ctx[ MAX_CTX_ID ];
-#if __cplusplus >= 201103L
   static_assert( HT_CTX_SIZE == sizeof( ThrCtx ) * MAX_CTX_ID, "ht ctx size" );
+  static_assert( HT_STATS_SIZE == sizeof( HashCounters ) * MAX_STAT_ID, "ht stats size" );
 #endif
   /* tab size is this->hdr.ht_size * this->hdr.hash_entry_size,
      determined by total shm size */
@@ -294,13 +341,14 @@ public:
       &((uint8_t *) ht_base)[ i * (uint64_t) hash_entry_size ];
   }
   HashEntry *get_entry( uint64_t i,  uint32_t hash_entry_size ) const {
-    return get_entry( &((uint8_t *) (void *) this)[ HT_HDR_SIZE + HT_CTX_SIZE ],
+    return get_entry( &((uint8_t *) (void *) this)[ HT_HDR_SIZE + HT_CTX_SIZE +
+                                                    HT_STATS_SIZE ],
                       i, hash_entry_size );
   }
   uint64_t get_entry_pos( const HashEntry *entry,
                           uint32_t hash_entry_size ) const {
     const uint8_t *start =
-      &((uint8_t *) (void *) this)[ HT_HDR_SIZE + HT_CTX_SIZE ];
+      &((uint8_t *) (void *) this)[ HT_HDR_SIZE + HT_CTX_SIZE + HT_STATS_SIZE ];
     return ( (const uint8_t *) (const void *) entry - start ) / hash_entry_size;
   }
   HashEntry *get_entry( uint64_t i ) {
@@ -330,6 +378,9 @@ private:
   /* this could be used to reinitialize */
   void initialize( const char *map_name,  const HashTabGeom &geom ) noexcept;
 public:
+  uint64_t ht_mod( const uint64_t k ) const {
+    return this->hdr.ht_mod( k );
+  }
   /* allocate new map using malloc */
   static HashTab *alloc_map( HashTabGeom &geom ) noexcept;
   /* initialize new map using shm file name, kv_facility bits */
@@ -339,10 +390,11 @@ public:
   static HashTab *attach_map( const char *map_name,  uint8_t facility,
                               HashTabGeom &geom ) noexcept; /* return geom */
   /* a shared usage context for stats and signals */
-  uint32_t attach_ctx( uint32_t key,  uint8_t db_num1,
-                       uint8_t db_num2 ) noexcept;
-  /* sum ctx[0] and hdr.stats[db] stats and zero ctx[ctx_id] stats */
-  void retire_ht_thr_stats( uint32_t ctx_id ) noexcept;
+  uint32_t attach_ctx( uint64_t key ) noexcept;
+  /* get a stat context for db */
+  uint32_t attach_db( uint32_t ctx_id,  uint8_t db ) noexcept;
+  /* release a stat context */
+  void detach_db( uint32_t ctx_id,  uint8_t db ) noexcept;
   /* free the shared usage context */
   void detach_ctx( uint32_t ctx_id ) noexcept;
   /* calculate load of ht and set this->hdr.current_load */
@@ -350,6 +402,8 @@ public:
   /* accumulate stats just for ctx_id with delta change */
   bool sum_ht_thr_delta( HashDeltaCounters &stats,  HashCounters &ops,
                          HashCounters &tot,  uint32_t ctx_id ) const noexcept;
+  void sum_ht_db_delta( HashDeltaCounters &stats,  HashCounters &ops,
+                        HashCounters &tot,  uint8_t db ) noexcept;
   /* accumulate stats just for db */
   bool get_db_stats( HashCounters &tot,  uint8_t db_num ) const noexcept;
   /* accumulate memory usage stats of each segment and return true if changed
@@ -361,8 +415,8 @@ public:
     return this->hdr.seg[ i ];
   }
   /* walk segment an reclaim memory */
-  bool gc_segment( ThrCtx &ctx,  uint32_t i,  GCStats &stats ) noexcept;
-
+  bool gc_segment( uint32_t dbx_id,  uint32_t seg_num,
+                   GCStats &stats ) noexcept;
   void *seg_data( uint32_t i,  uint64_t off ) const {
     /*return &((uint8_t *) this)[ this->segment( i ).seg_off + off ];*/
     return &((uint8_t *) this)[ this->hdr.seg_start() + 
@@ -394,10 +448,13 @@ void kv_close_map( kv_hash_tab_t *ht );
 /* calculate % load and return it, 0 <= load < 1.0 */
 float kv_update_load( kv_hash_tab_t *ht );
 /* attach a thread context, return ctx_id, which is an index to ht->ctx[], key is arbitrary */
-uint32_t kv_attach_ctx( kv_hash_tab_t *ht,  uint32_t key,  uint8_t db_num1,
-                        uint8_t db_num2 );
+uint32_t kv_attach_ctx( kv_hash_tab_t *ht,  uint64_t key );
 /* deattach a thread context */
 void kv_detach_ctx( kv_hash_tab_t *ht,  uint32_t ctx_id );
+/* attach a thread context, return ctx_id, which is an index to ht->ctx[], key is arbitrary */
+uint32_t kv_attach_db( kv_hash_tab_t *ht,  uint32_t ctx_id,  uint8_t db );
+/* deattach a thread context */
+void kv_detach_db( kv_hash_tab_t *ht,  uint32_t ctx_id,  uint8_t db );
 /* total number of hash slots */
 uint64_t kv_map_get_size( kv_hash_tab_t *ht );
 

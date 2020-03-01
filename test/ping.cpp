@@ -4,8 +4,6 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <pthread.h>
-#define __STDC_FORMAT_MACROS
-#include <inttypes.h>
 
 #include <raikv/shm_ht.h>
 #include <raikv/key_buf.h>
@@ -15,14 +13,16 @@ using namespace kv;
 
 HashTabGeom geom;
 HashTab   * map;
-uint32_t    ctx_id = MAX_CTX_ID;
+uint32_t    ctx_id = MAX_CTX_ID,
+            dbx_id = MAX_STAT_ID;
 
 static void
 shm_attach( const char *mn )
 {
   map = HashTab::attach_map( mn, 0, geom );
   if ( map != NULL ) {
-    ctx_id = map->attach_ctx( ::getpid(), 0, 0 );
+    ctx_id = map->attach_ctx( ::getpid() );
+    dbx_id = map->attach_db( ctx_id, 0 );
     fputs( print_map_geom( map, ctx_id ), stdout );
   }
 }
@@ -31,9 +31,9 @@ static void
 shm_close( void )
 {
   if ( ctx_id != MAX_CTX_ID ) {
-    HashCounters & stat = map->ctx[ ctx_id ].stat1;
-    printf( "rd %" PRIu64 ", wr %" PRIu64 ", "
-            "sp %" PRIu64 ", ch %" PRIu64 "\n",
+    HashCounters & stat = map->stats[ dbx_id ];
+    printf( "rd %lu, wr %lu, "
+            "sp %lu, ch %lu\n",
             stat.rd, stat.wr, stat.spins, stat.chains );
     map->detach_ctx( ctx_id );
     ctx_id = MAX_CTX_ID;
@@ -89,7 +89,7 @@ main( int argc, char *argv[] )
   uint64_t      last_count = 0, count = 0, nsdiff = 0, diff, t, last = 0;
   bool          use_pause, use_none, use_spin;
 
-  const char * mn = get_arg( argc, argv, 1, "-m", "sysv2m:shm.test" ),
+  const char * mn = get_arg( argc, argv, 1, "-m", KV_DEFAULT_SHM ),
              * pi = get_arg( argc, argv, 1, "-p", "ping" ),
              * sp = get_arg( argc, argv, 1, "-s", "pause" ),
              * he = get_arg( argc, argv, 0, "-h", NULL );
@@ -117,20 +117,22 @@ main( int argc, char *argv[] )
     do_spin( spin_times * 100000 );
     t2 = current_monotonic_time_ns();
   } while ( t2 - t < 15 * 100000 );
-  printf( "do_spin ( %" PRIu64 " ) = 15ns\n", spin_times );
+  printf( "do_spin ( %lu ) = 15ns\n", spin_times );
 #endif
   shm_attach( mn );
   if ( map == NULL )
     return 1;
   sighndl.install();
 
-  KeyCtx pingctx( *map, ctx_id, &pingkb ),
-         pongctx( *map, ctx_id, &pongkb );
+  KeyCtx pingctx( *map, dbx_id, &pingkb ),
+         pongctx( *map, dbx_id, &pongkb );
+  HashSeed hs;
   uint64_t h1, h2;
-  map->hdr.get_hash_seed( 0, h1, h2 );
+  map->hdr.get_hash_seed( 0, hs );
+  hs.get( h1, h2 );
   pingkb.hash( h1, h2 );
   pingctx.set_hash( h1, h2 );
-  map->hdr.get_hash_seed( 0, h1, h2 );
+  hs.get( h1, h2 );
   pongkb.hash( h1, h2 );
   pongctx.set_hash( h1, h2 );
 
@@ -203,7 +205,7 @@ main( int argc, char *argv[] )
           }
           if ( t - last >= (uint64_t) 2000000000U ) {
             double mb = (double) mbar / (double) ( count - last_count );
-            printf( "ping %.1fcy mb=%.1f %" PRIu64 "\n",
+            printf( "ping %.1fcy mb=%.1f %lu\n",
                     (double) ( t - last ) / (double) ( count - last_count ),
                     mb, spin_times );
             last_count = count;
@@ -276,7 +278,7 @@ main( int argc, char *argv[] )
           }
           if ( t - last >= (uint64_t) 2000000000U ) {
             double mb = (double) mbar / (double) ( count - last_count );
-            printf( "pong %.1fcy mb=%.1f %" PRIu64 "\n",
+            printf( "pong %.1fcy mb=%.1f %lu\n",
                     (double) ( t - last ) / (double) ( count - last_count ),
                     mb, spin_times );
             last_count = count;
@@ -303,7 +305,7 @@ main( int argc, char *argv[] )
     }
   }
   shm_close();
-  printf( "count %" PRIu64 ", diff %.1f\n", count,
+  printf( "count %lu, diff %.1f\n", count,
           (double) nsdiff / (double) count );
   return 0;
 }

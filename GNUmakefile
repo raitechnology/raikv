@@ -176,7 +176,7 @@ all_exes    += $(bind)/kv_test $(bind)/hash_test $(bind)/ping \
 all_depends += $(kv_test_deps) $(hash_test_deps) $(ping_deps) \
                $(kv_cli_deps) $(mcs_test_deps) $(kv_server_deps) \
 	       $(load_deps) $(rela_test_deps) $(ctest_deps) \
-	       $(pq_test_deps)
+	       $(pq_test_deps) $(pubsub_deps)
 
 all_dirs := $(bind) $(libd) $(objd) $(dependd)
 

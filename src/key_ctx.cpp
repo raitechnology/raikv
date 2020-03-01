@@ -10,34 +10,34 @@ using namespace rai;
 using namespace kv;
 
 /* KeyFragment b is usually null */
-KeyCtx::KeyCtx( HashTab &t, ThrCtx &ctx, KeyFragment *b )
+KeyCtx::KeyCtx( HashTab &t,  uint32_t xid,  KeyFragment *b ) noexcept
   : ht( t )
-  , thr_ctx( ctx )
+  , ctx_id( t.hdr.stat_link[ xid ].ctx_id )
+  , dbx_id( xid )
   , kbuf( b )
   , ht_size( t.hdr.ht_size )
   , hash_entry_size( t.hdr.hash_entry_size )
   , cuckoo_buckets( t.hdr.cuckoo_buckets )
   , cuckoo_arity( t.hdr.cuckoo_arity )
   , seg_align_shift( t.hdr.seg_align_shift )
-  , db_num( ctx.db_num1 )
+  , db_num( t.hdr.stat_link[ xid ].db_num )
   , inc( 0 )
   , msg_chain_size( 0 )
   , drop_flags( 0 )
   , flags( KEYCTX_IS_READ_ONLY )
   , entry( 0 )
   , msg( 0 )
-  , stat( ctx.stat1 )
+  , stat( t.stats[ xid ] )
   , max_chains( t.hdr.ht_size )
 {
-  ::memset( &this->chains, 0,
-            (uint8_t *) (void *) &( &this->wrk )[ 1 ] -
-              (uint8_t *) (void *) &this->chains );
+  this->zero();
 }
-
-KeyCtx::KeyCtx( HashTab &t, ThrCtx &ctx, HashCounters &dbstat,  uint8_t dbn,
-                KeyFragment *b )
+#if 0
+KeyCtx::KeyCtx( HashTab &t, uint32_t cid,  uint32_t xid,  uint8_t dbn,
+                KeyFragment *b ) noexcept
   : ht( t )
-  , thr_ctx( ctx )
+  , ctx_id( cid )
+  , dbx_id( xid )
   , kbuf( b )
   , ht_size( t.hdr.ht_size )
   , hash_entry_size( t.hdr.hash_entry_size )
@@ -51,41 +51,16 @@ KeyCtx::KeyCtx( HashTab &t, ThrCtx &ctx, HashCounters &dbstat,  uint8_t dbn,
   , flags( KEYCTX_IS_READ_ONLY )
   , entry( 0 )
   , msg( 0 )
-  , stat( dbstat )
+  , stat( t.stats[ xid ] )
   , max_chains( t.hdr.ht_size )
 {
-  ::memset( &this->chains, 0,
-            (uint8_t *) (void *) &( &this->wrk )[ 1 ] -
-              (uint8_t *) (void *) &this->chains );
+  this->zero();
 }
-
-KeyCtx::KeyCtx( HashTab &t, uint32_t id, KeyFragment *b )
-  : ht( t )
-  , thr_ctx( t.ctx[ id ] )
-  , kbuf( b )
-  , ht_size( t.hdr.ht_size )
-  , hash_entry_size( t.hdr.hash_entry_size )
-  , cuckoo_buckets( t.hdr.cuckoo_buckets )
-  , cuckoo_arity( t.hdr.cuckoo_arity )
-  , seg_align_shift( t.hdr.seg_align_shift )
-  , db_num( t.ctx[ id ].db_num1 )
-  , inc( 0 )
-  , msg_chain_size( 0 )
-  , drop_flags( 0 )
-  , flags( KEYCTX_IS_READ_ONLY )
-  , entry( 0 )
-  , msg( 0 )
-  , stat( t.ctx[ id ].stat1 )
-  , max_chains( t.hdr.ht_size )
-{
-  ::memset( &this->chains, 0,
-            (uint8_t *) (void *) &( &this->wrk )[ 1 ] -
-              (uint8_t *) (void *) &this->chains );
-}
-
-KeyCtx::KeyCtx( KeyCtx &kctx )
+#endif
+KeyCtx::KeyCtx( KeyCtx &kctx ) noexcept
   : ht( kctx.ht )
-  , thr_ctx( kctx.thr_ctx )
+  , ctx_id( kctx.ctx_id )
+  , dbx_id( kctx.dbx_id )
   , kbuf( 0 )
   , ht_size( kctx.ht_size )
   , hash_entry_size( kctx.hash_entry_size )
@@ -102,17 +77,7 @@ KeyCtx::KeyCtx( KeyCtx &kctx )
   , stat( kctx.stat )
   , max_chains( kctx.ht_size )
 {
-  ::memset( &this->chains, 0,
-            (uint8_t *) (void *) &( &this->wrk )[ 1 ] -
-              (uint8_t *) (void *) &this->chains );
-}
-
-void
-KeyCtx::switch_db( uint8_t db_num ) noexcept
-{
-  this->ht.retire_ht_thr_stats( this->thr_ctx.ctx_id );
-  this->db_num = db_num;
-  this->thr_ctx.db_num1 = db_num; /* must account for other KeyCtx in app */
+  this->zero();
 }
 
 void
@@ -126,15 +91,15 @@ KeyCtx::set_hash( uint64_t k,  uint64_t k2 ) noexcept
 void
 KeyCtx::set_key_hash( KeyFragment &b ) noexcept
 {
-  uint64_t k, k2;
-  this->ht.hdr.get_hash_seed( this->db_num, k, k2 );
+  HashSeed hs;
+  this->ht.hdr.get_hash_seed( this->db_num, hs );
   this->set_key( b );
-  b.hash( k, k2 );
-  this->set_hash( k, k2 );
+  hs.hash( b, this->key, this->key2 );
+  this->start = this->ht.hdr.ht_mod( hs.hash1 );
 }
 
 KeyCtx *
-KeyCtx::new_array( HashTab &t,  uint32_t id,  void *b,  size_t bsz ) noexcept
+KeyCtx::new_array( HashTab &t,  uint32_t xid,  void *b,  size_t bsz ) noexcept
 {
   KeyCtxBuf *p = (KeyCtxBuf *) b;
   if ( p == NULL ) {
@@ -144,7 +109,7 @@ KeyCtx::new_array( HashTab &t,  uint32_t id,  void *b,  size_t bsz ) noexcept
     b = (void *) p;
   }
   for ( size_t i = 0; i < bsz; i++ ) {
-    new ( (void *) p ) KeyCtx( t, id );
+    new ( (void *) p ) KeyCtx( t, xid );
     p = &p[ 1 ];
   }
   return (KeyCtx *) b;
@@ -339,7 +304,7 @@ KeyCtx::release( void ) noexcept
     return;
   }
   HashEntry & el   = *this->entry;
-  ThrCtx    & ctx  = this->thr_ctx;
+  ThrCtx    & ctx  = this->ht.ctx[ this->ctx_id ];
   ThrCtxOwner closure( this->ht.ctx );
   uint64_t    spin = 0,
               k    = this->key;
@@ -799,7 +764,9 @@ KeyCtx::load( MsgCtx &msg_ctx ) noexcept
   this->update_entry( NULL, 0, el );
 
   el.set( FL_SEGMENT_VALUE );
-  msg_ctx.geom.serial = this->serial;
+  this->next_serial( ValueCtr::SERIAL_MASK );
+  msg_ctx.geom.serial = el.value_ptr( this->hash_entry_size ).
+                         set_serial( this->serial );
   el.set_value_geom( this->hash_entry_size, msg_ctx.geom,
                      this->seg_align_shift );
   el.value_ctr( this->hash_entry_size ).size = 0;
@@ -1734,17 +1701,20 @@ kv_hash_key_frag( kv_hash_tab_t *ht,  kv_key_frag_t *frag,
                   uint64_t *k,  uint64_t *k2 )
 {
   HashTab *map = reinterpret_cast<HashTab *>( ht );
-  map->hdr.get_hash_seed( 0, *k, *k2 );
-  ((KeyFragment *) frag )->hash( *k, *k2 );
+  HashSeed hs;
+  map->hdr.get_hash_seed( 0, hs );
+  ((KeyFragment *) frag )->hash( hs.hash1, hs.hash2 );
+  *k = hs.hash1;
+  *k2 = hs.hash2;
 }
 
 kv_key_ctx_t *
-kv_create_key_ctx( kv_hash_tab_t *ht,  uint32_t ctx_id )
+kv_create_key_ctx( kv_hash_tab_t *ht,  uint32_t xid )
 {
   void * ptr = ::malloc( sizeof( KeyCtx ) );
   if ( ptr == NULL )
     return NULL;
-  new ( ptr ) KeyCtx( *reinterpret_cast<HashTab *>( ht ),  ctx_id );
+  new ( ptr ) KeyCtx( *reinterpret_cast<HashTab *>( ht ), xid );
   return (kv_key_ctx_t *) ptr;
 }
 

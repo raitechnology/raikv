@@ -171,7 +171,7 @@ main( int argc, char *argv[] )
   uint16_t      buckets = 4;
 
   /* [sysv2m:shm.test] [1024] [0.5] [2+4] [1024] [64] */
-  const char * mn = get_arg( argc, argv, 1, 1, "-m", "sysv2m:shm.test" ),
+  const char * mn = get_arg( argc, argv, 1, 1, "-m", KV_DEFAULT_SHM ),
              * mb = get_arg( argc, argv, 2, 1, "-s", "1024" ),
              * ra = get_arg( argc, argv, 3, 1, "-r", "0.5" ),
              * ab = get_arg( argc, argv, 4, 1, "-a", "2+4" ),
@@ -273,8 +273,17 @@ main( int argc, char *argv[] )
       j = 0;
     }
     if ( b || ( ctr == 0 && hts->ival > 0 ) ) {
-      if ( ctr == 0 )
+      if ( ctr == 0 ) {
         fputs( print_map_geom( map, MAX_CTX_ID ), stdout );
+        for ( uint32_t db = 0; db < DB_COUNT; db++ ) {
+          if ( map->hdr.test_db_opened( db ) ) {
+            printf( "db[ %u ].entry_cnt:%s %lu\n", db,
+                    ( ( db < 10 ) ? "   " : ( ( db < 100 ) ? "  " : " " ) ),
+                    hts->db_stats[ db ].last.add -
+                    hts->db_stats[ db ].last.drop );
+          }
+        }
+      }
       print_ops( *map, *hts, ctr );
       fflush( stdout );
     }

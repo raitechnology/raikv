@@ -4,8 +4,6 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <pthread.h>
-#define __STDC_FORMAT_MACROS
-#include <inttypes.h>
 
 #include <raikv/shm_ht.h>
 #include <raikv/key_buf.h>
@@ -15,14 +13,16 @@ using namespace kv;
 
 HashTabGeom geom;
 HashTab   * map;
-uint32_t    ctx_id = MAX_CTX_ID;
+uint32_t    ctx_id = MAX_CTX_ID,
+            dbx_id = MAX_STAT_ID;
 
 static void
 shm_attach( const char *mn )
 {
   map = HashTab::attach_map( mn, 0, geom );
   if ( map != NULL ) {
-    ctx_id = map->attach_ctx( 1000 /*::getpid()*/, 0, 0 );
+    ctx_id = map->attach_ctx( ::getpid() );
+    dbx_id = map->attach_db( ctx_id, 0 );
     fputs( print_map_geom( map, ctx_id ), stdout );
   }
 }
@@ -31,9 +31,9 @@ static void
 shm_close( void )
 {
   if ( ctx_id != MAX_CTX_ID ) {
-    HashCounters & stat = map->ctx[ ctx_id ].stat1;
-    printf( "rd %" PRIu64 ", wr %" PRIu64 ", "
-            "sp %" PRIu64 ", ch %" PRIu64 "\n",
+    HashCounters & stat = map->stats[ dbx_id ];
+    printf( "rd %lu, wr %lu, "
+            "sp %lu, ch %lu\n",
             stat.rd, stat.wr, stat.spins, stat.chains );
     map->detach_ctx( ctx_id );
     ctx_id = MAX_CTX_ID;
@@ -69,7 +69,7 @@ static void
 compute_key_count( void )
 {
   WorkAlloc8k wrk;
-  KeyCtx        kctx( map, ctx_id );
+  KeyCtx        kctx( map, dbx_id );
   KeyStatus     status;
   x_seg_values = 0; x_immed_values = 0; x_no_value = 0;
   x_key_count = 0; x_drops = 0;
@@ -108,7 +108,7 @@ main( int argc, char *argv[] )
            use_pref = 1;
 
   /* [sysv2m:shm.test] [file] [cnt] [pre] */
-  const char * mn = get_arg( argc, argv, 1, 1, "-m", "sysv2m:shm.test" ),
+  const char * mn = get_arg( argc, argv, 1, 1, "-m", KV_DEFAULT_SHM ),
              * fn = get_arg( argc, argv, 2, 1, "-f", "file.dat" ),
              * cn = get_arg( argc, argv, 3, 1, "-c", "4" ),
              * pr = get_arg( argc, argv, 4, 1, "-p", "1" ),
@@ -147,8 +147,8 @@ main( int argc, char *argv[] )
     MsgCtx        * mctx = NULL;
     void          * ptr = NULL;
     char          * buf,
-                    bufspc[ MAX_KEY_BUF_SIZE ],
-                    sav[ MAX_KEY_BUF_SIZE ],
+                    bufspc[ MAX_KEY_SIZE - 2 ],
+                    sav[ MAX_KEY_SIZE - 2 ],
                     size[ 32 ];
     size_t          sz, maxsz = 0;
     uint64_t        i, j, last = 0, count = 0, loaded = 0,
@@ -164,9 +164,9 @@ main( int argc, char *argv[] )
                     prev_xdrop;
 #endif
     if ( precount > 0 ) {
-      kba  = KeyBufAligned::new_array( precount );
-      kctx = KeyCtx::new_array( *map, ctx_id, NULL, precount );
-      mctx = MsgCtx::new_array( *map, ctx_id, NULL, precount );
+      kba  = KeyBufAligned::new_array( NULL, precount );
+      kctx = KeyCtx::new_array( *map, dbx_id, NULL, precount );
+      mctx = MsgCtx::new_array( *map, dbx_id, NULL, precount );
     }
     t1 = current_realtime_ns();
     cur = t1;
@@ -176,10 +176,9 @@ main( int argc, char *argv[] )
         buf = kba[ i ].kb.u.buf;
       else
         buf = bufspc;
-      if ( fgets( buf, MAX_KEY_BUF_SIZE, fp ) != NULL &&
+      if ( fgets( buf, MAX_KEY_SIZE - 2, fp ) != NULL &&
            fgets( size, sizeof( size ), fp ) != NULL &&
            (sz = (size_t) atoi( size )) > 0 ) {
-        ThrCtx & ctx = map->ctx[ ctx_id ];
         count++;
         totalb += sz;
 #if 0
@@ -215,6 +214,7 @@ main( int argc, char *argv[] )
           cur = t2;
           if ( ( t2 - t1 ) >= NANOS / 2 ) {
 //            compute_key_count();
+            HashCounters & stat = map->stats[ dbx_id ];
             printf( "%.1f msg/s %.1f bytes/s %.1f fail/s "
                 "add %lu drop %lu total %lu\n",
          /* "seg %lu immed %lu no_val %lu key_count %lu drops %lu tot %lu\n",*/
@@ -222,7 +222,7 @@ main( int argc, char *argv[] )
                 (double) ( totalb - lastb ) / ( (double) ( t2 - t1 ) / NANOSF ),
                 (double) ( allocfail - lastallfail ) /
                   ( (double) ( t2 - t1 ) / NANOSF ),
-                ctx.stat1.add, ctx.stat1.drop, ctx.stat1.add - ctx.stat1.drop /*,
+                stat.add, stat.drop, stat.add - stat.drop /*,
                 x_seg_values, x_immed_values, x_no_value, x_key_count, x_drops,
                 x_key_count - x_drops*/ );
             t1 = t2;
@@ -240,7 +240,9 @@ main( int argc, char *argv[] )
           if ( use_pref )
             mctx[ i ].prefetch_segment( sz );
           uint64_t h1, h2;
-          map->hdr.get_hash_seed( 0, h1, h2 );
+          HashSeed hs;
+          map->hdr.get_hash_seed( 0, hs );
+          hs.get( h1, h2 );
           kb.hash( h1, h2 );
           mctx[ i ].set_key( kb );
           mctx[ i ].set_hash( h1, h2 );

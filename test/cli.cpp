@@ -16,7 +16,9 @@ using namespace kv;
 
 HashTabGeom geom;
 HashTab   * map;
-uint32_t    ctx_id = MAX_CTX_ID, my_pid, no_pid = 666;
+uint32_t    ctx_id = MAX_CTX_ID,
+            dbx_id = MAX_STAT_ID,
+            my_pid, no_pid = 666;
 uint8_t     db_num = 0;
 
 //static uint64_t max( uint64_t x,  uint64_t y ) { return ( x > y ? x : y ); }
@@ -73,7 +75,8 @@ shm_attach( const char *mn )
 {
   map = HashTab::attach_map( mn, 0, geom );
   if ( map != NULL ) {
-    ctx_id = map->attach_ctx( my_pid = ::getpid(), db_num, 0 );
+    ctx_id = map->attach_ctx( my_pid = ::getpid() );
+    dbx_id = map->attach_db( ctx_id, db_num );
     fputs( print_map_geom( map, ctx_id ), stdout );
   }
 }
@@ -151,7 +154,10 @@ print_stats( uint32_t c )
 {
   if ( c != MAX_CTX_ID ) {
     int alive = 0;
-    HashCounters & stat = map->ctx[ c ].stat1;
+    HashDeltaCounters stats;
+    HashCounters ops, tot;
+    stats.zero(); ops.zero(); tot.zero();
+    map->sum_ht_thr_delta( stats, ops, tot, ctx_id );
     uint32_t pid = map->ctx[ c ].ctx_pid;
     if ( pid != 0 ) {
       if ( map->ctx[ c ].ctx_id != KV_NO_CTX_ID ) {
@@ -166,9 +172,9 @@ print_stats( uint32_t c )
             "cuckmax %lu\n",
         c, ( c == ctx_id ? '*' :
              ( alive == 2 ? '+' : ( alive == 1 ? '?' : '/' ) ) ),
-        pid, stat.rd, stat.wr, stat.spins, stat.chains, stat.add, stat.drop,
-        stat.expire, stat.htevict, stat.afail, stat.hit, stat.miss, stat.cuckacq,
-        stat.cuckfet, stat.cuckmov, stat.cuckret, stat.cuckmax );
+        pid, tot.rd, tot.wr, tot.spins, tot.chains, tot.add, tot.drop,
+        tot.expire, tot.htevict, tot.afail, tot.hit, tot.miss, tot.cuckacq,
+        tot.cuckfet, tot.cuckmov, tot.cuckret, tot.cuckmax );
   }
   else {
     xputs( 0, "No ctx_id\n" );
@@ -245,7 +251,7 @@ gc_seg( uint32_t s )
   GCStats stats;
   stats.zero();
   xprintf( 0, "segment #%u\n", s );
-  map->gc_segment( map->ctx[ ctx_id ], s, stats );
+  map->gc_segment( dbx_id, s, stats );
   xprintf( 0, "  seg=%lu new=%lu "
                 "moved[%u]=%lu "
                 "zombie[%u]=%lu\n"
@@ -816,8 +822,8 @@ validate_ht( HashTab *map )
 {
   KeyBuf        kb, kb2;
   KeyFragment * kp;
-  KeyCtx        kctx( *map, ctx_id, &kb ),
-                kctx2( *map, ctx_id, &kb2 );
+  KeyCtx        kctx( *map, dbx_id, &kb ),
+                kctx2( *map, dbx_id, &kb2 );
   WorkAlloc8k   wrk, wrk2;
   uint64_t      h1, h2;
   char          buf[ 1024 ];
@@ -831,8 +837,8 @@ validate_ht( HashTab *map )
       status = kctx.get_key( kp );
       uint64_t natural_pos, pos_off = 0;
       kctx.get_pos_info( natural_pos, pos_off );
-      if ( status == KEY_OK )
-        kb2 = *kp;
+      if ( status == KEY_OK && kb2.copy( *kp ) != kp->keylen )
+        status = KEY_TOO_BIG;
       if ( kctx.cuckoo_arity > 1 &&
            pos_off / kctx.cuckoo_buckets != kctx.inc ) {
         if ( status == KEY_OK )
@@ -845,8 +851,9 @@ validate_ht( HashTab *map )
         print_key_data( kctx, "", 0 );
       }
       if ( status == KEY_OK ) {
-        map->hdr.get_hash_seed( db, h1, h2 );
-        kb2.hash( h1, h2 );
+        HashSeed hs;
+        map->hdr.get_hash_seed( db, hs );
+        hs.hash( kb2, h1, h2 );
         kctx2.set_hash( h1, h2 );
       }
       else {
@@ -860,9 +867,11 @@ validate_ht( HashTab *map )
         else
           ::strcpy( buf, "key_part" );
         print_status( "find-position", buf, status );
-        xprintf( 0, "pos %lu != kctx.pos %lu\n", pos, kctx2.pos );
-        xprintf( 0, "pos_off %lu natural_pos %lu\n", pos_off, natural_pos );
-        xprintf( 0, "db %u db2 %u\n", db, kctx2.get_db() );
+        if ( status == KEY_OK ) {
+          xprintf( 0, "pos %lu != kctx.pos %lu\n", pos, kctx2.pos );
+          xprintf( 0, "pos_off %lu natural_pos %lu\n", pos_off, natural_pos );
+          xprintf( 0, "db %u db2 %u\n", db, kctx2.get_db() );
+        }
         print_key_data( kctx, "", 0 );
       }
     }
@@ -881,7 +890,7 @@ cli( void )
     void zero( void ) { ::memset( this, 0, sizeof( *this ) ); }
   } kld;
   KeyBuf        kb;
-  KeyCtx        kctx( *map, ctx_id, &kb );
+  KeyCtx        kctx( *map, dbx_id, &kb );
   WorkAlloc8k   wrk;
   char          buf[ 16 * 1024 ], cmd[ 16 ], key[ 8192 ], *data;
   char          fl[ 128 ], upd[ 64 ], exp[ 64 ], xbuf[ 32 ], tmp = 0;
@@ -890,6 +899,7 @@ cli( void )
               * infp = stdin;
   uint64_t      exp_ns;
   uint64_t      sz, h, t1, t2, t3, t4, h1, h2;
+  HashSeed      hs;
   double        f;
   uint32_t      cnt, i, j, print_count;
   char          cmd_char, last_cmd = 0;
@@ -961,8 +971,8 @@ cli( void )
       case 'u': /* update stamp */
       case 'P': /* publish */
         parse_key_string( kb, key );
-        map->hdr.get_hash_seed( db_num, h1, h2 );
-        kb.hash( h1, h2 );
+        map->hdr.get_hash_seed( db_num, hs );
+        hs.hash( kb, h1, h2 );
         kctx.set_hash( h1, h2 );
 
         if ( (status = kctx.acquire( &wrk )) <= KEY_IS_NEW ) {
@@ -1027,8 +1037,8 @@ cli( void )
 
       case 'e': /* acquire */
         parse_key_string( kb, key );
-        map->hdr.get_hash_seed( db_num, h1, h2 );
-        kb.hash( h1, h2 );
+        map->hdr.get_hash_seed( db_num, hs );
+        hs.hash( kb, h1, h2 );
         kctx.set_hash( h1, h2 );
 
         if ( (status = kctx.acquire( &wrk )) <= KEY_IS_NEW ) {
@@ -1048,7 +1058,7 @@ cli( void )
         if ( key[ 0 ] >=  '0' && key[ 0 ] <= '9' ) {
           db_num = string_to_uint64( key, ::strlen( key ) );
           xprintf( 0, "switching to DB %u\n", db_num );
-          kctx.switch_db( db_num );
+          dbx_id = map->attach_db( ctx_id, db_num );
         }
         break;
 
@@ -1069,8 +1079,8 @@ cli( void )
           case 'g': do_get = true; break;
         }
         t1 = get_rdtscp();
-        map->hdr.get_hash_seed( db_num, h1, h2 );
-        kb.hash( h1, h2 );
+        map->hdr.get_hash_seed( db_num, hs );
+        hs.hash( kb, h1, h2 );
         kctx.set_hash( h1, h2 );
         t2 = get_rdtscp();
         cnt = 0;
@@ -1161,8 +1171,8 @@ cli( void )
                 j = map->hdr.ht_size - 24;
               else if ( ::strcmp( key, "0" ) != 0 ) {
                 parse_key_string( kb, key );
-                map->hdr.get_hash_seed( db_num, h1, h2 );
-                kb.hash( h1, h2 );
+                map->hdr.get_hash_seed( db_num, hs );
+                hs.hash( kb, h1, h2 );
                 j = map->hdr.ht_mod( h1 );
               }
             }
@@ -1311,7 +1321,7 @@ cli( void )
         break;
 
       case 'X': /* stats */
-        print_map_geom( map, ctx_id );
+        print_map_geom( map, dbx_id );
         print_stats();
         break;
 
@@ -1410,7 +1420,7 @@ int
 main( int argc, char *argv[] )
 {
   /* [sysv2m:shm.test] */
-  const char * mn = get_arg( argc, argv, 1, 1, "-m", "sysv2m:shm.test" ),
+  const char * mn = get_arg( argc, argv, 1, 1, "-m", KV_DEFAULT_SHM ),
              * he = get_arg( argc, argv, 0, 0, "-h", 0 );
 
   if ( he != NULL ) {

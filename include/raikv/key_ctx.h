@@ -49,6 +49,7 @@ namespace kv {
 typedef enum kv_key_status_e KeyStatus;
 
 struct HashTab;
+struct HashSeed;
 struct ThrCtx;
 struct MsgHdr;
 struct MsgCtx;
@@ -86,15 +87,16 @@ enum KeyCtxFlags {
 
 struct KeyCtx {
   HashTab      & ht;      /* operates on this table */
-  ThrCtx       & thr_ctx; /* thread context */
+  const uint32_t ctx_id,
+                 dbx_id;
   KeyFragment  * kbuf;    /* key to lookup resolve */
   const uint64_t ht_size;
   const uint32_t hash_entry_size;
   const uint16_t cuckoo_buckets; /* how many cuckoo buckets */
   const uint8_t  cuckoo_arity,   /* how many cuckoo hash functions */
                  seg_align_shift; /* alignment of segment data */
-  uint8_t        db_num,
-                 inc;        /* which hash function: 0 -> cuckoo_arity */
+  uint8_t        db_num;
+  uint8_t        inc;        /* which hash function: 0 -> cuckoo_arity */
   uint16_t       msg_chain_size,
                  drop_flags, /* flags from dropped recycle entry */
                  flags;      /* KeyCtxFlags */
@@ -102,8 +104,8 @@ struct KeyCtx {
   MsgHdr       * msg;     /* the msg header indexed by geom */
                  /* ^^ 8*8 ^^  vv 8*11 + 8*4(geom) + 8 vv */ 
   HashCounters & stat;
-  uint64_t       max_chains, /* drop entries after accumulating max chains */
-                 chains,     /* number of chains used to find/acquire */
+  const uint64_t max_chains; /* drop entries after accumulating max chains */
+  uint64_t       chains,     /* number of chains used to find/acquire */
                  start,   /* key % ht_size */
                  key,     /* KeyBuf hash() */
                  key2,    /* KeyBuf hash() */
@@ -116,6 +118,10 @@ struct KeyCtx {
   ValueGeom      geom;    /* values decoded from HashEntry */
   ScratchMem   * wrk;     /* temp work allocation */
 
+  void zero( void ) {
+    ::memset( &this->chains, 0, (uint8_t *) (void *) &( &this->wrk )[ 1 ] -
+                                (uint8_t *) (void *) &this->chains ); 
+  }
   void incr_read( uint64_t cnt = 1 )    { this->stat.rd      += cnt; }
   void incr_write( uint64_t cnt = 1 )   { this->stat.wr      += cnt; }
   void incr_spins( uint64_t cnt = 1 )   { this->stat.spins   += cnt; }
@@ -139,12 +145,12 @@ struct KeyCtx {
   uint64_t seg_align( void ) const {
     return (uint64_t) 1 << this->seg_align_shift;
   }
-  KeyCtx( HashTab &t,  ThrCtx &ctx,  KeyFragment *b = NULL );
-  KeyCtx( HashTab &t,  ThrCtx &ctx,  HashCounters &dbstat,  uint8_t dbn,
-          KeyFragment *b = NULL );
-  KeyCtx( HashTab &t,  uint32_t id,  KeyFragment *b = NULL );
-  KeyCtx( KeyCtx &kctx );
-  ~KeyCtx() {}
+  KeyCtx( HashTab &t,  uint32_t xid,  KeyFragment *b = NULL ) noexcept;
+#if 0
+  KeyCtx( HashTab &t,  uint32_t cid,  uint32_t id,  uint8_t dbn,
+          KeyFragment *b = NULL ) noexcept;
+#endif
+  KeyCtx( KeyCtx &kctx ) noexcept;
 
   /* placement new to deal with broken c++ new[], for example:
    * KeyCtxBuf kctxbuf[ 8 ];
@@ -154,11 +160,10 @@ struct KeyCtx {
    * if ( kctx == NULL ) fatal( "no memory" );
    * delete kctx; // same as free( kctx )
    */
-  static KeyCtx * new_array( HashTab &t,  uint32_t id,  void *b,
+  static KeyCtx * new_array( HashTab &t,  uint32_t xid,  void *b,
                              size_t bsz ) noexcept;
   void * operator new( size_t, void *ptr ) { return ptr; }
   void operator delete( void *ptr ) { ::free( ptr ); }
-  void switch_db( uint8_t db_num ) noexcept;
   /* set key, this does not hash the key, use set_hash() afterwards */
   void set_key( KeyFragment &b ) { this->kbuf = &b; }
   /* set hash value, no key arg, usually done as:
@@ -501,7 +506,7 @@ void kv_set_key_frag_string( kv_key_frag_t *frag,  const char *s,
 void kv_hash_key_frag( kv_hash_tab_t *ht,  kv_key_frag_t *frag,
                        uint64_t *k,  uint64_t *k2 );
 
-kv_key_ctx_t *kv_create_key_ctx( kv_hash_tab_t *ht,  uint32_t ctx_id );
+kv_key_ctx_t *kv_create_key_ctx( kv_hash_tab_t *ht,  uint32_t xid );
 void kv_release_key_ctx( kv_key_ctx_t *kctx );
 
 void kv_set_key( kv_key_ctx_t *kctx,  kv_key_frag_t *kbuf );

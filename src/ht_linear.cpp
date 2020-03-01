@@ -93,9 +93,9 @@ KeyCtx::find_linear_probe_single_thread( const uint64_t k,
 
 /* 32b aligned hash entry fetch, zero if slot is empty */
 static inline uint64_t
-fetch_hash_entry( void *p,  void *q,  uint32_t sz )
+fetch_hash_entry( void *p,  const void *q,  uint32_t sz )
 {
-  uint64_t h = ( ((uint64_t *) p)[ 0 ] = ((uint64_t *) q)[ 0 ] );
+  uint64_t h = ( ((uint64_t *) p)[ 0 ] = ((const uint64_t *) q)[ 0 ] );
   if ( ( h & ZOMBIE64 ) != 0 ) /* slot busy */
     return h;
   if ( h == 0 ) {
@@ -110,13 +110,13 @@ fetch_hash_entry( void *p,  void *q,  uint32_t sz )
     }
   }
   for (;;) {
-    ((uint64_t *) p)[ 1 ] = ((uint64_t *) q)[ 1 ];
-    ((uint64_t *) p)[ 2 ] = ((uint64_t *) q)[ 2 ];
-    ((uint64_t *) p)[ 3 ] = ((uint64_t *) q)[ 3 ];
+    ((uint64_t *) p)[ 1 ] = ((const uint64_t *) q)[ 1 ];
+    ((uint64_t *) p)[ 2 ] = ((const uint64_t *) q)[ 2 ];
+    ((uint64_t *) p)[ 3 ] = ((const uint64_t *) q)[ 3 ];
     if ( (sz -= 32) == 0 )
       return h;
     p = &((uint64_t *) p)[ 4 ]; q = &((uint64_t *) q)[ 4 ];
-    ((uint64_t *) p)[ 0 ] = ((uint64_t *) q)[ 0 ];
+    ((uint64_t *) p)[ 0 ] = ((const uint64_t *) q)[ 0 ];
   }
 }
 

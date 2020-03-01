@@ -97,7 +97,7 @@ CuckooAltHash::find_cuckoo_path( CuckooPosition &cp ) noexcept
    /*= (CuckooVisit *) kctx.wrk->alloc( node_size * sizeof( CuckooVisit ) ),*/
    /*= (uint32_t *) kctx.wrk->alloc( stk_size * sizeof( uint32_t ) );*/
   CuckooAltHash    * h   = CuckooAltHash::create( kctx );
-  ThrCtx           & ctx = kctx.thr_ctx;
+  ThrCtx           & ctx = kctx.ht.ctx[ kctx.ctx_id ];
   rand::xoroshiro128plus
                    & rng = ctx.rng;
   uint64_t           key, key2, p, rng_bits, boff;
@@ -513,7 +513,7 @@ KeyCtx::get_pos_info( uint64_t &natural_pos,  uint64_t &pos_off ) noexcept
 KeyStatus
 KeyCtx::try_acquire_position( const uint64_t i ) noexcept
 {
-  ThrCtx    & ctx = this->thr_ctx;
+  ThrCtx    & ctx = this->ht.ctx[ this->ctx_id ];
   HashEntry * el;          /* current ht[] ptr */
   uint64_t    cur_mcs_id,  /* MCS lock queue for the current element */
               h,           /* hash val at the current element */

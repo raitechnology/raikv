@@ -15,7 +15,7 @@ KeyStatus
 KeyCtx::acquire( const uint64_t k,  uint64_t i,  Position &next )
 {
   ThrCtxOwner  closure( this->ht.ctx );
-  ThrCtx     & ctx     = this->thr_ctx;
+  ThrCtx     & ctx     = this->ht.ctx[ this->ctx_id ];
   HashEntry  * el,              /* current ht[] ptr */
              * last,            /* last ht[] ptr */
              * drop    = NULL;  /* drop ht[] ptr */

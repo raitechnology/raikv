@@ -77,9 +77,10 @@ struct KeyFragment : public kv_key_frag_s {
     return eq;
   }
   /* 127 bit hash */
-  void hash( uint64_t &seed,  uint64_t &seed2,
-             kv_hash128_func_t func = KV_DEFAULT_HASH ) {
-    func( this->u.buf, this->keylen, &seed, &seed2 );
+  void hash( uint64_t &seed,  uint64_t &seed2 /*,
+             kv_hash128_func_t func = KV_DEFAULT_HASH*/ ) {
+    /*func*/
+    KV_DEFAULT_HASH( this->u.buf, this->keylen, &seed, &seed2 );
     if ( (seed &= ~ZOMBIE64) <= DROPPED_HASH) /* clear tombstone */
       seed = DROPPED_HASH + 1; /* zero & one are reserved for empty, dropped */
   }

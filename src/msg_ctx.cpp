@@ -9,20 +9,13 @@
 using namespace rai;
 using namespace kv;
 
-MsgCtx::MsgCtx( HashTab &t,  ThrCtx &thr,  uint32_t sz ) noexcept
-      : ht( t ), thr_ctx( thr ), dbstat( thr.stat1 ), kbuf( 0 ),
-        hash_entry_size( sz ), db_num( thr.db_num1 ), key( 0 ),
-        msg( 0 ), prefetch_ptr( 0 ) {}
-
-MsgCtx::MsgCtx( HashTab &t,  ThrCtx &thr ) noexcept
-      : ht( t ), thr_ctx( thr ), dbstat( thr.stat1 ), kbuf( 0 ),
-        hash_entry_size( t.hdr.hash_entry_size ), db_num( thr.db_num1 ),
-        key( 0 ), msg( 0 ), prefetch_ptr( 0 ) {}
+MsgCtx::MsgCtx( HashTab &t,  uint32_t xid ) noexcept
+      : ht( t ), dbx_id( xid ), kbuf( 0 ), key( 0 ), msg( 0 ),
+        prefetch_ptr( 0 ) {}
 
 MsgCtx::MsgCtx( KeyCtx &kctx ) noexcept
-      : ht( kctx.ht ), thr_ctx( kctx.thr_ctx ), dbstat( kctx.stat ), kbuf( 0 ),
-        hash_entry_size( kctx.hash_entry_size ), db_num( kctx.db_num ),
-        key( 0 ), msg( 0 ), prefetch_ptr( 0 ) {}
+      : ht( kctx.ht ), dbx_id( kctx.dbx_id ), kbuf( 0 ), key( 0 ), msg( 0 ),
+        prefetch_ptr( 0 ) {}
 #if 0
 void
 MsgCtx::set_key_hash( KeyFragment &b )
@@ -35,7 +28,7 @@ MsgCtx::set_key_hash( KeyFragment &b )
 }
 #endif
 MsgCtx *
-MsgCtx::new_array( HashTab &t,  uint32_t id,  void *b,  size_t bsz ) noexcept
+MsgCtx::new_array( HashTab &t,  uint32_t xid,  void *b,  size_t bsz ) noexcept
 {
   MsgCtxBuf *p = (MsgCtxBuf *) b;
   if ( p == NULL ) {
@@ -45,7 +38,7 @@ MsgCtx::new_array( HashTab &t,  uint32_t id,  void *b,  size_t bsz ) noexcept
     b = (void *) p;
   }
   for ( size_t i = 0; i < bsz; i++ ) {
-    new ( (void *) p ) MsgCtx( t, t.ctx[ id ] );
+    new ( (void *) p ) MsgCtx( t, xid );
     p = &p[ 1 ];
   }
   return (MsgCtx *) (void *) b;
@@ -54,11 +47,11 @@ MsgCtx::new_array( HashTab &t,  uint32_t id,  void *b,  size_t bsz ) noexcept
 void
 MsgCtx::prefetch_segment( uint64_t /*size*/ ) noexcept
 {
-  static const int rw = 1;       /* 0 is prepare for write, 1 is read */
-  static const int locality = 2; /* 0 is non, 1 is low, 2 is moderate, 3 high*/
+  static const int rw = 0;       /* 0 is prepare for read, 1 is write */
+  static const int locality = 1; /* 0 is non, 1 is low, 2 is moderate, 3 high*/
   /* isn't really effective, since the streamers may be activated by alloc() */
   if ( this->prefetch_ptr != NULL ) {
-    __builtin_prefetch( this->prefetch_ptr, rw, locality);
+    __builtin_prefetch( this->prefetch_ptr, rw, locality );
 #if 0
     uint8_t * p = (uint8_t *) this->prefetch_ptr,
             * e = &p[ size < 128 ? size : 128 ];
@@ -127,31 +120,32 @@ struct GCRunCtx {
   uint64_t         seg_lock_pos[ seg_lock_max ];
   WorkAllocT<1024> wrk;
 
+  GCRunCtx( HashTab &map,  uint32_t dbx_id,  uint16_t segment_num ) :
+    seg_size( map.hdr.seg_size() ),
+    hash_entry_size( map.hdr.hash_entry_size ),
+    algn_shft( map.hdr.seg_align_shift ),
+    seg_num( segment_num ),
+    ht( map ), kctx( map, dbx_id ),
+    seg( map.segment( segment_num ) ),
+    segptr( (uint8_t *) map.seg_data( segment_num, 0 ) ),
+    frag( 0 ), frag_start( 0 ), frag_size( 0 ),
+    pos( 0 ), i( 0 ), j( 0 ), seg_lock_cnt( 0 ) {}
+
+
   /* used when space is allocated */
-  GCRunCtx( MsgCtx &mctx,  ThrCtx &ctx,  Segment &s,  uint8_t *sptr,
+  GCRunCtx( MsgCtx &mctx,  Segment &s,  uint8_t *sptr,
             const uint64_t seg_sz,  const uint32_t seg_algn,
             const uint16_t segment_num,  uint64_t hd,  uint64_t tl ) :
     seg_size( seg_sz ),
-    hash_entry_size( mctx.hash_entry_size ),
+    hash_entry_size( mctx.ht.hdr.hash_entry_size ),
     algn_shft( seg_algn ),
     seg_num( segment_num ),
-    ht( mctx.ht ), kctx( mctx.ht, ctx, mctx.dbstat, mctx.db_num ), 
+    ht( mctx.ht ),
+    kctx( mctx.ht, mctx.dbx_id ), 
     seg( s ),
     segptr( sptr ),
     frag( 0 ), frag_start( 0 ), frag_size( 0 ),
     pos( 0 ), i( hd ), j( tl ), seg_lock_cnt( 0 ) {}
-
-  /* used when segment is compacted */
-  GCRunCtx( HashTab &tab,  ThrCtx &ctx,  uint32_t segment_num ) :
-    seg_size( tab.hdr.seg_size() ),
-    hash_entry_size( tab.hdr.hash_entry_size ),
-    algn_shft( tab.hdr.seg_align_shift ),
-    seg_num( segment_num ),
-    ht( tab ), kctx( tab, ctx ), 
-    seg( tab.segment( segment_num ) ),
-    segptr( (uint8_t *) tab.seg_data( segment_num, 0 ) ),
-    frag( 0 ), frag_start( 0 ), frag_size( 0 ),
-    pos( 0 ), i( 0 ), j( 0 ), seg_lock_cnt( 0 ) {}
 
   bool lock( void ) {
     return this->seg.try_lock( this->algn_shft, this->pos );
@@ -368,11 +362,11 @@ MsgCtx::alloc_segment( void *res,  uint64_t size,
     return KEY_TOO_BIG;
 
   const uint32_t max_tries      = (uint32_t) nsegs * 4;
+  const uint32_t ctx_id         = this->ht.hdr.stat_link[ this->dbx_id ].ctx_id;
   uint32_t       spins          = 0;
   uint8_t        how_aggressive = 3;
-  ThrCtx       & ctx            = this->thr_ctx;
 
-  this->geom.segment = ctx.seg_num;
+  this->geom.segment = this->ht.ctx[ ctx_id ].seg_num;
   this->geom.size    = alloc_size;
 
   for (;;) {
@@ -392,8 +386,8 @@ MsgCtx::alloc_segment( void *res,  uint64_t size,
         hd = tl;        /* nothing free, need to find space  */
       /* run gc, try to make space for allocation */
       if ( hd - tl < alloc_size ) {
-        GCRunCtx gcrun( *this, ctx, seg, segptr, seg_size, 
-                        seg_algn, this->geom.segment, hd, tl );
+        GCRunCtx gcrun( *this, seg, segptr, seg_size, seg_algn,
+                        this->geom.segment, hd, tl );
         GCStats stats;
         stats.zero();
         while ( gcrun.gc( stats ) ) {
@@ -439,8 +433,9 @@ MsgCtx::alloc_segment( void *res,  uint64_t size,
       /*ctx.incr_htevict( htevict );*/
       return KEY_ALLOC_FAILED;
     }
-    ctx.seg_num  = (uint16_t) ( ctx.rng.next() % nsegs );
-    this->geom.segment = ctx.seg_num;
+    uint16_t seg_num = (uint16_t) ( this->ht.ctx[ ctx_id ].rng.next() % nsegs );
+    this->ht.ctx[ ctx_id ].seg_num = seg_num;
+    this->geom.segment = seg_num;
     if ( spins >= nsegs / 4 ) {
       this->ht.update_load();
       kv_sync_pause();
@@ -453,12 +448,13 @@ MsgCtx::alloc_segment( void *res,  uint64_t size,
 }
 
 bool
-HashTab::gc_segment( ThrCtx &ctx,  uint32_t seg_num,  GCStats &stats ) noexcept
+HashTab::gc_segment( uint32_t dbx_id,  uint32_t seg_num,
+                     GCStats &stats ) noexcept
 {
   if ( seg_num >= this->hdr.nsegs )
     return false;
 
-  GCRunCtx gcrun( *this, ctx, seg_num );
+  GCRunCtx gcrun( *this, dbx_id, seg_num );
   if ( ! gcrun.lock() )
     return false;
   stats.seg_pos = gcrun.pos;

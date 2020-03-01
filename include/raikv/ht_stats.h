@@ -78,10 +78,8 @@ struct HashTabStats {
   void * operator new( size_t, void *ptr ) { return ptr; }
   void operator delete( void *ptr ) { ::free( ptr ); }
   HashTab           & ht;
-  HashDeltaCounters * ctx_stats, /* one for each context */
-                    * db_stats;  /* one for each db */
+  HashDeltaCounters * db_stats;  /* one for each db */
   MemDeltaCounters  * mem_stats; /* one for each memory segment */
-  uint32_t          * ctx_seqno; /* one for each context */
   HashCounters        hops,      /* ops in the last ival */
                       htot;      /* total ops since creation */
   MemCounters         mops,      /* mops in the last ival */
@@ -89,12 +87,11 @@ struct HashTabStats {
   double              ival,      /* ival for ops */
                       ival_start,/* start time */
                       ival_end;  /* end time, end becomes start next ival */
-  uint32_t            ctx_count, /* MAX_CTX_ID */
-                      nsegs,     /* ht.hdr.nsegs */
+  uint32_t            nsegs,     /* ht.hdr.nsegs */
                       db_count;  /* MAX_DB_COUNT */
-  HashTabStats( HashTab &h ) : ht( h ), ctx_stats( 0 ), db_stats( 0 ),
-    mem_stats( 0 ), ctx_seqno( 0 ), ival( 0 ), ival_start( 0 ), ival_end( 0 ),
-    ctx_count( 0 ), nsegs( 0 ), db_count( 0 ) {
+  HashTabStats( HashTab &h ) : ht( h ), db_stats( 0 ),
+    mem_stats( 0 ), ival( 0 ), ival_start( 0 ), ival_end( 0 ),
+    nsegs( 0 ), db_count( 0 ) {
     this->hops.zero(); this->htot.zero();
     this->mops.zero(); this->mtot.zero();
   }

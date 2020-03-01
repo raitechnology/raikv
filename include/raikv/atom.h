@@ -75,10 +75,51 @@ typedef volatile uint8_t  kv_atom_uint8_t;
 #define kv_acquire_fence() /* nothing for x86 */
 
 #define kv_release_fence() /* nothing for x86 */
-
 /* probably should assert arch == x86 */
 #endif
 
+static inline int
+kv_sync_bit_try_lock( volatile uint64_t *ptr,  uint64_t mask )
+{
+  uint64_t old_val = *ptr,
+           new_val = old_val | mask;
+  if ( ( old_val & mask ) == 0 ) {
+    if ( kv_sync_cmpxchg( ptr, old_val, new_val ) ) {
+      kv_acquire_fence();
+      return 1;
+    }
+  }
+  return 0;
+}
+
+static inline void
+kv_sync_bit_spin_lock( volatile uint64_t *ptr,  uint64_t mask )
+{
+  uint64_t old_val, new_val;
+  for (;;) {
+    while ( ( (old_val = *ptr) & mask ) != 0 )
+      kv_sync_pause();
+    new_val = old_val | mask;
+    if ( kv_sync_cmpxchg( ptr, old_val, new_val ) ) {
+      kv_acquire_fence();
+      return;
+    }
+  }
+}
+
+static inline void
+kv_sync_bit_spin_unlock( volatile uint64_t *ptr,  uint64_t mask )
+{
+  uint64_t old_val, new_val;
+  kv_release_fence();
+  for (;;) {
+    old_val = *ptr;
+    new_val = old_val & ~mask;
+    if ( kv_sync_cmpxchg( ptr, old_val, new_val ) )
+      return;
+    kv_sync_pause();
+  }
+}
 #ifdef __cplusplus
 }
 #endif

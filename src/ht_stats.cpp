@@ -114,6 +114,59 @@ MemDeltaCounters::get_mem_delta( const MemCounters &cnts ) noexcept
   this->last   = cnts;
 }
 
+bool
+HashTab::sum_ht_thr_delta( HashDeltaCounters &stat,  HashCounters &ops,
+                           HashCounters &tot,  uint32_t ctx_id ) const noexcept
+{
+  uint32_t i;
+  HashCounters tmp;
+  tmp.zero();
+  ops.zero();
+  tot.zero();
+  if ( this->ctx[ ctx_id ].ctx_id != ctx_id )
+    return false;
+  /* presumes that the caller owns the thread */
+  for ( i = this->ctx[ ctx_id ].db_stat_hd; i != MAX_STAT_ID;
+        i = this->hdr.stat_link[ i ].next ) {
+    tmp += this->stats[ i ];
+  }
+  stat.get_ht_delta( tmp );
+  ops = stat.delta;
+  tot = stat.last;
+  return true;
+}
+
+void
+HashTab::sum_ht_db_delta( HashDeltaCounters &stat,  HashCounters &ops,
+                          HashCounters &tot,  uint8_t db ) noexcept
+{
+  uint32_t i;
+  HashCounters tmp;
+
+  tmp.zero();
+  ops.zero();
+  tot.zero();
+
+  if ( ! this->hdr.test_db_opened( db ) )
+    return;
+  /* lock db */
+  this->hdr.ht_spin_lock( db );
+  /* sum retired stats */
+  tmp = this->hdr.db_stat[ db ];
+  /* still mutating the stat_link[] are the active contexts */
+  for ( i = 0; i < MAX_STAT_ID; i++ ) {
+    ThrStatLink & link = this->hdr.stat_link[ i ];
+    if ( link.used == 1 && link.db_num == db )
+      tmp += this->stats[ i ];
+  }
+  /* unlock db */
+  this->hdr.ht_spin_unlock( db );
+
+  stat.get_ht_delta( tmp );
+  ops = stat.delta;
+  tot = stat.last;
+}
+
 void
 Segment::get_mem_seg_delta( MemDeltaCounters &stat,
                             uint16_t align_shift ) const noexcept
@@ -129,69 +182,6 @@ Segment::get_mem_seg_delta( MemDeltaCounters &stat,
   current.evict_msgs   = this->evict_msgs;
   current.evict_size   = this->evict_size;
   stat.get_mem_delta( current );
-}
-#if 0
-/* get deltas for all attached threads */
-bool
-HashTab::sum_ht_thr_deltas( HashDeltaCounters *stats,  HashCounters &ops,
-                            HashCounters &tot ) const
-{
-  HashCounters mvd;
-  uint32_t seqno;
-  uint8_t db;
-  ops.zero();
-  tot.zero();
-  mvd.zero();
-  for ( size_t i = 0; i < MAX_CTX_ID; i++ ) {
-    if ( this->ctx[ i ].get_ht_thr_delta( stats[ i ], db, seqno ) ) {
-      ops += stats[ i ].delta;
-      tot += stats[ i ].last;
-    }
-    else {
-      mvd += stats[ i ].last;
-      stats[ i ].zero();
-    }
-  }
-  ops -= mvd;
-  return ops != 0;
-}
-#endif
-bool
-HashTab::sum_ht_thr_delta( HashDeltaCounters &stats,  HashCounters &ops,
-                           HashCounters &tot,  uint32_t ctx_id ) const noexcept
-{
-  uint32_t seqno;
-  uint8_t db;
-  ops.zero();
-  tot.zero();
-  if ( this->ctx[ ctx_id ].get_ht_thr_delta( stats, db, seqno ) ) {
-    ops += stats.delta;
-    tot += stats.last;
-  }
-  else {
-    stats.zero();
-  }
-  return ops != 0;
-}
-
-bool
-ThrCtx::get_ht_thr_delta( HashDeltaCounters &stat,  uint8_t &db,
-                          uint32_t &seqno ) const noexcept
-{
-  for (;;) {
-    while ( ( this->key & ZOMBIE32 ) != 0 )
-      kv_sync_pause();
-    db = this->db_num1; /* set db, useful when detecting retired stats */
-    seqno = this->ctx_seqno;
-    if ( this->ctx_id == KV_NO_CTX_ID )
-      return false;
-    HashCounters tmp( this->stat1 );
-    /* XXX: weak sync, mutator could lock & unlock while stat copied to tmp */
-    if ( ( this->key & ZOMBIE32 ) == 0 ) {
-      stat.get_ht_delta( tmp );
-      return true;
-    }
-  }
 }
 
 bool
@@ -209,22 +199,6 @@ HashTab::sum_mem_deltas( MemDeltaCounters *stats,  MemCounters &chg,
   return chg != 0;
 }
 
-bool
-HashTab::get_db_stats( HashCounters &tot,  uint8_t db_num ) const noexcept
-{
-  size_t i;
-  tot = this->hdr.stat[ db_num ];
-  for ( i = 0; i < MAX_CTX_ID; i++ ) {
-    if ( this->ctx[ i ].ctx_id != KV_NO_CTX_ID ) {
-      if ( this->ctx[ i ].db_num1 == db_num )
-        tot += this->ctx[ i ].stat1;
-      else if ( this->ctx[ i ].db_num2 == db_num )
-        tot += this->ctx[ i ].stat2;
-    }
-  }
-  return tot != 0;
-}
-
 void
 HashTab::update_load( void ) noexcept
 {
@@ -238,14 +212,24 @@ HashTab::update_load( void ) noexcept
   size_t   i, nsegs;
 
   this->hdr.current_stamp = current_realtime_coarse_ns();
-  for ( i = 0; i < MAX_CTX_ID; i++ ) {
-    if ( this->ctx[ i ].ctx_id != KV_NO_CTX_ID ) {
-      total_add  += this->ctx[ i ].stat1.add;
-      total_drop += this->ctx[ i ].stat1.drop;
-      total_add  += this->ctx[ i ].stat2.add;
-      total_drop += this->ctx[ i ].stat2.drop;
+  /* lock all dbs */
+  for ( i = 0; i < DB_COUNT; i += 64 )
+    this->hdr.ht_spin_lock64( i );
+  HashCounters * db = this->hdr.db_stat;
+  for ( i = 0; i < DB_COUNT; i++ ) {
+    total_add  += db[ i ].add;
+    total_drop += db[ i ].drop;
+  }
+
+  for ( i = 0; i < MAX_STAT_ID; i++ ) {
+    if ( this->hdr.stat_link[ i ].used ) {
+      total_add  += this->stats[ i ].add;
+      total_drop += this->stats[ i ].drop;
     }
   }
+  /* unlock dbs */
+  for ( i = 0; i < DB_COUNT; i += 64 )
+    this->hdr.ht_spin_unlock64( i );
   /* total add - total drop should be the used entries */
   ht_load = (double) ( total_add - total_drop ) / (double) this->hdr.ht_size;
   if ( (nsegs = this->hdr.nsegs) > 0 ) {
@@ -264,42 +248,23 @@ HashTab::update_load( void ) noexcept
   this->hdr.value_load       = (float) value_load;
   this->hdr.load_percent     = (uint8_t) ( max_load * 100.0 + 0.5 );
 }
-#if 0
-MemDeltaCounters *
-MemDeltaCounters::new_array( size_t sz )
-{
-  void *b = ::malloc( sizeof( MemDeltaCounters ) * sz );
-  MemDeltaCounters *p = (MemDeltaCounters *) b;
-  if ( p == NULL )
-    return NULL;
-  for ( size_t i = 0; i < sz; i++ ) {
-    new ( (void *) p ) MemDeltaCounters();
-    p = &p[ 1 ];
-  }
-  return (MemDeltaCounters *) b;
-}
-#endif
+
 HashTabStats *
 HashTabStats::create( HashTab &ht ) noexcept
 {
   size_t sz = sizeof( HashTabStats ) +
-              sizeof( HashDeltaCounters ) * MAX_CTX_ID +
               sizeof( HashDeltaCounters ) * DB_COUNT +
-              sizeof( MemDeltaCounters ) * ht.hdr.nsegs +
-              sizeof( uint32_t ) * MAX_CTX_ID;
+              sizeof( MemDeltaCounters ) * ht.hdr.nsegs;
   void *p = ::malloc( sz );
   if ( p == NULL )
     return NULL;
   ::memset( p, 0, sz );
   HashTabStats * hts = new ( p ) HashTabStats( ht );
-  hts->ctx_count = MAX_CTX_ID;
   hts->nsegs     = ht.hdr.nsegs;
   hts->db_count  = DB_COUNT;
-  hts->ctx_stats = (HashDeltaCounters *) (void *) &hts[ 1 ];
-  hts->db_stats  = &hts->ctx_stats[ hts->ctx_count ];
+  hts->db_stats  = (HashDeltaCounters *) (void *) &hts[ 1 ];
   hts->mem_stats = (MemDeltaCounters *) (void *)
                    &hts->db_stats[ hts->db_count ];
-  hts->ctx_seqno = (uint32_t *) &hts->mem_stats[ hts->nsegs ];
   return hts;
 }
 
@@ -314,35 +279,33 @@ HashTabStats::fetch( void ) noexcept
   //b |= this->ht.sum_ht_thr_deltas( this->ctx_stats, this->hops, this->htot );
 
   HashCounters db[ DB_COUNT ];
-  HashCounters mvd;
   size_t i;
-  uint32_t seqno;
-  uint8_t db_num;
+  HashCounters last = this->htot;
   this->hops.zero();
   this->htot.zero();
-  mvd.zero();
+  /* lock all dbs */
+  for ( i = 0; i < DB_COUNT; i += 64 )
+    this->ht.hdr.ht_spin_lock64( i );
+  /* sum retired stats */
   for ( i = 0; i < DB_COUNT; i++ )
-    ::memcpy( db, this->ht.hdr.stat, sizeof( db ) );
+    db[ i ] = this->ht.hdr.db_stat[ i ];
+  /* still mutating the stat_link[] are the active contexts */
+  for ( i = 0; i < MAX_STAT_ID; i++ ) {
+    ThrStatLink & link = this->ht.hdr.stat_link[ i ];
+    if ( link.used == 1 )
+      db[ link.db_num ] += this->ht.stats[ i ];
+  }
+  /* unlock dbs */
+  for ( i = 0; i < DB_COUNT; i += 64 )
+    this->ht.hdr.ht_spin_unlock64( i );
 
-  for ( i = 0; i < MAX_CTX_ID; i++ ) {
-    const bool valid = /* true if ctx is active */
-      this->ht.ctx[ i ].get_ht_thr_delta( this->ctx_stats[ i ], db_num, seqno );
-    if ( valid && seqno == this->ctx_seqno[ i ] ) {
-      this->hops += this->ctx_stats[ i ].delta;
-      this->htot += this->ctx_stats[ i ].last;
-      db[ db_num ] += this->ctx_stats[ i ].last;
-    }
-    else if ( this->ctx_seqno[ i ] != 0 ) {
-      mvd += this->ctx_stats[ i ].last;
-      this->ctx_stats[ i ].zero();
-    }
-    this->ctx_seqno[ i ] = ( valid ? seqno : 0 );
+  for ( i = 0; i < DB_COUNT; i++ ) {
+    this->htot += db[ i ];
+    this->db_stats[ i ].get_ht_delta( db[ i ] );
   }
 
-  for ( i = 0; i < DB_COUNT; i++ )
-    this->db_stats[ i ].get_ht_delta( db[ i ] );
-
-  this->hops -= mvd;
+  this->hops = this->htot;
+  this->hops -= last;
   b |= ( this->hops != 0 );
 
   if ( this->ival_end == 0 ) {

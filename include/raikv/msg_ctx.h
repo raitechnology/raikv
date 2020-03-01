@@ -252,14 +252,13 @@ struct Segment {
 /* a context to allocate memory from a segment for later linking into ht[] */
 /* Example:
    KeyBuf kbuf( "hello world" );
-   KeyCtx kctx( ht, ctx_id );
-   MsgCtx mctx( ht, ctx_id );
+   KeyCtx kctx( ht, dbx_id );
+   MsgCtx mctx( ht, dbx_id );
    void * ptr;
    mctx.set_key_hash( kbuf );
    if ( mctx.alloc_segment( &ptr, 100, 8 ) == KEY_OK ) {
      ::memset( ptr, 'x', 100 );
-     kctx.set_key( kbuf );
-     kctx.set_hash( mctx.key, mctx.key2 );
+     kctx.set_key_hash( kbuf );
      if ( kctx.acquire() == KEY_OK ) {
        kctx.load( mctx );
        kctx.release();
@@ -277,12 +276,8 @@ struct MsgChain {
 
 struct MsgCtx {
   HashTab      & ht;      /* operates on this table */
-  ThrCtx       & thr_ctx;
-  HashCounters & dbstat;
+  uint32_t       dbx_id;
   KeyFragment  * kbuf;    /* key to place */
-  const uint32_t hash_entry_size;
-  const uint8_t  db_num;
-  uint8_t        pad[ 3 ];
   uint64_t       key,
                  key2;
   MsgHdr       * msg;
@@ -290,14 +285,11 @@ struct MsgCtx {
   ValueGeom      geom;    /* value location */
 
   MsgCtx( KeyCtx &kctx ) noexcept;
-  MsgCtx( HashTab &t,  ThrCtx &thr ) noexcept;
-  MsgCtx( HashTab &t,  ThrCtx &thr,  uint32_t sz ) noexcept;
-  ~MsgCtx() {}
-  /* placement new to deal with broken c++ new[], for example:
-   * MsgCtxBuf kctxbuf[ 8 ];
-   * MsgCtx * kctx = MsgCtx::new_array( ht, thr_ctx, kctxbuf, 8 );
+  MsgCtx( HashTab &t,  uint32_t xid ) noexcept;
+  /* MsgCtxBuf kctxbuf[ 8 ];
+   * MsgCtx * kctx = MsgCtx::new_array( ht, dbx_id, kctxbuf, 8 );
    * or to use malloc() instead of stack:
-   * MsgCtx * kctx = MsgCtx::new_array( ht, thr_ctx, NULL, 8 );
+   * MsgCtx * kctx = MsgCtx::new_array( ht, dbx_id, NULL, 8 );
    * if ( kctx == NULL ) fatal( "no memory" );
    * delete kctx; // same as free( kctx )
    */

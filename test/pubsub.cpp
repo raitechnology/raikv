@@ -4,9 +4,6 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <pthread.h>
-#define __STDC_FORMAT_MACROS
-#include <inttypes.h>
-
 #include <raikv/shm_ht.h>
 #include <raikv/key_buf.h>
 
@@ -15,14 +12,16 @@ using namespace kv;
 
 HashTabGeom geom;
 HashTab   * map;
-uint32_t    ctx_id = MAX_CTX_ID;
+uint32_t    ctx_id = MAX_CTX_ID,
+            dbx_id = MAX_STAT_ID;
 
 static void
 shm_attach( const char *mn )
 {
   map = HashTab::attach_map( mn, 0, geom );
   if ( map != NULL ) {
-    ctx_id = map->attach_ctx( 1000 /*::getpid()*/, 0, 0 );
+    ctx_id = map->attach_ctx( ::getpid() );
+    dbx_id = map->attach_db( ctx_id, 0 );
     fputs( print_map_geom( map, ctx_id ), stdout );
   }
 }
@@ -31,9 +30,9 @@ static void
 shm_close( void )
 {
   if ( ctx_id != MAX_CTX_ID ) {
-    HashCounters & stat = map->ctx[ ctx_id ].stat1;
-    printf( "rd %" PRIu64 ", wr %" PRIu64 ", "
-            "sp %" PRIu64 ", ch %" PRIu64 "\n",
+    HashCounters & stat = map->stats[ dbx_id ];
+    printf( "rd %lu, wr %lu, "
+            "sp %lu, ch %lu\n",
             stat.rd, stat.wr, stat.spins, stat.chains );
     map->detach_ctx( ctx_id );
     ctx_id = MAX_CTX_ID;
@@ -58,7 +57,7 @@ main( int argc, char *argv[] )
   int count = 0, begin = 0;
 
   /* [sysv2m:shm.test] [file] [cnt] [pre] */
-  const char * mn = get_arg( argc, argv, 1, "-m", "sysv2m:shm.test" ),
+  const char * mn = get_arg( argc, argv, 1, "-m", KV_DEFAULT_SHM ),
              * su = get_arg( argc, argv, 1, "-s", "subject" ),
              * be = get_arg( argc, argv, 1, "-b", "0" ),
              * cn = get_arg( argc, argv, 1, "-c", "400" ),
@@ -98,7 +97,7 @@ main( int argc, char *argv[] )
 
   KeyBuf      kb;
   WorkAlloc8k wrk;
-  KeyCtx      kctx( *map, ctx_id, &kb );
+  KeyCtx      kctx( *map, dbx_id, &kb );
   void      * ptr,
             * data[ 1024 ];
   uint64_t    data_sz[ 1024 ],
@@ -106,16 +105,17 @@ main( int argc, char *argv[] )
   uint64_t    h1, h2, sz, i, j, k, t, t2,
               sum = 0, seqno = 0, sum_count = 0, m = 0,
               first = 0, last = 0;
+  HashSeed    hs;
   bool        is_first = true;
   KeyStatus   status;
 
   kb.zero();
   kb.keylen = ::strlen( su ) + 1;
-  if ( kb.keylen > MAX_KEY_BUF_SIZE )
-    kb.keylen = MAX_KEY_BUF_SIZE;
+  if ( kb.keylen > MAX_KEY_SIZE - 2 )
+    kb.keylen = MAX_KEY_SIZE - 2;
   ::strcpy( kb.u.buf, su );
-  map->hdr.get_hash_seed( 0, h1, h2 );
-  kb.hash( h1, h2 );
+  map->hdr.get_hash_seed( 0, hs );
+  hs.hash( kb, h1, h2 );
   kctx.set_hash( h1, h2 );
 
   if ( tr != NULL ) {

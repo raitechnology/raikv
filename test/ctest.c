@@ -24,20 +24,20 @@ typedef struct {
 
 typedef struct {
   char str[ 256 * 1024 ];
-
-  uint32_t ctx_id,
-           frag_count;
-  size_t   count,
-           dup_count;
-
-  kv_atom_uint64_t consumed;
-
   char buf[ 64 * 1024 ];
   xh_t xh[ 16 * 1024 ];
   kv_key_ctx_t    * ctx[ CTX_COUNT ];
   kv_work_alloc_t * wrk;
 
-  kv_atom_uint64_t ready;
+  kv_atom_uint64_t ready,
+                   consumed;
+  size_t   count,
+           dup_count;
+
+  uint32_t ctx_id,
+           dbx_id,
+           frag_count;
+
   kv_atom_uint8_t  done,
                    running;
   uint16_t         id;
@@ -173,9 +173,10 @@ thr_process( void *data )
   char          * p;
   uint32_t        j;
 
-  t->ctx_id = kv_attach_ctx( ht, t->id, db_num, 0 );
+  t->ctx_id = kv_attach_ctx( ht, t->id );
+  t->dbx_id = kv_attach_db( ht, t->ctx_id, db_num );
   for ( j = 0; j < CTX_COUNT; j++ )
-    t->ctx[ j ] = kv_create_key_ctx( ht, t->ctx_id );
+    t->ctx[ j ] = kv_create_key_ctx( ht, t->dbx_id );
   t->wrk = kv_create_ctx_alloc( 8 * 1024, NULL, NULL, 0 );
   memset( t->status_cnt, 0, sizeof( t->status_cnt ) );
 
@@ -328,7 +329,7 @@ main( int argc,  char *argv[] )
   uint32_t num_thr = 8;
 
   /* [sysv2m:shm.test] [4] [0] [0] */
-  const char * mn = get_arg( argc, argv, 1, 1, "-m", "sysv2m:shm.test" ),
+  const char * mn = get_arg( argc, argv, 1, 1, "-m", KV_DEFAULT_SHM ),
              * nt = get_arg( argc, argv, 2, 1, "-t", "8" ),
              * db = get_arg( argc, argv, 3, 1, "-d", "0" ),
              * te = get_arg( argc, argv, 4, 1, "-x", "0" ),

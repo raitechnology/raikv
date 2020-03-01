@@ -184,7 +184,7 @@ cmd_error:;
   printf( "timing iteration count = %lu\n\n", TEST_COUNT );
 
   for ( keycount = 16; keycount <= 1024 * 1024; keycount *= 2 ) {
-    KeyBufAligned * kb = KeyBufAligned::new_array( keycount );
+    KeyBufAligned * kb = KeyBufAligned::new_array( NULL, keycount );
     const uint32_t ht_size = (uint32_t) ( (double) keycount / 0.75 );
     uint32_t * cov = (uint32_t *) ::malloc( sizeof( uint32_t ) * ht_size );
 
@@ -199,7 +199,7 @@ cmd_error:;
     j = 0;
     for ( i = 0; i < TEST_COUNT; i++ ) {
       uint64_t h1 = 0, h2 = 0;
-      kb[ j ].hash( h1, h2, func );
+      func( kb[ j ].kb.u.buf, kb[ j ].kb.keylen, &h1, &h2 );
       j = ( j + 1 ) % keycount;
     }
     t2 = current_monotonic_time_s();
@@ -208,7 +208,7 @@ cmd_error:;
     ::memset( cov, 0, ht_size * sizeof( cov[ 0 ] ) );
     for ( j = 0; j < keycount; j++ ) {
       uint64_t h1 = 0, h2 = 0;
-      kb[ j ].hash( h1, h2, func );
+      func( kb[ j ].kb.u.buf, kb[ j ].kb.keylen, &h1, &h2 );
       cov[ h1 % ht_size ]++;
     }
     ::memset( map, 0, sizeof( map ) );
