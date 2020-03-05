@@ -28,11 +28,16 @@ CC          ?= gcc
 CXX         ?= g++
 cc          := $(CC) -std=c11
 cpp         := $(CXX)
+# if not linking libstdc++
+ifdef NO_STL
+cppflags    := -std=c++11 -fno-rtti -fno-exceptions
+cpplink     := $(CC)
+else
 cppflags    := -std=c++11
-#cppflags    := -std=c++11 -fno-rtti -fno-exceptions
+cpplink     := $(CXX)
+endif
 arch_cflags := -mavx -maes -fno-omit-frame-pointer
 #arch_cflags := -mavx -maes -mprefetchwt1 -fno-omit-frame-pointer
-cpplink     := $(CXX)
 gcc_wflags  := -Wall -Wextra -Werror -pedantic
 fpicflags   := -fPIC
 soflag      := -shared
