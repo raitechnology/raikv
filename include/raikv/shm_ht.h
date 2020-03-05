@@ -264,6 +264,25 @@ struct ThrCtx : public ThrCtxEntry { /* each thread needs one of these */
   ThrMCSLock &get_mcs_lock( uint64_t mcs_id ) {
     return this->mcs[ mcs_id & MCS_MASK ];
   }
+  bool is_my_lock( uint64_t pos ) const {
+    uint64_t used = this->mcs_used;
+    uint8_t  i = 0;
+    if ( used == 0 )
+      return false;
+    if ( ( used & 1 ) != 0 )
+      if ( pos + 1 == this->mcs[ 0 ].lock_id )
+        return true;
+    for (;;) {
+      uint64_t x = used >> ++i;
+      if ( ( x & 1 ) == 0 ) {
+        if ( x == 0 )
+          return false;
+        i += __builtin_ffsl( x ) - 1;
+      }
+      if ( pos + 1 == this->mcs[ i ].lock_id )
+        return true;
+    }
+  }
 };
 
 struct ThrCtxOwner { /* closure for MCSLock to find the owner of a lock */

@@ -878,6 +878,41 @@ validate_ht( HashTab *map )
   }
 }
 
+struct KeyStack;
+static KeyStack * kstack;
+struct KeyStack {
+  void * operator new( size_t, void *ptr ) { return ptr; }
+  void operator delete( void *ptr ) { ::free( ptr ); }
+
+  KeyStack  * next;
+  KeyStatus   status;
+  KeyCtx      kctx;
+  KeyBuf      kb;
+  WorkAlloc8k wrk;
+
+  KeyStack() : next( 0 ), status( KEY_OK ), kctx( *map, dbx_id, &this->kb ) {}
+
+  static KeyStack *push( void ) {
+    void *p = ::malloc( sizeof( KeyStack ) );
+    KeyStack * kp = new ( p ) KeyStack();
+    kp->next = kstack;
+    kstack = kp;
+    return kp;
+  }
+  static KeyStack *pop( void ) {
+    KeyStack * kp;
+    if ( (kp = kstack) != NULL ) {
+      kstack = kp->next;
+      kp->next = NULL;
+    }
+    return kp;
+  }
+  void release( void ) {
+    this->kctx.release();
+    delete this;
+  }
+};
+
 static void
 cli( void )
 {
@@ -970,6 +1005,7 @@ cli( void )
       case 'T': /* trim */
       case 'u': /* update stamp */
       case 'P': /* publish */
+      case 'n': /* nothing */
         parse_key_string( kb, key );
         map->hdr.get_hash_seed( db_num, hs );
         hs.hash( kb, h1, h2 );
@@ -983,49 +1019,54 @@ cli( void )
           if ( status != KEY_OK )
             xprintf( 0, "stamps err: %d/%s\n", status,
                      kv_key_status_description( status ) );
-          /*kctx.update_ns = current_realtime_ns();*/
-          /*map->hdr.current_stamp = kctx.update_ns;*/
-          if ( cmd_char == 'p' || cmd_char == 's' ) {
-            if ( (status = kctx.resize( &ptr, sz )) == KEY_OK ) {
-              kctx.set_type( 2 );
-              ::memcpy( ptr, data, sz );
-              status = print_key_data( kctx, "put", sz );
-              if ( do_verbose )
-                dump_key_data( kctx );
+          switch ( cmd_char ) {
+            default:
+            case 'p': case 's': /* put, set */
+              if ( (status = kctx.resize( &ptr, sz )) == KEY_OK ) {
+                kctx.set_type( 2 );
+                ::memcpy( ptr, data, sz );
+                status = print_key_data( kctx, "put", sz );
+                if ( do_verbose )
+                  dump_key_data( kctx );
+              }
+              break;
+            case 'a': { /* append */
+              uint64_t cur_sz = 0, new_sz = 0;
+              kctx.get_msg_size( cur_sz );
+              new_sz = cur_sz + sz;
+              if ( (status = kctx.resize( &ptr, new_sz, true )) == KEY_OK ) {
+                ::memcpy( &((uint8_t *) ptr)[ cur_sz ], data, sz );
+                status = print_key_data( kctx, "put", new_sz );
+                if ( do_verbose )
+                  dump_key_data( kctx );
+              }
+              break;
             }
-          }
-          else if ( cmd_char == 'a' ) {
-            uint64_t cur_sz = 0, new_sz = 0;
-            kctx.get_msg_size( cur_sz );
-            new_sz = cur_sz + sz;
-            if ( (status = kctx.resize( &ptr, new_sz, true )) == KEY_OK ) {
-              ::memcpy( &((uint8_t *) ptr)[ cur_sz ], data, sz );
-              status = print_key_data( kctx, "put", new_sz );
-              if ( do_verbose )
-                dump_key_data( kctx );
+            case 'P': /* Publish */
+              if ( (status = kctx.append_msg( &ptr, sz )) == KEY_OK ) {
+                ::memcpy( ptr, data, sz );
+                status = print_key_data( kctx, "put", sz );
+                if ( do_verbose )
+                  dump_key_data( kctx );
+              }
+              break;
+            case 't': case 'd': { /* tombstone, drop */
+              const char *s = ( cmd_char == 'd' ? "drop" : "tomb" );
+              if ( (status = print_key_data( kctx, s, 0 )) == KEY_OK ) {
+                /*if ( cmd_char == 'd' )
+                  status = kctx.drop();
+                else*/
+                  status = kctx.tombstone();
+              }
+              break;
             }
-          }
-          else if ( cmd_char == 'P' ) {
-            if ( (status = kctx.append_msg( &ptr, sz )) == KEY_OK ) {
-              ::memcpy( ptr, data, sz );
-              status = print_key_data( kctx, "put", sz );
-              if ( do_verbose )
-                dump_key_data( kctx );
-            }
-          }
-          else if ( cmd_char == 't' || cmd_char == 'd' ) {
-            const char *s = ( cmd_char == 'd' ? "drop" : "tomb" );
-            if ( (status = print_key_data( kctx, s, 0 )) == KEY_OK ) {
-              /*if ( cmd_char == 'd' )
-                status = kctx.drop();
-              else*/
-                status = kctx.tombstone();
-            }
-          }
-          else if ( cmd_char == 'T' ) {
-            status = kctx.trim_msg( ~(uint64_t) 0 );
-            if ( status == KEY_OK )
-              status = print_key_data( kctx, "trim", 0 );
+            case 'T': /* trim */
+              status = kctx.trim_msg( ~(uint64_t) 0 );
+              if ( status == KEY_OK )
+                status = print_key_data( kctx, "trim", 0 );
+              break;
+            case 'n':
+              break;
           }
           kctx.release();
         }
@@ -1302,7 +1343,41 @@ cli( void )
         status = KEY_OK;
         break;
 
-      case 'm': /* mem */
+      case 'm': { /* multi-acquire push */
+        KeyStack * kp = KeyStack::push();
+        parse_key_string( kp->kb, key );
+        map->hdr.get_hash_seed( db_num, hs );
+        hs.hash( kp->kb, h1, h2 );
+        kp->kctx.set_hash( h1, h2 );
+        kp->kctx.set( KEYCTX_MULTI_KEY_ACQUIRE );
+
+        if ( (kp->status = kp->kctx.acquire( &kp->wrk )) <= KEY_IS_NEW ) {
+          if ( (kp->status = kp->kctx.resize( &ptr, sz )) == KEY_OK ) {
+            kp->kctx.set_type( 2 );
+            ::memcpy( ptr, data, sz );
+            kp->status = print_key_data( kp->kctx, "multi-acq", sz );
+          }
+        }
+        if ( kp->status != KEY_OK ) {
+          status = kp->status;
+          KeyStack::pop();
+          kp->release();
+        }
+        else {
+          status = KEY_OK;
+        }
+        break;
+      }
+      case 'M': { /* multi-acquire pop */
+        KeyStack * kp = KeyStack::pop();
+        if ( kp != NULL ) {
+          print_key_data( kp->kctx, "multi-rel", sz );
+          kp->release();
+        }
+        status = KEY_OK;
+        break;
+      }
+      case 'o': /* segment offsets */
         for ( uint32_t i = 0; i < map->hdr.nsegs; i++ )
           print_mem( i );
         break;
@@ -1376,7 +1451,10 @@ cli( void )
         "i| int key               ; print int value of key (sz 2^N)\n"
         "j| jump position         ; jump to position and list keys\n"
         "k| keys [pat]            ; list keys matching (K to start over)\n"
-        "m| mem                   ; print segment offsets\n"
+        "m| multi-acquire push    ; acquire and push a key\n"
+        "M| multi-acquire pop     ; pop and release a pushed key\n"
+        "n| key                   ; acqurie and release\n"
+        "o| seg offsets           ; print segment offsets\n"
         "p/s| put/set [+exp] key value ; set key to value w/optional +expires\n"
         "P| publish key value     ; append value to key stream\n"
         "r| read file             ; read input from file (R to read quietly)\n"

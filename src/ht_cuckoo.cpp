@@ -231,7 +231,6 @@ CuckooAltHash::find_cuckoo_path( CuckooPosition &cp ) noexcept
                   if ( cp.inc < arity ) {
                     /* when acq position incremented, path_search is checked */
                     cp.is_path_search = true;
-                    key = kctx.key;
                     p = this->pos[ cp.inc ] + cp.buckets_off;
                     if ( p >= ht_size )
                       p -= ht_size;
@@ -239,7 +238,8 @@ CuckooAltHash::find_cuckoo_path( CuckooPosition &cp ) noexcept
                     kctx.set( KEYCTX_IS_CUCKOO_ACQUIRE );
                     /* search after this location, see if another thread
                      * did a cuckoo search and found a position */
-                    status = kctx.acquire<CuckooPosition, false>( key, p, cp );
+                    cp.pos = p;
+                    status = kctx.acquire<CuckooPosition, false>( cp );
                     kctx.clear( KEYCTX_IS_CUCKOO_ACQUIRE );
                     cp.is_path_search = false;
                     /* if another key exists, then drop this entry and use
@@ -371,13 +371,14 @@ key_busy:;
 KeyStatus
 KeyCtx::acquire_cuckoo( const uint64_t k,  const uint64_t start_pos ) noexcept
 {
-  CuckooPosition cp( *this );
+  CuckooPosition cp( *this, k );
   KeyStatus status;
-  for (;;) {
-    cp.start();
-    this->inc = 0;
-    status = this->acquire<CuckooPosition, true>( k, start_pos, cp );
-    if ( status == KEY_PATH_SEARCH ) {
+  for (;;) { /* keep searching while busy */
+    cp.start( start_pos );
+    status = this->acquire<CuckooPosition, true>( cp );
+    if ( status == KEY_OK )
+      return KEY_OK;
+    if ( status == KEY_PATH_SEARCH ) { /* need to reorganize hashes */
       if ( cp.h == NULL ) {
         cp.h = CuckooAltHash::create( *this );
         if ( cp.h != NULL )
@@ -398,11 +399,12 @@ KeyStatus
 KeyCtx::try_acquire_cuckoo( const uint64_t k,
                             const uint64_t start_pos ) noexcept
 {
-  CuckooPosition cp( *this );
+  CuckooPosition cp( *this, k );
   KeyStatus status;
-  cp.start();
-  this->inc = 0;
-  status = this->acquire<CuckooPosition, false>( k, start_pos, cp );
+  cp.start( start_pos );
+  status = this->acquire<CuckooPosition, false>( cp );
+  if ( status == KEY_OK )
+    return KEY_OK;
   if ( status == KEY_PATH_SEARCH ) {
     status = cp.h->find_cuckoo_path( cp );
     cp.unlock_cuckoo_path();
@@ -411,14 +413,46 @@ KeyCtx::try_acquire_cuckoo( const uint64_t k,
 }
 
 KeyStatus
+KeyCtx::multi_acquire_cuckoo( const uint64_t k,
+                              const uint64_t start_pos ) noexcept
+{
+  CuckooPosition cp( *this, k );
+  KeyStatus status;
+  bool is_next;
+  for (;;) { /* keep searching while busy */
+    cp.start( start_pos );
+    for (;;) {
+      status = this->acquire<CuckooPosition, false>( cp );
+      if ( status == KEY_OK )
+        return KEY_OK;
+      /* check if I own the lock as cp.pos */
+      if ( status == KEY_BUSY ) {
+        ThrCtx & ctx = this->ht.ctx[ this->ctx_id ];
+        if ( ctx.is_my_lock( cp.pos ) ) /* skip over the lock */
+          status = cp.acquire_incr( ++this->chains, is_next, false );
+      }
+      if ( status != KEY_OK )
+        break;
+    }
+    if ( status == KEY_PATH_SEARCH ) {
+      status = cp.h->find_cuckoo_path( cp );
+      cp.unlock_cuckoo_path();
+    }
+    if ( status != KEY_BUSY )
+      return status;
+  }
+}
+
+KeyStatus
 KeyCtx::acquire_cuckoo_single_thread( const uint64_t k,
                                       const uint64_t start_pos ) noexcept
 {
-  CuckooPosition cp( *this );
+  CuckooPosition cp( *this, k );
   KeyStatus status;
-  cp.start();
-  this->inc = 0;
-  status = this->acquire_single_thread<CuckooPosition>( k, start_pos, cp );
+  cp.start( start_pos );
+  status = this->acquire_single_thread<CuckooPosition>( cp );
+  if ( status == KEY_OK )
+    return KEY_OK;
   if ( status == KEY_PATH_SEARCH ) {
     if ( cp.h == NULL ) {
       cp.h = CuckooAltHash::create( *this );
@@ -434,27 +468,24 @@ KeyCtx::acquire_cuckoo_single_thread( const uint64_t k,
 }
 
 KeyStatus
-KeyCtx::find_cuckoo( const uint64_t k,  const uint64_t start_pos,
-                     const uint64_t spin_wait ) noexcept
+KeyCtx::find_cuckoo( const uint64_t k,  const uint64_t start_pos ) noexcept
 {
-  CuckooPosition cp( *this );
-  cp.start();
-  this->inc = 0;
-  return this->find<CuckooPosition>( k, start_pos, spin_wait, cp );
+  CuckooPosition cp( *this, k );
+  cp.start( start_pos );
+  return this->find<CuckooPosition>( cp );
 }
 
 KeyStatus
 KeyCtx::find_cuckoo_single_thread( const uint64_t k,
                                    const uint64_t start_pos ) noexcept
 {
-  CuckooPosition cp( *this );
-  cp.start();
-  this->inc = 0;
-  return this->find_single_thread<CuckooPosition>( k, start_pos, cp );
+  CuckooPosition cp( *this, k );
+  cp.start( start_pos );
+  return this->find_single_thread<CuckooPosition>( cp );
 }
 
 KeyStatus
-CuckooPosition::next_hash( uint64_t &pos,  const bool is_find ) noexcept
+CuckooPosition::next_hash( const bool is_find ) noexcept
 {
   if ( ++this->inc != this->kctx.cuckoo_arity ) {
     if ( this->h == NULL ) {
@@ -464,7 +495,7 @@ CuckooPosition::next_hash( uint64_t &pos,  const bool is_find ) noexcept
       this->h->calc_hash( this->kctx, this->kctx.key, this->kctx.key2,
                           this->kctx.start );
     }
-    pos = this->h->pos[ this->inc ];
+    this->pos         = this->h->pos[ this->inc ];
     this->kctx.inc    = this->inc;
     this->buckets_off = 0;
     return KEY_OK;
@@ -476,11 +507,11 @@ CuckooPosition::next_hash( uint64_t &pos,  const bool is_find ) noexcept
 }
 
 void
-CuckooPosition::restore_inc( uint64_t pos ) noexcept
+CuckooPosition::restore_inc( void ) noexcept
 {
   if ( this->h != NULL ) {
     for ( uint8_t inc = 0; inc < this->kctx.cuckoo_arity; inc++ ) {
-      uint64_t pos_off = KeyCtx::calc_offset( this->h->pos[ inc ], pos,
+      uint64_t pos_off = KeyCtx::calc_offset( this->h->pos[ inc ], this->pos,
                                               this->kctx.ht_size );
       if ( pos_off < this->kctx.cuckoo_buckets ) {
         this->kctx.inc = inc;

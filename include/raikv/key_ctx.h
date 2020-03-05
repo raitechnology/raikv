@@ -82,7 +82,8 @@ enum KeyCtxFlags {
   KEYCTX_IS_CUCKOO_ACQUIRE = 4, /* if Cuckoo relocate is trying to make space */
   KEYCTX_IS_HT_EVICT       = 8, /* if chains == max_chains, is eviction */
   KEYCTX_IS_SINGLE_THREAD  = 16,/* don't use thread synchronization */
-  KEYCTX_NO_COPY_ON_READ   = 32 /* don't copy message on read, use seal check */
+  KEYCTX_NO_COPY_ON_READ   = 32,/* don't copy message on read, use seal check */
+  KEYCTX_MULTI_KEY_ACQUIRE = 64 /* when multiple keys are being acquired */
 };
 
 struct KeyCtx {
@@ -287,6 +288,12 @@ struct KeyCtx {
   /* acquire using cuckoo */
   KeyStatus acquire_cuckoo( const uint64_t k,
                             const uint64_t start_pos ) noexcept;
+  /* multi key acquire using linear probing  */
+  KeyStatus multi_acquire_linear_probe( const uint64_t k,
+                                        const uint64_t start_pos ) noexcept;
+  /* multi key acquire using cuckoo */
+  KeyStatus multi_acquire_cuckoo( const uint64_t k,
+                                  const uint64_t start_pos ) noexcept;
   /* acquire using linear probing  */
   KeyStatus try_acquire_linear_probe( const uint64_t k,
                                       const uint64_t start_pos ) noexcept;
@@ -301,11 +308,10 @@ struct KeyCtx {
                                           const uint64_t start_pos ) noexcept;
   /* templated for ht acquire search */
   template <class Position, bool is_blocking>
-  KeyStatus acquire( const uint64_t k,  uint64_t i,  Position &next );
+  KeyStatus acquire( Position &next );
   /* templated for ht acquire single thread search */
   template <class Position>
-  KeyStatus acquire_single_thread( const uint64_t k,  uint64_t i,
-                                   Position &next );
+  KeyStatus acquire_single_thread( Position &next );
   /* drop key after lock is acquired, deletes value data */
   /*KeyStatus drop( void );*/
   /* mark key dropped after lock is acquired, deletes value data */
@@ -319,22 +325,21 @@ struct KeyCtx {
     this->set( KEYCTX_IS_READ_ONLY );
   }
   /* if find locates key, returns KEY_OK, sets entry at &ht[ key % ht_size ] */
-  KeyStatus find( ScratchMem *a,  const uint64_t spin_wait = 0 ) {
+  KeyStatus find( ScratchMem *a ) {
     this->init_work( a );
-    return this->find( spin_wait );
+    return this->find();
   }
-  KeyStatus find( const uint64_t spin_wait = 0 ) noexcept;
+  KeyStatus find( void ) noexcept;
   /* templated for ht find search */
   template <class Position>
-  KeyStatus find( const uint64_t k,  uint64_t i,  const uint64_t spin_wait,
-                  Position &next );
+  KeyStatus find( Position &next );
   template <class Position>
-  KeyStatus find_single_thread( const uint64_t k, uint64_t i,  Position &next );
+  KeyStatus find_single_thread( Position &next );
   /* find in ht using linear probing */
-  KeyStatus find_linear_probe( const uint64_t k,  const uint64_t start_pos,
-                               const uint64_t spin_wait ) noexcept;
-  KeyStatus find_cuckoo( const uint64_t k,  const uint64_t start_pos,
-                         const uint64_t spin_wait ) noexcept;
+  KeyStatus find_linear_probe( const uint64_t k,
+                               const uint64_t start_pos ) noexcept;
+  KeyStatus find_cuckoo( const uint64_t k,
+                         const uint64_t start_pos ) noexcept;
   /* find in ht using linear probing */
   KeyStatus find_linear_probe_single_thread( const uint64_t k,
                                             const uint64_t start_pos ) noexcept;
@@ -342,18 +347,15 @@ struct KeyCtx {
                                        const uint64_t start_pos ) noexcept;
   /* get item at ht[ i ] */
   KeyStatus fetch( ScratchMem *a,  const uint64_t i,
-                   const uint64_t spin_wait = 0,
                    const bool is_scan = false ) {
     this->init_work( a ); /* buffer used for copying hash entry & data */
-    return this->fetch( i, spin_wait, is_scan );
+    return this->fetch( i, is_scan );
   }
-  KeyStatus fetch( const uint64_t i,  const uint64_t spin_wait,
-                   const bool is_scan ) {
+  KeyStatus fetch( const uint64_t i,  const bool is_scan ) {
     this->init_find();
-    return this->fetch_position( i, spin_wait, is_scan );
+    return this->fetch_position( i, is_scan );
   }
-  KeyStatus fetch_position( const uint64_t i,  const uint64_t spin_wait,
-                            const bool is_scan ) noexcept;
+  KeyStatus fetch_position( const uint64_t i,  const bool is_scan ) noexcept;
   /* exclusive access to a position */
   KeyStatus try_acquire_position( const uint64_t i ) noexcept;
 
@@ -530,10 +532,9 @@ kv_key_status_t kv_try_acquire( kv_key_ctx_t *kctx,  kv_work_alloc_t *a );
 kv_key_status_t kv_tombstone( kv_key_ctx_t *kctx );
 void kv_release( kv_key_ctx_t *kctx );
 
-kv_key_status_t kv_find( kv_key_ctx_t *kctx,  kv_work_alloc_t *a,
-                         const uint64_t spin_wait );
+kv_key_status_t kv_find( kv_key_ctx_t *kctx,  kv_work_alloc_t *a );
 kv_key_status_t kv_fetch( kv_key_ctx_t *kctx,  kv_work_alloc_t *a,
-                          const uint64_t pos,  const uint64_t spin_wait );
+                          const uint64_t pos );
 kv_key_status_t kv_value( kv_key_ctx_t *kctx,  void *ptr,  uint64_t *size );
 
 kv_key_status_t kv_alloc( kv_key_ctx_t *kctx,  void *ptr,  uint64_t size );

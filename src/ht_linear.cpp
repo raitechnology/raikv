@@ -13,22 +13,26 @@ using namespace kv;
 namespace rai {
 namespace kv {
 struct LinearPosition {
-  KeyCtx &kctx;
-  LinearPosition( KeyCtx &kc ) : kctx( kc ) {}
+  KeyCtx       & kctx;
+  const uint64_t key;
+  uint64_t       pos;
+  LinearPosition( KeyCtx &kc,  const uint64_t k )
+    : kctx( kc ), key( k ) {}
 
-  KeyStatus acquire_incr( uint64_t &pos,  const uint64_t chains,
+  void start( uint64_t p ) {
+    this->pos = p;
+  }
+  KeyStatus acquire_incr( const uint64_t chains,
                           bool &/*is_next_hash*/,  const bool /*have_drop*/ ) {
-    return this->find_incr( pos, chains );
+    return this->find_incr( chains );
   }
-
-  KeyStatus acquire_incr_single_thread( uint64_t &pos,  const uint64_t chains,
+  KeyStatus acquire_incr_single_thread( const uint64_t chains,
                                         const bool /*have_drop*/ ) {
-    return this->find_incr( pos, chains );
+    return this->find_incr( chains );
   }
-
-  KeyStatus find_incr( uint64_t &pos,  const uint64_t chains ) {
-    if ( ++pos == this->kctx.ht_size )
-      pos = 0;
+  KeyStatus find_incr( const uint64_t chains ) {
+    if ( ++this->pos == this->kctx.ht_size )
+      this->pos = 0;
     if ( chains != this->kctx.max_chains )
       return KEY_OK;
     if ( chains == this->kctx.ht_size )
@@ -36,7 +40,7 @@ struct LinearPosition {
     return KEY_MAX_CHAINS;
   }
 
-  void restore_inc( uint64_t /*pos*/ ) {}
+  void restore_inc( void ) {}
 };
 }
 }
@@ -48,18 +52,20 @@ KeyStatus
 KeyCtx::acquire_linear_probe( const uint64_t k,
                               const uint64_t start_pos ) noexcept
 {
-  LinearPosition lp( *this );
+  LinearPosition lp( *this, k );
 
-  return this->acquire<LinearPosition, true>( k, start_pos, lp );
+  lp.start( start_pos );
+  return this->acquire<LinearPosition, true>( lp );
 }
 
 KeyStatus
 KeyCtx::acquire_linear_probe_single_thread( const uint64_t k,
                                             const uint64_t start_pos ) noexcept
 {
-  LinearPosition lp( *this );
+  LinearPosition lp( *this, k );
 
-  return this->acquire_single_thread<LinearPosition>( k, start_pos, lp );
+  lp.start( start_pos );
+  return this->acquire_single_thread<LinearPosition>( lp );
 }
 
 /* similar to acquire() but bail if can't acquire without getting in line */
@@ -67,28 +73,52 @@ KeyStatus
 KeyCtx::try_acquire_linear_probe( const uint64_t k,
                                   const uint64_t start_pos ) noexcept
 {
-  LinearPosition lp( *this );
+  LinearPosition lp( *this, k );
 
-  return this->acquire<LinearPosition, false>( k, start_pos, lp );
+  lp.start( start_pos );
+  return this->acquire<LinearPosition, false>( lp );
+}
+
+KeyStatus
+KeyCtx::multi_acquire_linear_probe( const uint64_t k,
+                                    const uint64_t start_pos ) noexcept
+{
+  LinearPosition lp( *this, k );
+  KeyStatus status;
+  bool is_next;
+
+  for (;;) {
+    lp.start( start_pos );
+    status = this->acquire<LinearPosition, false>( lp );
+    if ( status != KEY_BUSY )
+      return status;
+    ThrCtx & ctx = this->ht.ctx[ this->ctx_id ];
+    if ( ctx.is_my_lock( lp.pos ) ) /* skip over the lock */
+      status = lp.acquire_incr( ++this->chains, is_next, false );
+    if ( status != KEY_OK )
+      return status;
+  }
 }
 
 /* find key for read only access without locking slot */
 KeyStatus
-KeyCtx::find_linear_probe( const uint64_t k,  const uint64_t start_pos,
-                           const uint64_t spin_wait ) noexcept
+KeyCtx::find_linear_probe( const uint64_t k,
+                           const uint64_t start_pos ) noexcept
 {
-  LinearPosition lp( *this );
+  LinearPosition lp( *this, k );
 
-  return this->find<LinearPosition>( k, start_pos, spin_wait, lp );
+  lp.start( start_pos );
+  return this->find<LinearPosition>( lp );
 }
 
 KeyStatus
 KeyCtx::find_linear_probe_single_thread( const uint64_t k,
                                          const uint64_t start_pos ) noexcept
 {
-  LinearPosition lp( *this );
+  LinearPosition lp( *this, k );
 
-  return this->find_single_thread<LinearPosition>( k, start_pos, lp );
+  lp.start( start_pos );
+  return this->find_single_thread<LinearPosition>( lp );
 }
 
 /* 32b aligned hash entry fetch, zero if slot is empty */
@@ -122,8 +152,7 @@ fetch_hash_entry( void *p,  const void *q,  uint32_t sz )
 
 /* spin on ht[ i ] until it is fetchable */
 KeyStatus
-KeyCtx::fetch_position( const uint64_t i,  const uint64_t spin_wait,
-                        const bool is_scan ) noexcept
+KeyCtx::fetch_position( const uint64_t i,  const bool is_scan ) noexcept
 {
   HashEntry * cpy  = this->get_work_entry();
   uint64_t    spin = 0,
@@ -143,10 +172,7 @@ KeyCtx::fetch_position( const uint64_t i,  const uint64_t spin_wait,
           goto not_found;
       }
       /* key was locked, spin again */
-      if ( ++spin == spin_wait ) {
-        this->incr_spins( spin );
-        return KEY_BUSY;
-      }
+      spin++;
       kv_sync_pause();
     }
   check_seal:;

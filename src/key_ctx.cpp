@@ -120,15 +120,22 @@ KeyStatus
 KeyCtx::acquire( void ) noexcept
 {
   this->init_acquire();
-  if ( this->test( KEYCTX_IS_SINGLE_THREAD ) == 0 ) {
-    if ( this->cuckoo_buckets <= 1 )
-      return this->acquire_linear_probe( this->key, this->start );
-    return this->acquire_cuckoo( this->key, this->start );
+  switch ( this->test( KEYCTX_IS_SINGLE_THREAD | KEYCTX_MULTI_KEY_ACQUIRE ) ) {
+    case 0:
+      if ( this->cuckoo_buckets <= 1 )
+        return this->acquire_linear_probe( this->key, this->start );
+      return this->acquire_cuckoo( this->key, this->start );
+
+    default:
+      if ( this->cuckoo_buckets <= 1 )
+        return this->multi_acquire_linear_probe( this->key, this->start );
+      return this->multi_acquire_cuckoo( this->key, this->start );
+
+    case KEYCTX_IS_SINGLE_THREAD: /* single thread version */
+      if ( this->cuckoo_buckets <= 1 )
+        return this->acquire_linear_probe_single_thread( this->key, this->start );
+      return this->acquire_cuckoo_single_thread( this->key, this->start );
   }
-  /* single thread version */
-  if ( this->cuckoo_buckets <= 1 )
-    return this->acquire_linear_probe_single_thread( this->key, this->start );
-  return this->acquire_cuckoo_single_thread( this->key, this->start );
 }
 
 /* try to acquire lock for a key without waiting */
@@ -136,31 +143,37 @@ KeyStatus
 KeyCtx::try_acquire( void ) noexcept
 {
   this->init_acquire();
-  if ( this->test( KEYCTX_IS_SINGLE_THREAD ) == 0 ) {
-    if ( this->cuckoo_buckets <= 1 )
-      return this->try_acquire_linear_probe( this->key, this->start );
-    return this->try_acquire_cuckoo( this->key, this->start );
+  switch ( this->test( KEYCTX_IS_SINGLE_THREAD ) ) {
+    case 0:
+    default:
+      if ( this->cuckoo_buckets <= 1 )
+        return this->try_acquire_linear_probe( this->key, this->start );
+      return this->try_acquire_cuckoo( this->key, this->start );
+
+    case KEYCTX_IS_SINGLE_THREAD: /* single thread version */
+      if ( this->cuckoo_buckets <= 1 )
+        return this->acquire_linear_probe_single_thread( this->key, this->start );
+      return this->acquire_cuckoo_single_thread( this->key, this->start );
   }
-  /* single thread version */
-  if ( this->cuckoo_buckets <= 1 )
-    return this->acquire_linear_probe_single_thread( this->key, this->start );
-  return this->acquire_cuckoo_single_thread( this->key, this->start );
 }
 
 /* if find locates key, returns KEY_OK, sets entry at &ht[ key % ht_size ] */
 KeyStatus
-KeyCtx::find( const uint64_t spin_wait ) noexcept
+KeyCtx::find( void ) noexcept
 {
   this->init_find();
-  if ( this->test( KEYCTX_IS_SINGLE_THREAD ) == 0 ) {
-    if ( this->cuckoo_buckets <= 1 )
-      return this->find_linear_probe( this->key, this->start, spin_wait );
-    return this->find_cuckoo( this->key, this->start, spin_wait );
+  switch ( this->test( KEYCTX_IS_SINGLE_THREAD ) ) {
+    case 0:
+    default:
+      if ( this->cuckoo_buckets <= 1 )
+        return this->find_linear_probe( this->key, this->start );
+      return this->find_cuckoo( this->key, this->start );
+
+    case KEYCTX_IS_SINGLE_THREAD: /* single thread version */
+      if ( this->cuckoo_buckets <= 1 )
+        return this->find_linear_probe_single_thread( this->key, this->start );
+      return this->find_cuckoo_single_thread( this->key, this->start );
   }
-  /* single thread version */
-  if ( this->cuckoo_buckets <= 1 )
-    return this->find_linear_probe_single_thread( this->key, this->start );
-  return this->find_cuckoo_single_thread( this->key, this->start );
 }
 
 /* mark as dropped */
@@ -1776,18 +1789,17 @@ kv_release( kv_key_ctx_t *kctx )
 }
 
 kv_key_status_t
-kv_find( kv_key_ctx_t *kctx,  kv_work_alloc_t *a,  const uint64_t spin_wait )
+kv_find( kv_key_ctx_t *kctx,  kv_work_alloc_t *a )
 {
   return reinterpret_cast<KeyCtx *>( kctx )->find(
-           reinterpret_cast<ScratchMem *>( a ), spin_wait );
+           reinterpret_cast<ScratchMem *>( a ) );
 }
 
 kv_key_status_t
-kv_fetch( kv_key_ctx_t *kctx,  kv_work_alloc_t *a,
-          const uint64_t pos,  const uint64_t spin_wait )
+kv_fetch( kv_key_ctx_t *kctx,  kv_work_alloc_t *a,  const uint64_t pos )
 {
   return reinterpret_cast<KeyCtx *>( kctx )->fetch(
-           reinterpret_cast<ScratchMem *>( a ), pos, spin_wait );
+           reinterpret_cast<ScratchMem *>( a ), pos );
 }
 
 kv_key_status_t

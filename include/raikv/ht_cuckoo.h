@@ -82,24 +82,31 @@ struct CuckooAltHash;
  * search for acquiring empty slot when key is not found */
 struct CuckooPosition {
   KeyCtx        & kctx;          /* the key context of this position */
+  const uint64_t  key;
+  uint64_t        pos;
   CuckooAltHash * h;             /* alternative positions, created on demand */
   uint16_t        buckets_off;   /* next hash when buckets_off == buckets */
   uint8_t         inc;           /* hash number of current position */
   bool            is_path_search;/* search for empty slot search path acquire */
 
-  CuckooPosition( KeyCtx &kc )
-    : kctx( kc ), h( 0 ), is_path_search( false ) {}
+  CuckooPosition( KeyCtx &kc,  const uint64_t k )
+    : kctx( kc ), key( k ), h( 0 ), is_path_search( false ) {}
   /* start a new search */
-  void start( void ) { this->buckets_off = 0; this->inc = 0; }
+  void start( uint64_t p ) {
+    this->kctx.inc    = 0; /* set by acquire() / find() */
+    this->pos         = p; /* first location to search */
+    this->buckets_off = 0; /* number of buckets per cuckoo hash */
+    this->inc         = 0; /* the cuckoo hash number */
+  }
   /* go to next position, use alternate hashes when no more buckets  */
-  KeyStatus acquire_incr( uint64_t &pos,  const uint64_t /*chains*/,
-                          bool &is_next_hash,  const bool have_drop ) {
-    if ( ++pos == this->kctx.ht_size )
-      pos = 0;
+  KeyStatus acquire_incr( const uint64_t /*chains*/,  bool &is_next_hash,
+                          const bool have_drop ) {
+    if ( ++this->pos == this->kctx.ht_size )
+      this->pos = 0;
     if ( ++this->buckets_off != this->kctx.cuckoo_buckets )
       return KEY_OK;
     is_next_hash = true;
-    KeyStatus status = this->next_hash( pos, false );
+    KeyStatus status = this->next_hash( false );
     if ( status != KEY_PATH_SEARCH )
       return status;
     if ( this->trylock_cuckoo_path() ) {
@@ -111,13 +118,13 @@ struct CuckooPosition {
     }
     return KEY_BUSY;
   }
-  KeyStatus acquire_incr_single_thread( uint64_t &pos, const uint64_t/*chains*/,
+  KeyStatus acquire_incr_single_thread( const uint64_t/*chains*/,
                                         const bool have_drop ) {
-    if ( ++pos == this->kctx.ht_size )
-      pos = 0;
+    if ( ++this->pos == this->kctx.ht_size )
+      this->pos = 0;
     if ( ++this->buckets_off != this->kctx.cuckoo_buckets )
       return KEY_OK;
-    KeyStatus status = this->next_hash( pos, false );
+    KeyStatus status = this->next_hash( false );
     if ( status != KEY_PATH_SEARCH )
       return status;
     if ( have_drop )
@@ -125,12 +132,12 @@ struct CuckooPosition {
     return KEY_PATH_SEARCH;
   }
   /* the find() function uses this version */
-  KeyStatus find_incr( uint64_t &pos,  const uint64_t /*chains*/ ) {
-    if ( ++pos == this->kctx.ht_size )
-      pos = 0;
+  KeyStatus find_incr( const uint64_t /*chains*/ ) {
+    if ( ++this->pos == this->kctx.ht_size )
+      this->pos = 0;
     if ( ++this->buckets_off != this->kctx.cuckoo_buckets )
       return KEY_OK;
-    return this->next_hash( pos, true );
+    return this->next_hash( true );
   }
   bool trylock_cuckoo_path( void ) { /* lock for cuckoo path search */
     return this->kctx.ht.hdr.ht_spin_trylock( this->kctx.key );
@@ -138,9 +145,9 @@ struct CuckooPosition {
   void unlock_cuckoo_path( void ) { /* release cuckoo path search */
     this->kctx.ht.hdr.ht_spin_unlock( this->kctx.key );
   }
-  KeyStatus next_hash( uint64_t &pos,  const bool is_find ) noexcept;
+  KeyStatus next_hash( const bool is_find ) noexcept;
 
-  void restore_inc( uint64_t pos ) noexcept;
+  void restore_inc( void ) noexcept;
 };
 
 struct CuckooAltHash {
