@@ -95,7 +95,7 @@ KeyCtx::set_key_hash( KeyFragment &b ) noexcept
   this->ht.hdr.get_hash_seed( this->db_num, hs );
   this->set_key( b );
   hs.hash( b, this->key, this->key2 );
-  this->start = this->ht.hdr.ht_mod( hs.hash1 );
+  this->start = this->ht.hdr.ht_mod( this->key );
 }
 
 KeyCtx *
