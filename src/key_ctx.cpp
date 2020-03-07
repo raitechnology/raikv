@@ -338,7 +338,7 @@ KeyCtx::release( void ) noexcept
         k        = DROPPED_HASH;
         el.flags = FL_DROPPED;
       }
-      el.seal_entry( this->hash_entry_size, 0, 0 );
+      el.seal_entry( this->hash_entry_size, 0, this->db_num );
       goto done; /* skip over the seals, they will be tossed */
     }
     this->incr_add(); /* counter for added elements */
@@ -384,7 +384,7 @@ KeyCtx::release_single_thread( void ) noexcept
         el.hash2 = 0;
         el.flags = FL_DROPPED;
       }
-      el.seal_entry( this->hash_entry_size, 0, 0 );
+      el.seal_entry( this->hash_entry_size, 0, this->db_num );
       goto done; /* skip over the seals, they will be tossed */
     }
     this->incr_add(); /* counter for added elements */
