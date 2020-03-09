@@ -1100,6 +1100,7 @@ cli( void )
           db_num = string_to_uint64( key, ::strlen( key ) );
           xprintf( 0, "switching to DB %u\n", db_num );
           dbx_id = map->attach_db( ctx_id, db_num );
+          kctx.set_db( dbx_id );
         }
         break;
 
@@ -1256,17 +1257,22 @@ cli( void )
                   ValueGeom geom;
                   kctx.entry->get_value_geom( kctx.hash_entry_size, geom,
                                               map->hdr.seg_align_shift );
+                  uint64_t sno = 0;
+                  if ( kctx.entry->test( FL_SEQNO ) )
+                    sno = kctx.entry->seqno( kctx.hash_entry_size );
+                  else
+                    sno = kctx.serial - ( kctx.key & ValueCtr::SERIAL_MASK );
                   if ( kp != NULL )
                     get_key_string( *kp, key );
                   else
                     ::strcpy( key, kv_key_status_string( status ) );
                   sprintf_stamps( kctx, upd, exp );
                   xprintf( 0,
-                "[%lu]+%u.%lu %s (%s db=%u:val=%u:seg=%u:sz=%lu:off=%lu%s%s)\n",
+        "[%lu]+%u.%lu %s (%s db=%u:val=%u:seg=%u:sz=%lu:off=%lu:seq=%lu%s%s)\n",
                        kld.pos, kctx.inc, pos_off, key,
                        flags_string( kctx.entry->flags, kctx.get_type(), fl ),
                        kctx.get_db(), kctx.get_val(), geom.segment, geom.size,
-                       geom.offset, upd, exp );
+                       geom.offset, sno, upd, exp );
                   print_count++;
                 }
                 kld.seg_values++;
@@ -1277,15 +1283,22 @@ cli( void )
                 else
                   kld.no_value++;
                 if ( kld.pos >= kld.jump ) {
+                  uint64_t sz = 0, sno = 0;
+                  kctx.get_size( sz );
+                  if ( kctx.entry->test( FL_SEQNO ) )
+                    sno = kctx.entry->seqno( kctx.hash_entry_size );
+                  else
+                    sno = kctx.serial - ( kctx.key & ValueCtr::SERIAL_MASK );
                   if ( kp != NULL )
                     get_key_string( *kp, key );
                   else
                     ::strcpy( key, kv_key_status_string( status ) );
                   sprintf_stamps( kctx, upd, exp );
-                  xprintf( 0, "[%lu]+%u.%lu %s (%s db=%u val=%u %s%s)\n",
+                  xprintf( 0,
+        "[%lu]+%u.%lu %s (%s db=%u:val=%u:sz=%lu:seq=%lu%s%s)\n",
                            kld.pos, kctx.inc, pos_off, key,
                       flags_string( kctx.entry->flags, kctx.get_type(), fl ),
-                      kctx.get_db(), kctx.get_val(), upd, exp );
+                      kctx.get_db(), kctx.get_val(), sz, sno, upd, exp );
                   print_count++;
                 }
               }

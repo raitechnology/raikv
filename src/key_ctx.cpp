@@ -81,6 +81,15 @@ KeyCtx::KeyCtx( KeyCtx &kctx ) noexcept
 }
 
 void
+KeyCtx::set_db( uint32_t xid ) noexcept
+{
+  HashTab     & map = this->ht;
+  KeyFragment * kb  = this->kbuf;
+
+  new ( (void *) this ) KeyCtx( map, xid, kb );
+}
+
+void
 KeyCtx::set_hash( uint64_t k,  uint64_t k2 ) noexcept
 {
   this->key   = k;

@@ -96,8 +96,8 @@ struct KeyCtx {
   const uint16_t cuckoo_buckets; /* how many cuckoo buckets */
   const uint8_t  cuckoo_arity,   /* how many cuckoo hash functions */
                  seg_align_shift; /* alignment of segment data */
-  uint8_t        db_num;
-  uint8_t        inc;        /* which hash function: 0 -> cuckoo_arity */
+  uint8_t        db_num,
+                 inc;        /* which hash function: 0 -> cuckoo_arity */
   uint16_t       msg_chain_size,
                  drop_flags, /* flags from dropped recycle entry */
                  flags;      /* KeyCtxFlags */
@@ -174,6 +174,8 @@ struct KeyCtx {
   void set_hash( uint64_t k,  uint64_t k2 ) noexcept;
   /* set key and hash by using set_key() then b.hash() to compute hash value */
   void set_key_hash( KeyFragment &b ) noexcept;
+  /* change to another db */
+  void set_db( uint32_t xid ) noexcept;
   /* used for find() operations where data is copied from ht to local buffers */
   void init_work( ScratchMem *a ) {
     if ( a != NULL ) {
@@ -248,13 +250,14 @@ struct KeyCtx {
   }
   /* size of the value */
   KeyStatus get_size( uint64_t &sz ) {
-    if ( this->entry->test( FL_IMMEDIATE_VALUE ) ) {
+    if ( this->entry->test( FL_IMMEDIATE_VALUE ) )
       sz = this->entry->value_ctr( this->hash_entry_size ).size;
-      return KEY_OK;
+    else {
+      if ( this->entry->test( FL_SEGMENT_VALUE ) )
+        return this->get_msg_size( sz );
+      sz = 0;
     }
-    if ( this->entry->test( FL_SEGMENT_VALUE ) )
-      return this->get_msg_size( sz );
-    return KEY_NO_VALUE;
+    return KEY_OK;
   }
   /* if in a segment, this is the size */
   KeyStatus get_msg_size( uint64_t &sz ) noexcept;
