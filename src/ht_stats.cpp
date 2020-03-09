@@ -136,19 +136,20 @@ HashTab::sum_ht_thr_delta( HashDeltaCounters &stat,  HashCounters &ops,
   return true;
 }
 
-void
+bool
 HashTab::sum_ht_db_delta( HashDeltaCounters &stat,  HashCounters &ops,
                           HashCounters &tot,  uint8_t db ) noexcept
 {
   uint32_t i;
   HashCounters tmp;
 
-  tmp.zero();
   ops.zero();
   tot.zero();
 
-  if ( ! this->hdr.test_db_opened( db ) )
-    return;
+  if ( ! this->hdr.test_db_opened( db ) ) {
+    tmp.zero();
+    return false;
+  }
   /* lock db */
   this->hdr.ht_spin_lock( db );
   /* sum retired stats */
@@ -165,6 +166,31 @@ HashTab::sum_ht_db_delta( HashDeltaCounters &stat,  HashCounters &ops,
   stat.get_ht_delta( tmp );
   ops = stat.delta;
   tot = stat.last;
+  return true;
+}
+
+bool
+HashTab::get_db_stats( HashCounters &tot,  uint8_t db ) noexcept
+{
+  uint32_t i;
+
+  if ( ! this->hdr.test_db_opened( db ) ) {
+    tot.zero();
+    return false;
+  }
+  /* lock db */
+  this->hdr.ht_spin_lock( db );
+  /* sum retired stats */
+  tot = this->hdr.db_stat[ db ];
+  /* still mutating the stat_link[] are the active contexts */
+  for ( i = 0; i < MAX_STAT_ID; i++ ) {
+    ThrStatLink & link = this->hdr.stat_link[ i ];
+    if ( link.used == 1 && link.db_num == db )
+      tot += this->stats[ i ];
+  }
+  /* unlock db */
+  this->hdr.ht_spin_unlock( db );
+  return true;
 }
 
 void

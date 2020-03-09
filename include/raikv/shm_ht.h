@@ -421,10 +421,10 @@ public:
   /* accumulate stats just for ctx_id with delta change */
   bool sum_ht_thr_delta( HashDeltaCounters &stats,  HashCounters &ops,
                          HashCounters &tot,  uint32_t ctx_id ) const noexcept;
-  void sum_ht_db_delta( HashDeltaCounters &stats,  HashCounters &ops,
+  bool sum_ht_db_delta( HashDeltaCounters &stats,  HashCounters &ops,
                         HashCounters &tot,  uint8_t db ) noexcept;
   /* accumulate stats just for db */
-  bool get_db_stats( HashCounters &tot,  uint8_t db_num ) const noexcept;
+  bool get_db_stats( HashCounters &tot,  uint8_t db_num ) noexcept;
   /* accumulate memory usage stats of each segment and return true if changed
    * stats[] should be sized by this->hdr.nsegs */
   bool sum_mem_deltas( MemDeltaCounters *stats,  MemCounters &chg,

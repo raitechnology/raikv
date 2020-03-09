@@ -1097,10 +1097,20 @@ cli( void )
 
       case 'w': /* switch db */
         if ( key[ 0 ] >=  '0' && key[ 0 ] <= '9' ) {
+          HashCounters tot;
           db_num = string_to_uint64( key, ::strlen( key ) );
           xprintf( 0, "switching to DB %u\n", db_num );
           dbx_id = map->attach_db( ctx_id, db_num );
           kctx.set_db( dbx_id );
+          map->get_db_stats( tot, db_num );
+          xprintf( 0, "count %lu, read %lu, write %lu, spin %lu, chains %lu, "
+             "add %lu, drop %lu, expire %lu, htevict %lu, afail %lu, hit %lu, "
+             "miss %lu, cuckacq %lu, cuckfet %lu, cuckmov %lu, cuckret %lu "
+             "cuckmax %lu\n",
+            tot.add - tot.drop,
+            tot.rd, tot.wr, tot.spins, tot.chains, tot.add, tot.drop,
+            tot.expire, tot.htevict, tot.afail, tot.hit, tot.miss, tot.cuckacq,
+            tot.cuckfet, tot.cuckmov, tot.cuckret, tot.cuckmax );
         }
         break;
 
