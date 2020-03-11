@@ -104,6 +104,74 @@ struct RelativeStamp {
             uint64_t &upd ) noexcept;
 };
 
+#ifdef SPRINTF_RELA_TIME
+static inline char *
+sprintf_time( uint64_t ns,  char *buf,  size_t sz )
+{
+  char *p = buf;
+  uint32_t secs = (uint32_t) ( ns / NANOS );
+  size_t i = 0;
+  int n;
+  buf[ 0 ] = '\0';
+  buf[ --sz ] = '\0';
+  if ( secs == 0 ) {
+    uint32_t nano = (uint32_t) ( ns % NANOS );
+    if ( nano == 0 ) {
+      if ( sz >= 2 ) ::strcpy( buf, "0s" );
+    }
+    else {
+      if ( nano >= 1000 * 1000 ) {
+        n = ::snprintf( buf+i, sz-i, "%ums ", nano / ( 1000 * 1000 ) );
+        nano %= 1000 * 1000; if ( (i += n) >= sz ) goto truncated;
+      }
+      if ( nano >= 1000 ) {
+        n = ::snprintf( buf+i, sz-i, "%uus ", nano / 1000 );
+        nano %= 1000; if ( (i += n) >= sz ) goto truncated;
+      }
+      if ( nano > 0 )
+        ::snprintf( buf+i, sz-i, "%uns", nano );
+    }
+  }
+  else {
+    if ( secs >= 24 * 60 * 60 ) {
+      n = ::snprintf( buf+i, sz-i, "%ud ", secs / ( 24 * 60 * 60 ) );
+      secs %= 24 * 60 * 60; if ( (i += n) >= sz ) goto truncated;
+    }
+    if ( secs >= 60 * 60 ) {
+      n = ::snprintf( buf+i, sz-i, "%uh ", secs / ( 60 * 60 ) );
+      secs %= 60 * 60; if ( (i += n) >= sz ) goto truncated;
+    }
+    if ( secs >= 60 ) {
+      n = ::snprintf( buf+i, sz-i, "%um ", secs / 60 );
+      secs %= 60; if ( (i += n) >= sz ) goto truncated;
+    }
+    if ( secs > 0 )
+      ::snprintf( buf+i, sz-i, "%us", secs );
+  }
+truncated:;
+  return p;
+}
+
+static inline void
+sprintf_rela_time( uint64_t ns,  uint64_t cur,  const char *what,
+                   char *buf,  size_t sz )
+{
+  size_t i;
+  for ( i = 0; (buf[ i ] = *what) != '\0'; i++ )
+    what++;
+  buf[ i++ ] = '=';
+  if ( cur > ns ) {
+    cur -= ns;
+    buf[ i++ ] = '-';
+  }
+  else {
+    cur = ns - cur;
+    buf[ i++ ] = '+';
+  }
+  sprintf_time( cur, &buf[ i ], sz - i );
+}
+#endif
+
 } /* kv */
 } /* rai */
 #endif
