@@ -152,14 +152,16 @@ truncated:;
   return p;
 }
 
-static inline void
+static inline char *
 sprintf_rela_time( uint64_t ns,  uint64_t cur,  const char *what,
                    char *buf,  size_t sz )
 {
-  size_t i;
-  for ( i = 0; (buf[ i ] = *what) != '\0'; i++ )
-    what++;
-  buf[ i++ ] = '=';
+  size_t i = 0;
+  if ( what != NULL ) {
+    for ( ; (buf[ i ] = *what) != '\0'; i++ )
+      what++;
+    buf[ i++ ] = '=';
+  }
   if ( cur > ns ) {
     cur -= ns;
     buf[ i++ ] = '-';
@@ -169,6 +171,7 @@ sprintf_rela_time( uint64_t ns,  uint64_t cur,  const char *what,
     buf[ i++ ] = '+';
   }
   sprintf_time( cur, &buf[ i ], sz - i );
+  return buf;
 }
 #endif
 
