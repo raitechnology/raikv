@@ -419,28 +419,26 @@ KeyCtx::multi_acquire_cuckoo( const uint64_t k,
   CuckooPosition cp( *this, k );
   KeyStatus status;
   bool is_next;
-  for (;;) { /* keep searching while busy */
-    cp.start( start_pos );
-    for (;;) {
-      status = this->acquire<CuckooPosition, false>( cp );
-      if ( status == KEY_OK )
-        return KEY_OK;
-      /* check if I own the lock as cp.pos */
-      if ( status == KEY_BUSY ) {
-        ThrCtx & ctx = this->ht.ctx[ this->ctx_id ];
-        if ( ctx.is_my_lock( cp.pos ) ) /* skip over the lock */
-          status = cp.acquire_incr( ++this->chains, is_next, false );
-      }
-      if ( status != KEY_OK )
-        break;
+  cp.start( start_pos );
+  for (;;) {
+    status = this->acquire<CuckooPosition, false>( cp );
+    if ( status == KEY_OK )
+      return KEY_OK;
+    /* check if I own the lock as cp.pos */
+    if ( status == KEY_BUSY ) {
+      ThrCtx & ctx = this->ht.ctx[ this->ctx_id ];
+      if ( ! ctx.is_my_lock( cp.pos ) ) /* skip over the lock */
+        return KEY_BUSY;
+      status = cp.acquire_incr( ++this->chains, is_next, false );
     }
-    if ( status == KEY_PATH_SEARCH ) {
-      status = cp.h->find_cuckoo_path( cp );
-      cp.unlock_cuckoo_path();
-    }
-    if ( status != KEY_BUSY )
-      return status;
+    if ( status != KEY_OK )
+      break;
   }
+  if ( status == KEY_PATH_SEARCH ) {
+    status = cp.h->find_cuckoo_path( cp );
+    cp.unlock_cuckoo_path();
+  }
+  return status; /* can return BUSY */
 }
 
 KeyStatus

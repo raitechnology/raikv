@@ -93,8 +93,9 @@ KeyCtx::multi_acquire_linear_probe( const uint64_t k,
     if ( status != KEY_BUSY )
       return status;
     ThrCtx & ctx = this->ht.ctx[ this->ctx_id ];
-    if ( ctx.is_my_lock( lp.pos ) ) /* skip over the lock */
-      status = lp.acquire_incr( ++this->chains, is_next, false );
+    if ( ! ctx.is_my_lock( lp.pos ) ) /* skip over the lock */
+      return KEY_BUSY;
+    status = lp.acquire_incr( ++this->chains, is_next, false );
     if ( status != KEY_OK )
       return status;
   }
