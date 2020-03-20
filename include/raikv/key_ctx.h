@@ -321,6 +321,8 @@ struct KeyCtx {
   KeyStatus tombstone( void ) noexcept;
   /* like tombstone and incr expired */
   KeyStatus expire( void ) noexcept;
+  /* state set during acquire */
+  void copy_acquire_state( const KeyCtx &kctx );
   /* start a new read only operation */
   void init_find( void ) {
     this->chains = 0; /* count of chains */

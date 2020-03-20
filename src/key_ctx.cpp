@@ -189,10 +189,10 @@ KeyCtx::find( void ) noexcept
 KeyStatus
 KeyCtx::tombstone( void ) noexcept
 {
+  KeyStatus status;
+  if ( (status = this->release_data()) != KEY_OK )
+    return status;
   if ( this->lock != 0 ) { /* if it's not new */
-    KeyStatus status;
-    if ( (status = this->release_data()) != KEY_OK )
-      return status;
     this->serial = 0;
     this->entry->set( FL_DROPPED );
     this->entry->clear( FL_EXPIRE_STAMP | FL_UPDATE_STAMP |
@@ -210,10 +210,10 @@ KeyCtx::tombstone( void ) noexcept
 KeyStatus
 KeyCtx::expire( void ) noexcept
 {
+  KeyStatus status;
+  if ( (status = this->release_data()) != KEY_OK )
+    return status;
   if ( this->lock != 0 ) {
-    KeyStatus status;
-    if ( (status = this->release_data()) != KEY_OK )
-      return status;
     this->serial = 0;
     this->entry->set( FL_DROPPED );
     this->entry->clear( FL_EXPIRE_STAMP | FL_UPDATE_STAMP |
@@ -226,6 +226,18 @@ KeyCtx::expire( void ) noexcept
     this->lock = 0; /* prevent second drop */
   }
   return KEY_OK;
+}
+
+void
+KeyCtx::copy_acquire_state( const KeyCtx &kctx )
+{
+  this->msg        = kctx.msg;
+  this->serial     = kctx.serial;
+  this->geom       = kctx.geom;
+  this->drop_key   = kctx.drop_key;
+  this->drop_key2  = kctx.drop_key2;
+  this->drop_flags = kctx.drop_flags;
+  this->lock       = kctx.lock;
 }
 
 bool
