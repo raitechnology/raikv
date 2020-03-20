@@ -192,11 +192,11 @@ KeyCtx::tombstone( void ) noexcept
   KeyStatus status;
   if ( (status = this->release_data()) != KEY_OK )
     return status;
+  this->serial = 0;
+  this->entry->set( FL_DROPPED );
+  this->entry->clear( FL_EXPIRE_STAMP | FL_UPDATE_STAMP |
+                      FL_SEQNO | FL_MSG_LIST );
   if ( this->lock != 0 ) { /* if it's not new */
-    this->serial = 0;
-    this->entry->set( FL_DROPPED );
-    this->entry->clear( FL_EXPIRE_STAMP | FL_UPDATE_STAMP |
-                        FL_SEQNO | FL_MSG_LIST );
     this->incr_drop();
     this->drop_key   = this->lock;
     this->drop_key2  = this->key2;
@@ -213,11 +213,11 @@ KeyCtx::expire( void ) noexcept
   KeyStatus status;
   if ( (status = this->release_data()) != KEY_OK )
     return status;
+  this->serial = 0;
+  this->entry->set( FL_DROPPED );
+  this->entry->clear( FL_EXPIRE_STAMP | FL_UPDATE_STAMP |
+                      FL_SEQNO | FL_MSG_LIST );
   if ( this->lock != 0 ) {
-    this->serial = 0;
-    this->entry->set( FL_DROPPED );
-    this->entry->clear( FL_EXPIRE_STAMP | FL_UPDATE_STAMP |
-                        FL_SEQNO | FL_MSG_LIST );
     this->incr_drop();
     this->incr_expire();
     this->drop_key   = this->lock;
