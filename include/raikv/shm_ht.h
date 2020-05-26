@@ -438,8 +438,10 @@ public:
                    GCStats &stats ) noexcept;
   void *seg_data( uint32_t i,  uint64_t off ) const {
     /*return &((uint8_t *) this)[ this->segment( i ).seg_off + off ];*/
-    return &((uint8_t *) this)[ this->hdr.seg_start() + 
-                                (uint64_t) i * this->hdr.seg_size() + off ];
+    uint64_t sz = this->hdr.seg_size();
+    if ( i >= this->hdr.nsegs || off >= sz )
+      return NULL;
+    return &((uint8_t *) this)[ this->hdr.seg_start() + (uint64_t) i*sz + off ];
   }
   bool is_valid_region( void *p,  size_t sz ) const {
     return (uint8_t *) p >= &((uint8_t *) this)[ this->hdr.seg_start() ] &&

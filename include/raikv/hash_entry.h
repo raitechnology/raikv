@@ -164,6 +164,11 @@ struct ValueCtr { /* packed 64 bit immediate size & serial & seal */
   void zero( void ) {
     ::memset( this, 0, sizeof( *this ) );
   }
+  bool equals( const ValueCtr &ctr ) const {
+    return ( ctr.seriallo == this->seriallo ) &
+           ( ctr.serialhi == this->serialhi ) &
+           ( ctr.size     == this->size );
+  }
 };
 
 /* HashEntry layout (segment data, when hash_entry_size=64):
@@ -217,10 +222,9 @@ struct HashEntry {
   KeyFragment key;    /* key, or just the prefix of the key */
 
   void copy_key( KeyFragment &kb ) {
-    uint16_t       * k = (uint16_t *) (void *) &kb;
-    const uint16_t * e = (uint16_t *) (void *) &kb.u.buf[ kb.keylen ];
-    uint16_t       * p = (uint16_t *) (void *) &this->key;
-    /* copy all of key, 2b at a time, 1b overruns won't hurt */
+    uint8_t       * k = (uint8_t *) (void *) &kb;
+    const uint8_t * e = (uint8_t *) (void *) &kb.u.buf[ kb.keylen ];
+    uint8_t       * p = (uint8_t *) (void *) &this->key;
     do {
       *p++ = *k++;
     } while ( k < e );

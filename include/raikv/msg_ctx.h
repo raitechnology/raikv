@@ -13,22 +13,61 @@ namespace kv {
 
 struct HashTab;
 
+/* Message layout bytes
+0              4
++---+---+---+---+---+---+---+---+ 8
+| size          | msg_size      |
++---+---+---+---+---+---+---+---+ 16
+| hash                          |
++---+---+---+---+---+---+---+---+ 24
+| hash2                         |
++---+---+---+---+---+---+---+---+ 32
+| seriallo      | db|typ| flags |
++---+---+---+---+---+---+---+---+ 40
+| keylen| key ...                 <- KeyFragment
++---+---+---+---+---+---+---+---+
+... KeyFragment align to 8 bytes
+
+
+   msg_size data bytes, may not
+   extend to size - hdr - trailer bytes
+
+
++---+---+---+---+---+---+---+---+ size - 48
+| optional message list elem ptr[ 2 ]
++                                       <- ValueGeom
+| segment, serial, size, offset
++---+---+---+---+---+---+---+---+ size - 32
+| optional message list elem ptr[ 1 ]
++                                       <- ValueGeom
+| segment, serial, size, offset
++---+---+---+---+---+---+---+---+ size - 16
+| update / expire stamp         |       <- RelaStamp
++---+---+---+---+---+---+---+---+ size - 8
+| size *| ser hi| serial low    |       <- ValueCtr
++---+---+---+---+---+---+---+---+ size
+
+ size indicates how many elements are in the message list
+ */
+
 struct MsgHdr {
   uint32_t    size,     /* alloc size including hdr, key, data */
               msg_size; /* data size */
   uint64_t    hash,     /* key hash value */
               hash2;    /* second hash value */
-  uint8_t     db,
-              type;
-  uint16_t    flags;    /* where is data, how is it aligned */
+  uint32_t    seriallo; /* low serial 32 bits, verifies entry with value_ptr */
+  uint8_t     db,       /* database msg belongs to */
+              type;     /* type of message data */
+  uint16_t    flags;    /* same as hash entry flags (stamps, dropped) */
   KeyFragment key;      /* all of the key */
 
   /* offset to the data */
   static uint64_t hdr_size( const KeyFragment &kb ) {
     return align<uint64_t>( sizeof( uint32_t ) * 2 + /* size, msg_size */
                             sizeof( uint64_t ) * 2 + /* hash, hash2 */
+                            sizeof( uint32_t )     + /* seriallo */
                             sizeof( uint8_t )  * 2 + /* db, type */
-                            sizeof( uint16_t ) +     /* flags */
+                            sizeof( uint16_t )     + /* flags */
                             kb.keylen + sizeof( kb.keylen ), 8 );
   }
   uint64_t hdr_size( void ) const {
@@ -41,34 +80,34 @@ struct MsgHdr {
     return align<uint64_t>( hdr_size + size + ch_size +
                       sizeof( RelativeStamp ) + sizeof( ValueCtr ), seg_align );
   }
-  void clear( uint32_t fl )          { this->flags &= ~fl; }
-  void set( uint32_t fl )            { this->flags |= fl; }
   uint32_t test( uint32_t fl ) const { return this->flags & fl; }
   /* disallow readers from accessing */
-  void unseal( void ) {
-    ValueCtr &ctr = this->value_ctr();
-    this->set( FL_BUSY );
-    ctr.set_serial( 0 );
+  void unseal( void ) volatile {
+    ValueCtr &ctr = this->value_ctr_v();
+    this->seriallo = 0;
+    this->flags |= FL_BUSY;
     ctr.seal = 0;
   }
   /* update serial and set seal, allowing readers to access */
   void seal( uint64_t serial,  uint8_t db,  uint8_t type,  uint16_t flags,
-             uint16_t chain_size ) {
-    ValueCtr &ctr = this->value_ctr();
+             uint16_t chain_size ) volatile {
+    ValueCtr &ctr = this->value_ctr_v();
     ctr.set_serial( serial );
-    ctr.size    = chain_size;
-    ctr.seal    = 1;
-    this->db    = db;
-    this->type  = type;
-    this->flags = flags; /* clears FL_BUSY */
+    ctr.size       = chain_size;
+    ctr.seal       = 1;
+    this->db       = db;
+    this->type     = type;
+    this->flags    = flags; /* clears FL_BUSY */
+    this->seriallo = (uint32_t) serial;
   }
   /* update serial and set seal, allowing readers to access */
-  void seal2( uint64_t serial,  uint16_t flags,  uint16_t chain_size ) {
-    ValueCtr &ctr = this->value_ctr();
+  void seal2( uint64_t serial,  uint16_t flags,  uint16_t chain_size ) volatile{
+    ValueCtr &ctr = this->value_ctr_v();
     ctr.set_serial( serial );
-    ctr.size    = chain_size;
-    ctr.seal    = 1;
-    this->flags = flags; /* clears FL_BUSY */
+    ctr.size       = chain_size;
+    ctr.seal       = 1;
+    this->flags    = flags; /* clears FL_BUSY */
+    this->seriallo = (uint32_t) serial;
   }
   /* check that the message has same serial as hash_entry and is not unsealed */
   bool check_seal( uint64_t h,  uint64_t h2,  uint64_t serial,
@@ -79,14 +118,15 @@ struct MsgHdr {
                             ( ( this->flags & FL_BUSY ) == 0 );
     if ( hdr_sealed ) { /* size is correct, it is safe to dereference */
       /* check serial number */
-      volatile ValueCtr &ctr = *(volatile ValueCtr *) (void *)
+      const ValueCtr &ctr = *(const ValueCtr *) (void *)
                &((uint8_t *) (void *) this)[ sz - sizeof( ValueCtr ) ];
       uint32_t seriallo = (uint32_t) serial,
                serialhi = (uint16_t) ( serial >> 32 );
       chain_size = ctr.size;
       return ( ctr.seriallo == seriallo ) &
              ( ctr.serialhi == serialhi ) &
-             ( ctr.seal == 1 );
+             ( ctr.seal == 1 ) &
+             ( this->seriallo == seriallo );
     }
     return false;
   }
@@ -98,13 +138,14 @@ struct MsgHdr {
                             ( ( this->flags & FL_BUSY ) == 0 );
     if ( hdr_sealed ) { /* size is correct, it is safe to dereference */
       /* check serial number */
-      ValueCtr &ctr = *(ValueCtr *) (void *)
+      const ValueCtr &ctr = *(ValueCtr *) (void *)
                &((uint8_t *) (void *) this)[ sz - sizeof( ValueCtr ) ];
       uint64_t ser = ctr.get_serial();
       chain_size = ctr.size;
       if ( ( ser < serial ) &&
            ( ser >= ( h & ValueCtr::SERIAL_MASK ) ) &&
-           ( ctr.seal == 1 ) ) {
+           ( ctr.seal == 1 ) &&
+           (uint32_t) ser == this->seriallo ) {
         serial = ser;
         return true;
       }
@@ -118,6 +159,7 @@ struct MsgHdr {
     this->msg_size = msz;
     this->hash     = h;
     this->hash2    = h2;
+    this->seriallo = 0;
     this->db       = 0;
     this->type     = 0;
     this->flags    = fl;
@@ -125,13 +167,13 @@ struct MsgHdr {
   }
   /* copy the key material and return pointer to msg data */
   void *copy_key( KeyFragment &kb,  uint32_t hsz ) {
-    uint16_t * p = (uint16_t *) (void *) &this->key,
-             * k = (uint16_t *) (void *) &kb,
-             * e = (uint16_t *) (void *) &kb.u.buf[ kb.keylen ];
-    do {
-      *p++ = *k++;
-    } while ( k < e );
-    return this->ptr( hsz );
+    const uint8_t * k = (uint8_t *) (void *) &kb,
+                  * e = (uint8_t *) (void *) &kb.u.buf[ kb.keylen ];
+    uint8_t       * p = (uint8_t *) (void *) &this->key,
+                  * h = (uint8_t *) this->ptr( hsz );
+    do { *p++ = *k++; } while ( k < e );
+    while ( p < h ) *p++ = '\0'; /* zero to start of data */
+    return h;
   }
   /* no longer need the memory, mark freed */
   void release( void ) {
@@ -145,6 +187,11 @@ struct MsgHdr {
   RelativeStamp &rela_stamp( void ) const {
     return *(RelativeStamp *) this->ptr( this->size -
                              ( sizeof( ValueCtr ) + sizeof( RelativeStamp ) ) );
+  }
+  ValueCtr &value_ctr_v( void ) volatile {
+    size_t off = this->size - sizeof( ValueCtr );
+    void * p = &((uint8_t *) (void *) this)[ off ];
+    return *(ValueCtr *) p;
   }
   void *ptr( uint32_t off ) const {
     return &((uint8_t *) (void *) this)[ off ];

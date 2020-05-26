@@ -3,6 +3,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stddef.h>
+#include <assert.h>
 
 #include <raikv/shm_ht.h>
 
@@ -252,10 +253,12 @@ KeyCtx::frag_equals( const HashEntry &el ) const noexcept
 void *
 KeyCtx::copy_data( void *data,  uint64_t sz ) noexcept
 {
-  void *p = this->wrk->alloc( sz );
-  if ( p != NULL ) {
-    ::memcpy( p, data, sz );
-    return p;
+  if ( data != NULL ) {
+    void *p = this->wrk->alloc( sz );
+    if ( p != NULL ) {
+      ::memcpy( p, data, sz );
+      return p;
+    }
   }
   return NULL;
 }
@@ -304,6 +307,13 @@ KeyCtx::get_key( KeyFragment *&b ) noexcept
   if ( this->entry->test( FL_PART_KEY ) )
     return KEY_PART_ONLY;
   return KEY_NOT_FOUND;
+}
+
+bool
+KeyCtx::if_value_equals( uint64_t pos,  const ValueCtr &ctr ) const noexcept
+{
+  return this->ht.get_entry( pos, this->hash_entry_size )
+                 ->value_ctr( this->hash_entry_size ).equals( ctr );
 }
 
 void
@@ -427,22 +437,21 @@ done:;
 KeyStatus
 KeyCtx::attach_msg( AttachType upd ) noexcept
 {
+  void *p;
   /* if result of find(), do not have write access */
   if ( this->test( KEYCTX_IS_READ_ONLY ) ) {
-    void *p;
     if ( upd == ATTACH_WRITE ) /* no can do */
       return KEY_WRITE_ILLEGAL;
     this->entry->get_value_geom( this->hash_entry_size, this->geom,
                                  this->seg_align_shift );
-    if ( this->test( KEYCTX_NO_COPY_ON_READ ) ) {
-      p = this->ht.seg_data( this->geom.segment, this->geom.offset );
+    p = this->ht.seg_data( this->geom.segment, this->geom.offset );
+    if ( p == NULL )
+      return KEY_MUTATED;
+    if ( this->test( KEYCTX_NO_COPY_ON_READ ) )
       this->msg = (MsgHdr *) p;
-    }
     else {
       /* copy msg data into buffer */
-      if ( (p = this->copy_data( 
-              this->ht.seg_data( this->geom.segment, this->geom.offset ),
-              this->geom.size )) == NULL )
+      if ( (p = this->copy_data( p, this->geom.size )) == NULL )
         return KEY_ALLOC_FAILED;
       /* check that msg is valid */
       this->msg = (MsgHdr *) p;
@@ -456,8 +465,10 @@ KeyCtx::attach_msg( AttachType upd ) noexcept
     /* locked, exclusive access to message */
     this->entry->get_value_geom( this->hash_entry_size, this->geom,
                                  this->seg_align_shift );
-    this->msg = (MsgHdr *) this->ht.seg_data( this->geom.segment,
-                                              this->geom.offset );
+    p = this->ht.seg_data( this->geom.segment, this->geom.offset );
+    if ( p == NULL )
+      return KEY_MUTATED;
+    this->msg = (MsgHdr *) p;
     if ( ! this->is_msg_valid() ) {
       this->msg = NULL;
       return KEY_MUTATED;
@@ -997,112 +1008,10 @@ KeyCtx::value_copy( void *data,  uint64_t &size,  void *cp,
   }
 }
 
-typedef uint32_t msg_size_t;
-
-/* append a message to entry */
-KeyStatus
-KeyCtx::append_msg( void *res,  uint64_t size ) noexcept
-{
-  if ( this->test( KEYCTX_IS_READ_ONLY ) )
-    return KEY_WRITE_ILLEGAL;
-
-  HashEntry & el = *this->entry;
-  uint8_t   * buf;
-  uint64_t    cur_size,
-              msg_off,
-              new_size,
-              msg_size;
-  KeyStatus   mstatus,
-              status = KEY_OK;
-
-  el.set( FL_MSG_LIST );
-  switch ( el.test( FL_SEGMENT_VALUE | FL_IMMEDIATE_VALUE ) ) {
-    case FL_IMMEDIATE_VALUE: {
-      uint8_t  * value = el.immediate_value(),
-               * trail = (uint8_t *) el.trail_ptr( this->hash_entry_size );
-      cur_size = el.value_ctr( this->hash_entry_size ).size;
-      msg_off  = align<uint64_t>( cur_size, sizeof( msg_size_t ) );
-      msg_size = msg_off + sizeof( msg_size_t ) + size;
-      new_size = msg_size;
-      if ( &value[ new_size ] <= trail ) {
-        el.value_ctr( this->hash_entry_size ).size = new_size;
-        this->next_serial( ValueCtr::SERIAL_MASK );
-        buf = &value[ msg_off ];
-        goto return_msg;
-      }
-      break;
-    }
-    case FL_SEGMENT_VALUE: {
-      /* check if resize fits within current segment mem */
-      if ( this->msg == NULL &&
-           (mstatus = this->attach_msg( ATTACH_WRITE )) != KEY_OK )
-        return mstatus;
-      /* power of 2 allocator */
-      cur_size = this->msg->msg_size;
-      msg_off  = align<uint64_t>( cur_size, sizeof( msg_size_t ) );
-      msg_size = msg_off + sizeof( msg_size_t ) + size;
-      new_size = (uint64_t) 1 << ( 64 - __builtin_clzl( msg_size ) );
-      uint32_t hdr_size   = MsgHdr::hdr_size( this->msg->key );
-      uint64_t alloc_size = MsgHdr::alloc_size( hdr_size, new_size,
-                                                this->seg_align(),
-                                                this->msg_chain_size );
-      if ( alloc_size == this->msg->size ) {
-        this->next_serial( ValueCtr::SERIAL_MASK );
-        this->geom.serial = el.value_ptr( this->hash_entry_size ).
-                               set_serial( this->serial );
-        this->msg->msg_size = msg_size;
-        buf = (uint8_t *) this->msg->ptr( hdr_size + msg_off );
-        goto return_msg;
-      }
-      /* split into chains at 16k, 2x32k, 4x64, 8x128... (total 384M) */
-      if ( this->msg_chain_size < 0xff &&
-           cur_size > 8 * 1024 * ( (uint64_t) this->msg_chain_size + 1 ) ) {
-        MsgCtx mctx( *this );
-        mctx.set_key( *this->kbuf );
-        mctx.set_hash( this->key, this->key2 );
-        msg_off  = 0;
-        msg_size = sizeof( msg_size_t ) + size;
-        new_size = (uint64_t) 1 << ( 64 - __builtin_clzl( msg_size ) );
-        void * tmp;
-        if ( (mstatus = mctx.alloc_segment( &tmp, new_size,
-                                       this->msg_chain_size + 1 )) == KEY_OK ) {
-          this->add_msg_chain( mctx );
-          this->next_serial( ValueCtr::SERIAL_MASK );
-          this->geom.serial = el.value_ptr( this->hash_entry_size ).
-                                 set_serial( this->serial );
-          this->msg->msg_size = sizeof( msg_size_t ) + size;
-          buf = (uint8_t *) this->msg->ptr( hdr_size );
-          goto return_msg;
-        }
-        return mstatus;
-      }
-      break;
-    }
-    default:
-      msg_off  = 0;
-      msg_size = size + sizeof( msg_size_t );
-      new_size = msg_size;
-      break;
-  }
-  /* reallocate, could do better if key already copied */
-  this->next_serial( ValueCtr::SERIAL_MASK );
-  status = this->alloc( res, new_size, true );
-  if ( status == KEY_OK ) {
-    buf = (uint8_t *) *(void **) res;
-    buf = &buf[ msg_off ];
-    if ( el.test( FL_SEGMENT_VALUE ) ) {
-      this->msg->msg_size = msg_size;
-    }
-return_msg:;
-    *(uint32_t *) (void *) buf = (uint32_t) size;
-    *(void **) res = &buf[ sizeof( msg_size_t ) ];
-  }
-  return status;
-}
-
 /* append a vector of size[ i ] elements: vec[ i ] -> msg @ size[ i ] */
 KeyStatus
-KeyCtx::append_vector( uint64_t count,  void *vec,  uint64_t *size ) noexcept
+KeyCtx::append_vector( uint64_t count,  void *vec,  msg_size_t *size,
+                       uint64_t max_size ) noexcept
 {
   if ( this->test( KEYCTX_IS_READ_ONLY ) )
     return KEY_WRITE_ILLEGAL;
@@ -1110,7 +1019,7 @@ KeyCtx::append_vector( uint64_t count,  void *vec,  uint64_t *size ) noexcept
     return KEY_OK;
 
   HashEntry & el = *this->entry;
-  uint8_t   * buf;
+  uint8_t   * buf, * end;
   void      * res;
   uint64_t    cur_size,
               msg_off,
@@ -1121,7 +1030,6 @@ KeyCtx::append_vector( uint64_t count,  void *vec,  uint64_t *size ) noexcept
               i = 0;
   KeyStatus   mstatus,
               status = KEY_OK;
-
   next_off = 0;
   for (;;) {
     vec_size = next_off + sizeof( msg_size_t ) + size[ i ];
@@ -1148,15 +1056,22 @@ KeyCtx::append_vector( uint64_t count,  void *vec,  uint64_t *size ) noexcept
       break;
     }
     case FL_SEGMENT_VALUE: {
+      uint64_t next_size;
       /* check if resize fits within current segment mem */
       if ( this->msg == NULL &&
            (mstatus = this->attach_msg( ATTACH_WRITE )) != KEY_OK )
         return mstatus;
+      if ( max_size == 0 )
+        next_size = 16 * 1024 * ( this->msg_chain_size + 1 );
+      else
+        next_size = max_size;
       /* power of 2 allocator */
       cur_size = this->msg->msg_size;
       msg_off  = align<uint64_t>( cur_size, sizeof( msg_size_t ) );
       msg_size = msg_off + vec_size;
       new_size = (uint64_t) 1 << ( 64 - __builtin_clzl( msg_size ) );
+      if ( new_size < next_size )
+        new_size = next_size;
       uint32_t hdr_size   = MsgHdr::hdr_size( this->msg->key );
       uint64_t alloc_size = MsgHdr::alloc_size( hdr_size, new_size,
                                                 this->seg_align(),
@@ -1165,33 +1080,40 @@ KeyCtx::append_vector( uint64_t count,  void *vec,  uint64_t *size ) noexcept
         this->more_serial( count, ValueCtr::SERIAL_MASK );
         this->geom.serial = el.value_ptr( this->hash_entry_size ).
                                set_serial( this->serial );
-        this->msg->msg_size = msg_size;
+        /*this->msg->msg_size = msg_size;*/
         buf = (uint8_t *) this->msg->ptr( hdr_size + msg_off );
         goto copy_vector;
       }
       /* split into chains at 16k, 2x32k, 4x64, 8x128... (total 384M) */
-      if ( this->msg_chain_size < 0xff &&
-           cur_size > 8 * 1024 * ( (uint64_t) this->msg_chain_size + 1 ) ) {
+      if ( this->msg_chain_size < 0xff ) {
+        if ( max_size != 0 ) {
+          if ( this->msg_chain_size > 2 ) /* no more than 2 * max_size */
+            return KEY_MSG_LIST_FULL;
+        }
+        else {
+          next_size += 16 * 1024;
+        }
         MsgCtx mctx( *this );
         mctx.set_key( *this->kbuf );
         mctx.set_hash( this->key, this->key2 );
         msg_off  = 0;
         msg_size = vec_size;
         new_size = (uint64_t) 1 << ( 64 - __builtin_clzl( msg_size ) );
+        if ( new_size < next_size )
+          new_size = next_size;
         if ( (mstatus = mctx.alloc_segment( &res, new_size,
-                                       this->msg_chain_size + 1 )) == KEY_OK ) {
+                                     this->msg_chain_size + 1 )) == KEY_OK ) {
           this->add_msg_chain( mctx );
           this->more_serial( count, ValueCtr::SERIAL_MASK );
           this->geom.serial = el.value_ptr( this->hash_entry_size ).
                                  set_serial( this->serial );
-          this->msg->msg_size = msg_size;
+          /*this->msg->msg_size = msg_size;*/
           buf = (uint8_t *) this->msg->ptr( hdr_size );
           goto copy_vector;
         }
         return mstatus;
       }
-      break;
-    }
+    } /* FALLTHRU */
     default:
       msg_off  = 0;
       msg_size = vec_size;
@@ -1204,31 +1126,39 @@ KeyCtx::append_vector( uint64_t count,  void *vec,  uint64_t *size ) noexcept
   if ( status == KEY_OK ) {
     buf = (uint8_t *) res;
     buf = &buf[ msg_off ];
-    if ( el.test( FL_SEGMENT_VALUE ) ) {
-      this->msg->msg_size = msg_size;
-    }
 copy_vector:;
-    for ( i = 0; ; i++ ) {
-      *(uint32_t *) (void *) buf = (uint32_t) size[ i ];
+    end = &buf[ msg_size - msg_off ];
+    i = 0;
+    do {
+      uint32_t sz = size[ i ];
+      void   * p  = ((void **) vec)[ i++ ];
+
+      *(uint32_t *) (void *) buf = sz;
       buf = &buf[ sizeof( msg_size_t ) ];
-      ::memcpy( buf, ((void **) vec)[ i ], size[ i ] );
-      if ( i + 1 == count )
-        break;
-      buf = &buf[ align<uint64_t>( size[ i ], sizeof( msg_size_t ) ) ];
-    }
+      ::memcpy( buf, p, sz );
+      sz  = align<uint64_t>( sz, sizeof( msg_size_t ) );
+      buf = &buf[ sz ];
+    } while ( buf < end );
+
+    if ( el.test( FL_SEGMENT_VALUE ) )
+      this->msg->msg_size = msg_size;
+  }
+  else if ( status == KEY_ALLOC_FAILED ) {
+    if ( max_size != 0 )
+      return KEY_MSG_LIST_FULL;
   }
   return status;
 }
 
 bool
-MsgIter::init( KeyCtx &kctx,  uint64_t idx ) noexcept
+MsgIter::init( uint64_t idx ) noexcept
 {
-  HashEntry & el = *kctx.entry;
+  HashEntry & el = *this->kctx.entry;
   /* serial is inclusive */
-  uint64_t end_idx = kctx.get_serial_count( ValueCtr::SERIAL_MASK );
+  uint64_t end_idx = this->kctx.get_serial_count( ValueCtr::SERIAL_MASK );
 
   if ( el.test( FL_SEQNO ) )
-    this->seqno = el.seqno( kctx.hash_entry_size );
+    this->seqno = el.seqno( this->kctx.hash_entry_size );
   else
     this->seqno = 0;
   if ( idx > end_idx ) {
@@ -1238,34 +1168,38 @@ MsgIter::init( KeyCtx &kctx,  uint64_t idx ) noexcept
   switch ( el.test( FL_SEGMENT_VALUE | FL_IMMEDIATE_VALUE ) ) {
     case FL_IMMEDIATE_VALUE:
       this->setup( el.immediate_value(),
-                   el.value_ctr( kctx.hash_entry_size ).size );
+                   el.value_ctr( this->kctx.hash_entry_size ).size );
       return true;
 
     case FL_SEGMENT_VALUE: {
-      if ( kctx.msg == NULL ) {
-        KeyStatus mstatus = kctx.attach_msg( KeyCtx::ATTACH_READ );
+      if ( this->kctx.msg == NULL ) {
+        KeyStatus mstatus = this->kctx.attach_msg( KeyCtx::ATTACH_READ );
         if ( mstatus != KEY_OK ) {
           this->status = mstatus;
           return false;
         }
       }
-      this->msg = kctx.msg;
-      if ( kctx.msg_chain_size > 0 ) {
+      this->msg = this->kctx.msg;
+      if ( this->kctx.msg_chain_size > 0 ) {
         ValueGeom mchain, last_mchain;
         mchain.zero(); last_mchain.zero();
+        /* the chains are stored high to low, index 0 is high, index N is low */
         for ( uint16_t i = 0; ; i++ ) {
           uint64_t seq;
           last_mchain = mchain;
-          if ( i < kctx.msg_chain_size ) {
-            kctx.msg->get_next( i, mchain, kctx.seg_align_shift );
-            seq = ( ( mchain.serial - kctx.key ) & ValueCtr::SERIAL_MASK ) + 1;
+          if ( i < this->kctx.msg_chain_size ) {
+            this->kctx.msg->get_next( i, mchain, this->kctx.seg_align_shift );
+            seq = ( ( mchain.serial - this->kctx.key )
+                  & ValueCtr::SERIAL_MASK ) + 1;
           }
           else
             seq = this->seqno;
+          /* if idx is in range or seq <= where the stream was trimmed, since
+             this->seqno is the trimmed sequence */
           if ( idx >= seq || seq <= this->seqno ) {
             if ( i != 0 ) {
               this->chain_num = i;
-              this->msg = kctx.get_chain_msg( last_mchain );
+              this->msg = this->kctx.get_chain_msg( last_mchain );
               if ( this->msg == NULL ) {
                 this->status = KEY_MUTATED;
                 return false;
@@ -1287,41 +1221,31 @@ MsgIter::init( KeyCtx &kctx,  uint64_t idx ) noexcept
   }
 }
 
-bool
-MsgIter::trim( KeyCtx &kctx,  uint64_t &idx ) noexcept
+void
+MsgIter::trim_old_chains( void ) noexcept
 {
-  HashEntry & el = *kctx.entry;
-  if ( this->seek( idx ) ) {
-    if ( this->msg_off < this->buf_size ) {
-      this->buf_size -= this->msg_off;
-      ::memmove( this->buf, &this->buf[ this->msg_off ], this->buf_size );
-      if ( this->msg == NULL )
-        el.value_ctr( kctx.hash_entry_size ).size = this->buf_size;
-      else
-        this->msg->msg_size = this->buf_size;
-    }
-    if ( this->chain_num > 0 ) {
-      for ( uint16_t i = this->chain_num; i < kctx.msg_chain_size; i++ ) {
-        ValueGeom mchain;
-        kctx.msg->get_next( i, mchain, kctx.seg_align_shift );
-        if ( mchain.size != 0 ) {
-          MsgHdr *tmp = (MsgHdr *) kctx.ht.seg_data( mchain.segment,
-                                                     mchain.offset );
-          uint16_t tmp_size;
-          if ( tmp->check_seal( kctx.key, kctx.key2, mchain.serial,
-                                 mchain.size, tmp_size ) ) {
-            Segment &seg = kctx.ht.segment( mchain.segment );
-            tmp->release();
-            seg.msg_count -= 1;
-            seg.avail_size += mchain.size;
-          }
-          mchain.size = 0;
-          kctx.msg->set_next( i, mchain, kctx.seg_align_shift );
-        }
+  if ( this->chain_num == 0 )
+    return;
+  /* the old message sequences are from chain_nun -> msg_chain_size */
+  for ( uint16_t i = this->chain_num; i < this->kctx.msg_chain_size; i++ ) {
+    ValueGeom mchain;
+    this->kctx.msg->get_next( i, mchain, this->kctx.seg_align_shift );
+    if ( mchain.size != 0 ) {
+      MsgHdr *tmp = (MsgHdr *) this->kctx.ht.seg_data( mchain.segment,
+                                                       mchain.offset );
+      uint16_t tmp_size;
+      if ( tmp != NULL &&
+           tmp->check_seal( this->kctx.key, this->kctx.key2, mchain.serial,
+                            mchain.size, tmp_size ) ) {
+        Segment &seg = this->kctx.ht.segment( mchain.segment );
+        tmp->release();
+        seg.msg_count -= 1;
+        seg.avail_size += mchain.size;
       }
+      mchain.size = 0;
+      this->kctx.msg->set_next( i, mchain, this->kctx.seg_align_shift );
     }
   }
-  return true;
 }
 
 bool
@@ -1365,13 +1289,13 @@ MsgIter::next( void ) noexcept
 /* get the value associated with the msg at index idx */
 KeyStatus
 KeyCtx::msg_value( uint64_t &from_idx,  uint64_t &to_idx,
-                   void *data,  uint64_t *size ) noexcept
+                   void *data,  msg_size_t *size ) noexcept
 {
   if ( this->entry == NULL )
     return KEY_NO_VALUE;
 
-  MsgIter iter;
-  if ( ! iter.init( *this, from_idx ) )
+  MsgIter iter( *this );
+  if ( ! iter.init( from_idx ) )
     return iter.status;
 
   uint64_t max_count = to_idx - from_idx,
@@ -1406,11 +1330,11 @@ KeyCtx::trim_msg( uint64_t new_seqno ) noexcept
     el.set( FL_IMMEDIATE_VALUE ); /* size = 0 */
   }
   else {
-    MsgIter iter;
-    if ( ! iter.init( *this, new_seqno ) )
+    MsgIter iter( *this );
+    if ( ! iter.init( new_seqno ) )
       return iter.status;
-    if ( ! iter.trim( *this, new_seqno ) )
-      return iter.status;
+    new_seqno = iter.seqno;
+    iter.trim_old_chains(); /* some msgs in list used */
   }
   if ( el.test( FL_SEQNO ) == 0 )
     this->reorganize_entry( el, FL_SEQNO );
@@ -1650,7 +1574,6 @@ kv_key_status_string( kv_key_status_t status )
     case KEY_MUTATED:       return "KEY_MUTATED";
     case KEY_WRITE_ILLEGAL: return "KEY_WRITE_ILLEGAL";
     case KEY_NO_VALUE:      return "KEY_NO_VALUE";
-    case KEY_SEG_FULL:      return "KEY_SEG_FULL";
     case KEY_TOO_BIG:       return "KEY_TOO_BIG";
     case KEY_SEG_VALUE:     return "KEY_SEG_VALUE";
     case KEY_TOMBSTONE:     return "KEY_TOMBSTONE";
@@ -1660,6 +1583,7 @@ kv_key_status_string( kv_key_status_t status )
     case KEY_USE_DROP:      return "KEY_USE_DROP";
     case KEY_NOT_MSG:       return "KEY_NOT_MSG";
     case KEY_EXPIRED:       return "KEY_EXPIRED";
+    case KEY_MSG_LIST_FULL: return "KEY_MSG_LIST_FULL";
     case KEY_MAX_STATUS:    return "KEY_MAX_STATUS";
   }
   return "unknown";
@@ -1678,7 +1602,6 @@ kv_key_status_description( kv_key_status_t status )
     case KEY_MUTATED:       return "another thread updated entry";
     case KEY_WRITE_ILLEGAL: return "no exclusive lock for write";
     case KEY_NO_VALUE:      return "key has no value attached";
-    case KEY_SEG_FULL:      return "no space in allocation segments";
     case KEY_TOO_BIG:       return "key + value + alignment is too big";
     case KEY_SEG_VALUE:     return "value is in segment";
     case KEY_TOMBSTONE:     return "key was dropped";
@@ -1689,6 +1612,7 @@ kv_key_status_description( kv_key_status_t status )
     case KEY_USE_DROP:      return "ok to use drop, end of chain";
     case KEY_NOT_MSG:       return "message size out of range";
     case KEY_EXPIRED:       return "key expired stamp less than current time";
+    case KEY_MSG_LIST_FULL: return "message list exceeds max size";
     case KEY_MAX_STATUS:    return "maximum status";
   }
   return "unknown";

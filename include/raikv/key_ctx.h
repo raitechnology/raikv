@@ -21,16 +21,16 @@ typedef enum kv_key_status_e {
   KEY_MUTATED       = 6,  /* another thread updated entry, repeat find */
   KEY_WRITE_ILLEGAL = 7,  /* no exclusive lock for write */
   KEY_NO_VALUE      = 8,  /* key has no value attached */
-  KEY_SEG_FULL      = 9,  /* no space in allocation segments */
-  KEY_TOO_BIG       = 10, /* key + value + alignment is too big (> seg_size) */
-  KEY_SEG_VALUE     = 11, /* value doesn't fit in immmediate data */
-  KEY_TOMBSTONE     = 12, /* key not valid, was dropped */
-  KEY_PART_ONLY     = 13, /* no key attached, hashes only */
-  KEY_MAX_CHAINS    = 14, /* nothing found before entry count hit max chains */
-  KEY_PATH_SEARCH   = 15, /* need a path search to acquire cuckoo entry */
-  KEY_USE_DROP      = 16, /* ok to use drop, end of chain */
-  KEY_NOT_MSG       = 17, /* message size out of range */
-  KEY_EXPIRED       = 18, /* if expire timer is less than current time */
+  KEY_TOO_BIG       = 9,  /* key + value + alignment is too big (> seg_size) */
+  KEY_SEG_VALUE     = 10, /* value doesn't fit in immmediate data */
+  KEY_TOMBSTONE     = 11, /* key not valid, was dropped */
+  KEY_PART_ONLY     = 12, /* no key attached, hashes only */
+  KEY_MAX_CHAINS    = 13, /* nothing found before entry count hit max chains */
+  KEY_PATH_SEARCH   = 14, /* need a path search to acquire cuckoo entry */
+  KEY_USE_DROP      = 15, /* ok to use drop, end of chain */
+  KEY_NOT_MSG       = 16, /* message size out of range */
+  KEY_EXPIRED       = 17, /* if expire timer is less than current time */
+  KEY_MSG_LIST_FULL = 18, /* appending msg msg_list where size is max_size */
   KEY_MAX_STATUS    = 19  /* maximum status code */
 } kv_key_status_t;
 
@@ -85,6 +85,8 @@ enum KeyCtxFlags {
   KEYCTX_NO_COPY_ON_READ   = 32,/* don't copy message on read, use seal check */
   KEYCTX_MULTI_KEY_ACQUIRE = 64 /* when multiple keys are being acquired */
 };
+
+typedef uint32_t msg_size_t;
 
 struct KeyCtx {
   HashTab      & ht;      /* operates on this table */
@@ -210,6 +212,11 @@ struct KeyCtx {
     this->next_serial( serial_mask );
     return this->get_serial_count( serial_mask );
   }
+  void get_pos_value_ctr( uint64_t &pos,  ValueCtr &ctr ) const noexcept {
+    pos = this->pos;
+    ctr = this->entry->value_ctr( this->hash_entry_size );
+  }
+  bool if_value_equals( uint64_t pos,  const ValueCtr &ctr ) const noexcept;
   /* copy on read hash entry using this->wrk->alloc() */
   HashEntry *get_work_entry( void ) {
     return (HashEntry *) this->wrk->alloc( this->hash_entry_size );
@@ -387,22 +394,28 @@ struct KeyCtx {
    * table, but copied data;  if acquire() is used, ptr will reference the shm
    * table data */
   KeyStatus value( void *ptr,  uint64_t &size ) noexcept;
-  /* append to message list, returns a ptr in *(void **) res to size mem */
-  KeyStatus append_msg( void *res,  uint64_t size ) noexcept;
+
+  /* append message size,
+   * if stream size is larger than max_size, return KEY_MSG_LIST_FULL */
+  KeyStatus append_msg( const void *res,  msg_size_t size,
+                        uint64_t max_size = 0 ) {
+    void *p = (void *) res;
+    return this->append_vector( 1, &p, &size, max_size );
+  }
   /* append a vector of count elems, where vec[ i ] -> msg @ size[ i ] */
   KeyStatus append_vector( uint64_t count,  void *vec,
-                           uint64_t *size ) noexcept;
+                           msg_size_t *size,  uint64_t max_size = 0 ) noexcept;
   /* get the geoms of the chained messages */
   ValueGeom *get_msg_chain( uint8_t i,  ValueGeom &buf ) noexcept;
   /* fetch a messsge from a message list value */
   KeyStatus msg_value( uint64_t &from_idx,  uint64_t &to_idx,
-                       void *data,  uint64_t *size ) noexcept;
+                       void *data,  msg_size_t *size ) noexcept;
   /* move hash entry elements within the struct without losing values */
   KeyStatus reorganize_entry( HashEntry &el,  uint32_t new_fl ) noexcept;
   /* set the base seqno and remove msgs < idx */
   KeyStatus trim_msg( uint64_t idx ) noexcept;
   /* value + a copy of value header which is validated as current and
-   * unmolested by mutators (which can and will happen) */
+   * unmolested by mutators */
   KeyStatus value_copy( void *ptr,  uint64_t &size,  void *cp,
                         uint64_t &cplen ) noexcept;
   /* update timestamp if not zero */
@@ -448,6 +461,7 @@ typedef uint64_t KeyCtxBuf[ sizeof( KeyCtx ) / sizeof( uint64_t ) ];
 typedef uint32_t msg_size_t;
 
 struct MsgIter {
+  KeyCtx    & kctx;
   uint8_t   * buf;
   uint64_t    msg_off,
               buf_size,
@@ -457,21 +471,21 @@ struct MsgIter {
   uint8_t     chain_num;
   KeyStatus   status;
 
-  MsgIter() : buf( 0 ), msg_off( 0 ), buf_size( 0 ), seqno( 0 ), msg_size( 0 ),
-              msg( 0 ), chain_num( 0 ), status( KEY_OK ) {}
+  MsgIter( KeyCtx &k ) : kctx( k ), buf( 0 ), msg_off( 0 ), buf_size( 0 ),
+    seqno( 0 ), msg_size( 0 ), msg( 0 ), chain_num( 0 ), status( KEY_OK ) {}
   void setup( void *b,  uint64_t sz ) {
     this->buf      = (uint8_t *) b;
     this->buf_size = sz;
     this->status   = KEY_OK;
   }
 
-  bool init( KeyCtx &kctx,  uint64_t idx ) noexcept;
-  bool trim( KeyCtx &kctx,  uint64_t &idx ) noexcept;
+  bool init( uint64_t idx ) noexcept;
+  void trim_old_chains( void ) noexcept;
   bool seek( uint64_t &idx ) noexcept;
   bool first( void ) noexcept;
   bool next( void ) noexcept;
 
-  void get_msg( uint64_t &sz,  void *&b ) {
+  void get_msg( msg_size_t &sz,  void *&b ) {
     sz = this->msg_size;
     b  = &this->buf[ this->msg_off + sizeof( msg_size_t ) ];
   }

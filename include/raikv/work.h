@@ -106,6 +106,24 @@ struct ScratchMem {
       this->release_all();
   }
 
+  bool is_valid( const void *p ) const {
+    const char * s = (const char *) p;
+    if ( s >= (char *) this->fast_buf ) {
+      if ( s < &((char *) this->fast_buf)[ this->fast_len ] )
+        return true;
+    }
+    for ( MBlock *blk = this->blk_list.hd; blk != NULL; blk = blk->next ) {
+      if ( s >= (char *) (void *) &blk[ 1 ] &&
+           s < &((char *) (void *) blk)[ this->alloc_size ] )
+        return true;
+    }
+    for ( BigBlock *bb = this->big_list.hd; bb != NULL; bb = bb->next ) {
+      if ( s >= (char *) (void *) &bb[ 1 ] &&
+           s < &((char *) (void *) bb)[ bb->hdr.size ] )
+        return true;
+    }
+    return false;
+  }
   void release_all( void ) noexcept;
   MBlock *alloc_block( void ) noexcept;      /* alloc or reuse a block */
   void release_block( MBlock *m ) noexcept;  /* free or save an empty block */

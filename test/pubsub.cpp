@@ -98,13 +98,13 @@ main( int argc, char *argv[] )
   KeyBuf      kb;
   WorkAlloc8k wrk;
   KeyCtx      kctx( *map, dbx_id, &kb );
-  void      * ptr,
-            * data[ 1024 ];
-  uint64_t    data_sz[ 1024 ],
-              data_buf[ 2048 ];
-  uint64_t    h1, h2, sz, i, j, k, t, t2,
+  void      * data[ 1024 ];
+  msg_size_t  data_sz[ 1024 ];
+  uint64_t    data_buf[ 2048 ];
+  uint64_t    h1, h2, i, j, k, t, t2,
               sum = 0, seqno = 0, sum_count = 0, m = 0,
               first = 0, last = 0;
+  msg_size_t  sz;
   HashSeed    hs;
   bool        is_first = true;
   KeyStatus   status;
@@ -113,7 +113,7 @@ main( int argc, char *argv[] )
   kb.keylen = ::strlen( su ) + 1;
   if ( kb.keylen > MAX_KEY_SIZE - 2 )
     kb.keylen = MAX_KEY_SIZE - 2;
-  ::strcpy( kb.u.buf, su );
+  ::memcpy( kb.u.buf, su, kb.keylen );
   map->hdr.get_hash_seed( 0, hs );
   hs.hash( kb, h1, h2 );
   kctx.set_hash( h1, h2 );
@@ -145,15 +145,14 @@ main( int argc, char *argv[] )
             }
           }
           else {
+            uint64_t n[ 2 ];
             sz = 8 + 8;
-            if ( (status = kctx.append_msg( &ptr, sz )) == KEY_OK ) {
-              t = get_rdtsc();
-              uint64_t *n = (uint64_t *) ptr;
-              n[ 0 ] = t;
-              n[ 1 ] = i;
+            n[ 0 ] = get_rdtsc();
+            n[ 1 ] = i;
+            if ( kctx.append_msg( n, sz ) == KEY_OK ) {
+              i++;
+              count--;
             }
-            i++;
-            count--;
           }
           kctx.release();
         }
