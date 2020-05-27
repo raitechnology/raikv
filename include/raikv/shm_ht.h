@@ -223,7 +223,7 @@ struct ThrCtxHdr {
                          ctx_seqno, /* least recently used counter */
                          pad1;
   uint16_t               seg_num,   /* use seg until exhausted */
-                         pad2;
+                         ctx_flags; /* whether busy or need signal */
   rand::xoroshiro128plus rng;       /* rand state initialized on creation */
   /* 4*7=28(int32) 2*2=4(int16) + 8*2=16(int64) + 16(rng) = 64 */
 };

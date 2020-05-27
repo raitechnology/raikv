@@ -642,6 +642,7 @@ HashTab::attach_ctx( uint64_t key ) noexcept
       el.ctx_id     = i;
       el.ctx_pid    = ::getpid();
       el.ctx_thrid  = ::syscall( SYS_gettid );
+      el.ctx_flags  = 0;
       el.db_stat_hd = MAX_STAT_ID;
       el.db_stat_tl = MAX_STAT_ID;
       if ( ++el.ctx_seqno == 0 )
