@@ -70,7 +70,7 @@ typedef enum kv_facility_e {
 /* the maximum thread context id */
 #define KV_MAX_CTX_ID       ( KV_HT_CTX_SIZE / KV_HT_THR_CTX_SIZE )
 /* shm_attach( shm_string ) */
-#define KV_DEFAULT_SHM      "sysv2m:shm.test"
+#define KV_DEFAULT_SHM      "sysv:shm.test"
 
 #ifdef __cplusplus
 }
@@ -408,6 +408,7 @@ public:
   /* attaches existing map using shm file name, kv_facility bits */
   static HashTab *attach_map( const char *map_name,  uint8_t facility,
                               HashTabGeom &geom ) noexcept; /* return geom */
+  static int remove_map( const char *map_name,  uint8_t facility ) noexcept;
   /* a shared usage context for stats and signals */
   uint32_t attach_ctx( uint64_t key ) noexcept;
   /* get a stat context for db */

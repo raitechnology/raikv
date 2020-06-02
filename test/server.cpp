@@ -161,8 +161,8 @@ int
 main( int argc, char *argv[] )
 {
   HashTabGeom   geom;
-  HashTab     * map;
   SignalHandler sighndl;
+  HashTab     * map     = NULL;
   double        ratio   = 0.5;
   uint64_t      mbsize  = 1024 * 1024 * 1024; /* 1G */
   uint32_t      entsize = 64,                 /* 64b */
@@ -173,19 +173,20 @@ main( int argc, char *argv[] )
   /* [sysv2m:shm.test] [1024] [0.5] [2+4] [1024] [64] */
   const char * mn = get_arg( argc, argv, 1, 1, "-m", KV_DEFAULT_SHM ),
              * mb = get_arg( argc, argv, 2, 1, "-s", "1024" ),
-             * ra = get_arg( argc, argv, 3, 1, "-r", "0.5" ),
-             * ab = get_arg( argc, argv, 4, 1, "-a", "2+4" ),
+             * pc = get_arg( argc, argv, 3, 1, "-k", "0.5" ),
+             * cu = get_arg( argc, argv, 4, 1, "-c", "2+4" ),
              * vz = get_arg( argc, argv, 5, 1, "-v", "1024" ),
              * ez = get_arg( argc, argv, 6, 1, "-e", "64" ),
-             * nc = get_arg( argc, argv, 0, 0, "-n", 0 ),
+             * at = get_arg( argc, argv, 0, 0, "-a", 0 ),
+             * rm = get_arg( argc, argv, 0, 0, "-r", 0 ),
              * he = get_arg( argc, argv, 0, 0, "-h", 0 );
 
   if ( he != NULL ) {
   cmd_error:;
     fprintf( stderr, "raikv version: %s\n", kv_stringify( KV_VER ) );
     fprintf( stderr,
-  "%s [-m map] [-s MB] [-r ratio] [-a cuckoo a+b] "
-     "[-v value-sz] [-e entry-sz] [-n attach]\n"
+  "%s [-m map] [-s MB] [-k ratio] [-c cuckoo a+b] "
+     "[-v value-sz] [-e entry-sz] [-a] [-r]\n"
   "  map            = name of map file (prefix w/ file:, sysv:, posix:)\n"
   "  MB             = size of HT (MB * 1024 * 1024, default 1024)\n"
   "  ratio          = entry to segment memory ratio (float 0 -> 1, def 0.5)\n"
@@ -193,7 +194,8 @@ main( int argc, char *argv[] )
   "  cuckoo a+b     = cuckoo hash arity and buckets (default 2+4)\n"
   "  value-sz       = max value size or min seg size (in KB, default 1024)\n"
   "  entry-sz       = hash entry size (multiple of 64, default 64)\n"
-  "  attach         = attach to map, don't create\n",
+  "  -a             = attach to map, don't create\n"
+  "  -r             = remove map\n",
              argv[ 0 ] );
     return 1;
   }
@@ -201,14 +203,14 @@ main( int argc, char *argv[] )
   mbsize = (uint64_t) ( strtod( mb, 0 ) * (double) ( 1024 * 1024 ) );
   if ( mbsize == 0 )
     goto cmd_error;
-  ratio = strtod( ra, 0 );
+  ratio = strtod( pc, 0 );
   if ( ratio < 0.0 || ratio > 1.0 )
     goto cmd_error;
-  if ( isdigit( ab[ 0 ] ) &&
-       ab[ 1 ] == '+' &&
-       isdigit( ab[ 2 ] ) ) {
-    arity   = ab[ 0 ] - '0';
-    buckets = atoi( &ab[ 2 ] );
+  if ( isdigit( cu[ 0 ] ) &&
+       cu[ 1 ] == '+' &&
+       isdigit( cu[ 2 ] ) ) {
+    arity   = cu[ 0 ] - '0';
+    buckets = atoi( &cu[ 2 ] );
   }
   else {
     goto cmd_error;
@@ -220,7 +222,7 @@ main( int argc, char *argv[] )
   if ( entsize == 0 )
     goto cmd_error;
 
-  if ( nc == NULL ) {
+  if ( at == NULL && rm == NULL ) {
     geom.map_size         = mbsize;
     geom.max_value_size   = ratio < 0.999 ? valsize : 0;
     geom.hash_entry_size  = align<uint32_t>( entsize, 64 );
@@ -230,9 +232,17 @@ main( int argc, char *argv[] )
     printf( "Creating map %s\n", mn );
     map = HashTab::create_map( mn, 0, geom );
   }
-  else {
+  else if ( at != NULL ) {
     printf( "Attaching map %s\n", mn );
     map = HashTab::attach_map( mn, 0, geom );
+  }
+  else {
+    if ( HashTab::remove_map( mn, 0 ) == 0 ) {
+      printf( "removed %s\n", mn );
+      return 0;
+    }
+    printf( "failed to remove %s\n", mn );
+    /* return 1 below */
   }
   if ( map == NULL )
     return 1;

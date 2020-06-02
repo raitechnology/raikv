@@ -48,13 +48,23 @@ HashTab::HashTab( const char *map_name,  const HashTabGeom &geom ) noexcept
 {
   this->initialize( map_name, geom );
 }
-                                          /* 01234567890123456 */
-const char HashTab::shared_mem_sig[ 16 ]  = "rai.kv.tab 0.1";
-static const int SHM_TYPE_IDX = 14;
-static const char ALLOC_TYPE = 'a', /* types that go in the SHM_TYPE_IDX pos */
-                  FILE_TYPE  = 'f', /* also g, h for huge 2m, huge 1g */
-                  POSIX_TYPE = 'p', /* also q, r */
-                  SYSV_TYPE  = 'v'; /* also w, x */
+                                          /* 0123456789012345 */
+const char HashTab::shared_mem_sig[ 16 ]  = "rai 0.1 sysv+1g";
+static const int SHM_TYPE_IDX  = 8;
+static const int SHM_TYPE_SIZE = 8;
+static const char * shm_type[ 4 ][ 3 ] = {
+  { "allc+4k", "allc+2m", "allc+1g" },
+  { "file+4k", "file+2m", "file+1g" },
+  { "posx+4k", "posx+2m", "posx+1g" },
+  { "sysv+4k", "sysv+2m", "sysv+1g" }
+};
+static const uint8_t ALLOC_TYPE = 0, /* types that go in the SHM_TYPE_IDX pos: */
+                     FILE_TYPE  = 1, /* 1g, 2m, 4k */
+                     POSIX_TYPE = 2,
+                     SYSV_TYPE  = 3,
+                     P2M        = 1, /* shm_type[ SYSV_TYPE ][ P2M ] */
+                     P1G        = 2,
+                     P4K        = 0;
 /* zero the shm ht context, this does not determine whether some other
    thread is using it */
 void
@@ -239,8 +249,8 @@ HashTab::alloc_map( HashTabGeom &geom ) noexcept
   if ( p == NULL )
     return NULL;
   HashTab *ht = new ( p ) HashTab( "malloc()", geom );
-  ::memcpy( ht->hdr.sig, HashTab::shared_mem_sig, sizeof( ht->hdr.sig ) );
-  ht->hdr.sig[ SHM_TYPE_IDX ] = ALLOC_TYPE;
+  ::memcpy( ht->hdr.sig, HashTab::shared_mem_sig, SHM_TYPE_IDX );
+  ::memcpy( &ht->hdr.sig[ SHM_TYPE_IDX ], shm_type[ 0 ][ 0 ], SHM_TYPE_SIZE );
   return ht;
 }
 
@@ -288,9 +298,36 @@ parse_map_name( const char *&fn )
  * https://lwn.net/Articles/374424/ */
 static const uint64_t PGSZ_2M = 2 * 1024 * 1024,
                       PGSZ_1G = 1024 * 1024 * 1024;
-static int do_file_open( const char *f,  int fl,  mode_t m ) {
-  return open( f, fl, m );
+static void
+show_perror( const char *what,  const char *map_name )
+{
+  char buf[ 1024 ];
+  size_t i = ::strlen( what );
+  ::strcpy( buf, what );
+  buf[ i++ ] = ':'; buf[ i++ ] = ' ';
+  while ( i < sizeof( buf ) )
+    if ( (buf[ i++ ] = *map_name++) == '\0' )
+      break;
+  buf[ 1023 ] = '\0';
+  ::perror( buf );
 }
+
+#ifndef MAP_HUGETLB
+/* flag set for page size */
+#define MAP_HUGETLB 0x40000
+#endif
+#ifndef MAP_HUGE_SHIFT
+/* mmap page size shift */
+#define MAP_HUGE_SHIFT 26
+#endif
+static const int MAP_PAGE_2M = MAP_HUGETLB | ( 21 << MAP_HUGE_SHIFT ),
+                 MAP_PAGE_1G = MAP_HUGETLB | ( 30 << MAP_HUGE_SHIFT );
+#ifndef SHM_HUGE_SHIFT
+/* sysv shm page size shift */
+#define SHM_HUGE_SHIFT 26
+#endif
+static const int SHM_PAGE_2M = MAP_HUGETLB | ( 21 << SHM_HUGE_SHIFT ),
+                 SHM_PAGE_1G = MAP_HUGETLB | ( 30 << SHM_HUGE_SHIFT );
 
 /* XXX this needs synchronization so that clients don't attach before
    server initializes */
@@ -303,6 +340,13 @@ HashTab::create_map( const char *map_name,  uint8_t facility,
                map_size;
   int          oflags, fd;
   void       * p;
+  key_t        key;
+  int          j, flags[ 3 ]; /* flags for normal, 2m pages, 1g pages */
+  int          mode_flags, excl, huge;
+  bool         is_file_mmap;
+
+  for ( j = 0; j < 3; j++ )
+    flags[ j ] = 0;
   
   if ( facility == 0 && (facility = parse_map_name( fn )) == 0 )
     return NULL;
@@ -310,134 +354,182 @@ HashTab::create_map( const char *map_name,  uint8_t facility,
     fprintf( stderr, "map name \"%s\" too large\n", map_name );
     return NULL;
   }
-
+#if 0
   if ( ( facility & KV_HUGE_2MB ) != 0 )
     page_align = align<uint64_t>( page_align, PGSZ_2M );
 
   if ( ( facility & KV_HUGE_1GB ) != 0 )
     page_align = align<uint64_t>( page_align, PGSZ_1G );
-
+#endif
   /* need a pid file or a lck file fo exclusive access as server */
   map_size = align<uint64_t>( geom.map_size, page_align );
   assert( map_size >= geom.map_size );
 
-  /* create with 0666 */
-  int create_flags = S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH;
-  int (*do_open)( const char *, int, mode_t ) = NULL;
-  int (*do_unlink)( const char * ) = NULL;
+  /* if normal files */
+  switch ( facility & ( KV_FILE_MMAP | KV_POSIX_SHM | KV_SYSV_SHM ) ) {
+    default:
+      fprintf( stderr, "create: bad facility 0x%x\n", facility );
+      return NULL;
 
-  if ( ( facility & KV_SYSV_SHM ) == 0 ) {
-    if ( ( facility & KV_FILE_MMAP ) != 0 ) {
-      do_open   = ::do_file_open;
-      do_unlink = ::unlink;
-    }
-    else {
-      do_open   = ::shm_open;
-      do_unlink = ::shm_unlink;
-    }
-
-    /* try exclusive open first, this may be important for NUMA mapping */
-    oflags = O_RDWR;
-    fd     = do_open( fn, oflags | O_CREAT | O_EXCL, create_flags );
-    if ( fd < 0 ) {
-      fd = do_open( fn, oflags, create_flags );
+    case KV_FILE_MMAP:
+    case KV_POSIX_SHM:
+      is_file_mmap = ( facility & KV_FILE_MMAP ) != 0;
+      /* create with 0666 */
+      mode_flags = S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH;
+      excl       = O_CREAT | O_EXCL;
+      /* try exclusive open first */
+      oflags = O_RDWR;
+      if ( is_file_mmap )
+        fd = ::open( fn, oflags | excl, mode_flags );
+      else
+        fd = ::shm_open( fn, oflags | excl, mode_flags );
       if ( fd < 0 ) {
-        ::perror( "shm_open" );
-        return NULL;
+        if ( is_file_mmap )
+          fd = ::open( fn, oflags, mode_flags );
+        else
+          fd = ::shm_open( fn, oflags, mode_flags );
+        if ( fd < 0 ) {
+          show_perror( "open", map_name );
+          return NULL;
+        }
+        ::close( fd );
+        if ( is_file_mmap )
+          ::unlink( fn );
+        else
+          ::shm_unlink( fn );
+        if ( is_file_mmap )
+          fd = ::open( fn, oflags | excl, mode_flags );
+        else
+          fd = ::shm_open( fn, oflags | excl, mode_flags );
+        if ( fd < 0 ) {
+          show_perror( "open", map_name );
+          return NULL;
+        }
+      }
+      p = MAP_FAILED;
+      if ( ::ftruncate( fd, map_size ) == -1 ) {
+        show_perror( "ftruncate", map_name );
+      }
+      else {
+        flags[ 0 ] = MAP_SHARED | MAP_POPULATE;
+        if ( ( facility & KV_HUGE_2MB ) != 0 )
+          flags[ 0 ] |= MAP_PAGE_2M;
+        else if ( ( facility & KV_HUGE_1GB ) != 0 )
+          flags[ 0 ] |= MAP_PAGE_1G;
+        else {
+          flags[ 1 ] = flags[ 0 ] | MAP_PAGE_2M;
+          flags[ 2 ] = flags[ 0 ] | MAP_PAGE_1G;
+        }
+        /* try 1g, 2m, then normal */
+        for ( j = 2; j >= 0; j-- ) {
+          if ( flags[ j ] != 0 ) {
+            p = ::mmap( 0, map_size, PROT_READ | PROT_WRITE, flags[ j ], fd, 0);
+            if ( p != MAP_FAILED )
+              break;
+          }
+        }
+        if ( p == MAP_FAILED )
+          show_perror( "mmap", map_name );
       }
       ::close( fd );
-      if ( do_unlink( fn ) < 0 ) {
-        ::perror( "shm_unlink" );
+      if ( p == MAP_FAILED ) {
+        if ( is_file_mmap )
+          ::unlink( fn );
+        else
+          ::shm_unlink( fn );
         return NULL;
       }
-      fd = do_open( fn, oflags | O_CREAT | O_EXCL, create_flags );
-      if ( fd < 0 ) {
-        perror( "shm_open" );
-        return NULL;
-      }
-    }
-  }
-  else {
-#ifndef SHM_HUGE_SHIFT
-#define SHM_HUGE_SHIFT 26
-#endif
-    /* create with 0666 */
-    int flags = SHM_R | SHM_W |
-                ( (SHM_R|SHM_W) >> 3 ) | ( (SHM_R|SHM_W) >> 6 );
-    if ( ( facility & KV_HUGE_2MB ) != 0 )
-      flags |= ( SHM_HUGETLB | (21 << SHM_HUGE_SHIFT) );
-    else if ( ( facility & KV_HUGE_1GB ) != 0 )
-      flags |= ( SHM_HUGETLB | (30 << SHM_HUGE_SHIFT) );
-    key_t key = (key_t) kv_crc_c( fn, fn == NULL ? 0 : ::strlen( fn ) + 1, 0 );
-    fd = ::shmget( key, map_size, flags | IPC_CREAT | IPC_EXCL );
-    /* try removing the existing and create again */
-    if ( fd < 0 ) {
-      fd = ::shmget( key, 0, flags );
-      if ( fd < 0 ) {
-        ::perror( "shmget" );
-        return NULL;
-      }
-      ::shmctl( fd, IPC_RMID, NULL );
-      fd = ::shmget( key, map_size, flags | IPC_CREAT | IPC_EXCL );
-      if ( fd < 0 ) {
-        ::perror( "shmget" );
-        return NULL;
-      }
-    }
-  }
+      if ( ( flags[ j ] & MAP_PAGE_2M ) == MAP_PAGE_2M )
+        huge = P2M;
+      else if ( ( flags[ j ] & MAP_PAGE_1G ) == MAP_PAGE_1G )
+        huge = P1G;
+      else
+        huge = P4K;
+      break;
 
-  if ( ( facility & KV_SYSV_SHM ) == 0 ) {
-    if ( ::ftruncate( fd, map_size ) == -1 ) {
-      ::perror( "ftruncate" );
-      ::close( fd );
-      do_unlink( fn );
-      return NULL;
-    }
-#ifndef MAP_HUGE_SHIFT
-#define MAP_HUGE_SHIFT 26
-#endif
-#ifndef MAP_HUGETLB
-#define MAP_HUGETLB 0x40000
-#endif
-    int flags = MAP_SHARED | MAP_POPULATE;
-    if ( ( facility & KV_HUGE_2MB ) != 0 )
-      flags |= ( MAP_HUGETLB | (21 << MAP_HUGE_SHIFT) );
-    else if ( ( facility & KV_HUGE_1GB ) != 0 )
-      flags |= ( MAP_HUGETLB | (30 << MAP_HUGE_SHIFT) );
-    p = ::mmap( 0, map_size, PROT_READ | PROT_WRITE, flags, fd, 0 );
-    ::close( fd );
-    if ( p == MAP_FAILED ) {
-      ::perror( "mmap" );
-      do_unlink( fn );
-      return NULL;
-    }
-  }
-  else {
-    p = ::shmat( fd, NULL, 0 );
-    if ( p == (void *) -1 ) {
-      ::perror( "shmat" );
-      ::shmctl( fd, IPC_RMID, NULL );
-      return NULL;
-    }
-  }
+    case KV_SYSV_SHM:
+      excl = IPC_CREAT | IPC_EXCL;
+      /* create with 0666 */
+      flags[ 0 ]  = SHM_R | SHM_W;
+      flags[ 0 ] |= ( flags[ 0 ] >> 3 ) | ( flags[ 0 ] >> 6 );
+      /* if not specified, try 1g, then 2m, finally 4k page sizes */
+      if ( ( facility & KV_HUGE_2MB ) != 0 )
+        flags[ 0 ] |= SHM_PAGE_2M;
+      else if ( ( facility & KV_HUGE_1GB ) != 0 )
+        flags[ 0 ] |= SHM_PAGE_1G;
+      else {
+        flags[ 1 ] = flags[ 0 ] | SHM_PAGE_2M;
+        flags[ 2 ] = flags[ 0 ] | SHM_PAGE_1G;
+      }
+      key = (key_t) kv_crc_c( fn, fn == NULL ? 0 : ::strlen( fn ) + 1, 0);
+      fd = -1;
+      /* try 1g, 2m, then normal */
+      for ( j = 2; j >= 0; j-- ) {
+        if ( flags[ j ] != 0 ) {         /* create shm id exclusive */
+          fd = ::shmget( key, map_size, flags[ j ] | excl );
+          if ( fd >= 0 )
+            break;
+        }
+      }
+      if ( fd < 0 ) {
+        for ( j = 2; j >= 0; j-- ) {
+          if ( flags[ j ] != 0 ) {        /* try getting without exclusive */
+            fd = ::shmget( key, 0, flags[ j ] );
+            if ( fd >= 0 )
+              break;
+          }
+        }
+        if ( fd >= 0 ) {
+          ::shmctl( fd, IPC_RMID, NULL ); /* remove it first, then create it */
+          fd = -1;
+          for ( j = 2; j >= 0; j-- ) {
+            if ( flags[ j ] != 0 ) {
+              fd = ::shmget( key, map_size, flags[ j ] | excl );
+              if ( fd >= 0 )
+                break;
+            }
+          }
+        }
+      }
+      if ( fd < 0 ) {
+        show_perror( "shmget", map_name );
+        return NULL;
+      }
 
+      p = ::shmat( fd, NULL, 0 );
+      if ( p == (void *) -1 ) {
+        show_perror( "shmat", map_name );
+        ::shmctl( fd, IPC_RMID, NULL );
+        return NULL;
+      }
+      if ( ( flags[ j ] & SHM_PAGE_2M ) == SHM_PAGE_2M )
+        huge = P2M;
+      else if ( ( flags[ j ] & SHM_PAGE_1G ) == SHM_PAGE_1G )
+        huge = P1G;
+      else
+        huge = P4K;
+      break;
+  }
+  /* try to lock memory */
   if ( ::mlock( p, map_size ) != 0 )
-    perror( "warning: mlock()" );
+    show_perror( "warning mlock", map_name );
+
   HashTab *ht = new ( p ) HashTab( map_name, geom );
-  ::memcpy( ht->hdr.sig, HashTab::shared_mem_sig, sizeof( ht->hdr.sig ) );
-  char huge = 0;
-  if ( ( facility & KV_HUGE_2MB ) != 0 )
-    huge = 1;
-  else if ( ( facility & KV_HUGE_1GB ) != 0 )
-    huge = 2;
-  if ( ( facility & KV_SYSV_SHM ) == 0 ) {
-    if ( ( facility & KV_FILE_MMAP ) != 0 )
-      ht->hdr.sig[ SHM_TYPE_IDX ] = FILE_TYPE + huge; /* file based */
-    else
-      ht->hdr.sig[ SHM_TYPE_IDX ] = POSIX_TYPE + huge; /* posix based */
-  }
-  else {
-    ht->hdr.sig[ SHM_TYPE_IDX ] = SYSV_TYPE + huge; /* sysv based */
+  ::memcpy( ht->hdr.sig, HashTab::shared_mem_sig, SHM_TYPE_IDX );
+
+  switch ( facility & ( KV_FILE_MMAP | KV_POSIX_SHM | KV_SYSV_SHM ) ) {
+    case KV_SYSV_SHM:
+      ::memcpy( &ht->hdr.sig[ SHM_TYPE_IDX ],
+                shm_type[ SYSV_TYPE ][ huge ], SHM_TYPE_SIZE ); /* sysv based */
+      break;
+    case KV_FILE_MMAP:
+      ::memcpy( &ht->hdr.sig[ SHM_TYPE_IDX ],
+                shm_type[ FILE_TYPE ][ huge ], SHM_TYPE_SIZE ); /* sysv based */
+      break;
+    case KV_POSIX_SHM:
+      ::memcpy( &ht->hdr.sig[ SHM_TYPE_IDX ],
+                shm_type[ POSIX_TYPE ][ huge ], SHM_TYPE_SIZE ); /* sysv based */
+      break;
   }
   remove_closed( p );
   return ht;
@@ -454,97 +546,118 @@ HashTab::attach_map( const char *map_name,  uint8_t facility,
   uint64_t     page_align = (uint64_t) ::sysconf( _SC_PAGESIZE ),
                map_size;
   void       * p;
-  int          oflags, fd;
+  int          fd, j, flags[ 3 ];
+  key_t        key;
+  bool         is_file_mmap;
   
   if ( facility == 0 && (facility = parse_map_name( fn )) == 0 )
     return NULL;
-
+#if 0
   if ( ( facility & KV_HUGE_2MB ) != 0 )
     page_align = align<uint64_t>( page_align, PGSZ_2M );
 
   if ( ( facility & KV_HUGE_1GB ) != 0 )
     page_align = align<uint64_t>( page_align, PGSZ_1G );
+#endif
+  for ( j = 0; j < 3; j++ )
+    flags[ j ] = 0;
+  switch ( facility & ( KV_FILE_MMAP | KV_POSIX_SHM | KV_SYSV_SHM ) ) {
+    default:
+      fprintf( stderr, "attach: bad facility 0x%x\n", facility );
+      return NULL;
 
-  if ( ( facility & ( KV_FILE_MMAP | KV_SYSV_SHM ) ) == 0 ) {
-    oflags = O_RDWR;
-    fd     = ::shm_open( fn, oflags, S_IREAD | S_IWRITE );
-    if ( fd < 0 ) {
-      ::perror( "shm_open" );
-      return NULL;
-    }
-  }
-  else if ( ( facility & KV_FILE_MMAP ) != 0 ) {
-    oflags = O_RDWR;
-    fd     = ::open( fn, oflags, S_IREAD | S_IWRITE );
-    if ( fd < 0 ) {
-      ::perror( "open" );
-      return NULL;
-    }
-  }
-  else {
-#ifndef SHM_HUGE_SHIFT
-#define SHM_HUGE_SHIFT 26
-#endif
-    int flags = SHM_R | SHM_W;
-    if ( ( facility & KV_HUGE_2MB ) != 0 )
-      flags |= ( SHM_HUGETLB | (21 << SHM_HUGE_SHIFT) );
-    else if ( ( facility & KV_HUGE_1GB ) != 0 )
-      flags |= ( SHM_HUGETLB | (30 << SHM_HUGE_SHIFT) );
-    key_t key = (key_t) kv_crc_c( fn, fn == NULL ? 0 : ::strlen( fn ) + 1, 0 );
-    fd = ::shmget( key, 0, flags );
-    if ( fd < 0 ) {
-      ::perror( "shmget" );
-      return NULL;
-    }
+    case KV_SYSV_SHM:
+      /* create with 0666 */
+      flags[ 0 ]  = SHM_R | SHM_W;
+      /* if not specified, try 1g, then 2m, finally 4k page sizes */
+      if ( ( facility & KV_HUGE_2MB ) != 0 )
+        flags[ 0 ] |= SHM_PAGE_2M;
+      else if ( ( facility & KV_HUGE_1GB ) != 0 )
+        flags[ 0 ] |= SHM_PAGE_1G;
+      else {
+        flags[ 1 ] = flags[ 0 ] | SHM_PAGE_2M;
+        flags[ 2 ] = flags[ 0 ] | SHM_PAGE_1G;
+      }
+      key = (key_t) kv_crc_c( fn, fn == NULL ? 0 : ::strlen( fn ) + 1, 0 );
+      fd = -1;
+      /* try 1g, 2m, then normal */
+      for ( j = 2; j >= 0; j-- ) {
+        if ( flags[ j ] != 0 ) {         /* create shm id exclusive */
+          fd = ::shmget( key, 0, flags[ j ] );
+          if ( fd >= 0 )
+            break;
+        }
+      }
+      if ( fd < 0 ) {
+        show_perror( "shmget", map_name );
+        return NULL;
+      }
+      p = ::shmat( fd, NULL, 0 );
+      if ( p == (void *) -1 ) {
+        show_perror( "shmat", map_name );
+        ::shmctl( fd, IPC_RMID, NULL );
+        return NULL;
+      }
+      ::memcpy( (void *) &hdr, p, sizeof( hdr ) );
+      map_size = align<uint64_t>( hdr.map_size, page_align );
+      if ( ::memcmp( hdr.sig, HashTab::shared_mem_sig, SHM_TYPE_IDX ) != 0 ) {
+        fprintf( stderr, "shm sig doesn't match: [%s][%s]",
+                 HashTab::shared_mem_sig, hdr.sig );
+        ::shmdt( p );
+        return NULL;
+      }
+      break;
+
+    case KV_FILE_MMAP:
+    case KV_POSIX_SHM:
+      is_file_mmap = ( facility & KV_FILE_MMAP ) != 0;
+      if ( is_file_mmap )
+        fd = ::open( fn, O_RDWR, S_IREAD | S_IWRITE );
+      else
+        fd = ::shm_open( fn, O_RDWR, S_IREAD | S_IWRITE );
+      if ( fd < 0 ) {
+        show_perror( "open", map_name );
+        return NULL;
+      }
+      if ( ::read( fd, &hdr, sizeof( hdr ) ) != sizeof( hdr ) ) {
+        show_perror( "read", map_name );
+        ::close( fd );
+        return NULL;
+      }
+      if ( ::memcmp( hdr.sig, HashTab::shared_mem_sig, SHM_TYPE_IDX ) != 0 ) {
+        fprintf( stderr, "shm sig doesn't match: [%s][%s]",
+                 HashTab::shared_mem_sig, hdr.sig );
+        ::close( fd );
+        return NULL;
+      }
+      map_size = align<uint64_t>( hdr.map_size, page_align );
+
+      flags[ 0 ] = MAP_SHARED | MAP_POPULATE;
+      if ( ( facility & KV_HUGE_2MB ) != 0 )
+        flags[ 0 ] |= MAP_PAGE_2M;
+      else if ( ( facility & KV_HUGE_1GB ) != 0 )
+        flags[ 0 ] |= MAP_PAGE_1G;
+      else {
+        flags[ 1 ] = flags[ 0 ] | MAP_PAGE_2M;
+        flags[ 2 ] = flags[ 0 ] | MAP_PAGE_1G;
+      }
+      /* try 1g, 2m, then normal */
+      p = MAP_FAILED;
+      for ( j = 2; j >= 0; j-- ) {
+        if ( flags[ j ] != 0 ) {
+          p = ::mmap( 0, map_size, PROT_READ | PROT_WRITE, flags[ j ], fd, 0);
+          if ( p != MAP_FAILED )
+            break;
+        }
+      }
+      if ( p == MAP_FAILED )
+        show_perror( "mmap", map_name );
+      ::close( fd );
+      if ( p == MAP_FAILED )
+        return NULL;
+      break;
   }
 
-  if ( ( facility & KV_SYSV_SHM ) == 0 ) {
-    if ( ::read( fd, &hdr, sizeof( hdr ) ) != sizeof( hdr ) ) {
-       perror( "read" );
-      ::close( fd );
-      return NULL;
-    }
-    if ( ::memcmp( hdr.sig, HashTab::shared_mem_sig, SHM_TYPE_IDX ) != 0 ) {
-      fprintf( stderr, "shm sig doesn't match: [%s][%s]",
-               HashTab::shared_mem_sig, hdr.sig );
-      ::close( fd );
-      return NULL;
-    }
-    map_size = align<uint64_t>( hdr.map_size, page_align );
-#ifndef MAP_HUGE_SHIFT
-#define MAP_HUGE_SHIFT 26
-#endif
-#ifndef MAP_HUGETLB
-#define MAP_HUGETLB 0x40000
-#endif
-    int flags = MAP_SHARED | MAP_POPULATE;
-    if ( ( facility & KV_HUGE_2MB ) != 0 )
-      flags |= ( MAP_HUGETLB | (21 << MAP_HUGE_SHIFT) );
-    else if ( ( facility & KV_HUGE_1GB ) != 0 )
-      flags |= ( MAP_HUGETLB | (30 << MAP_HUGE_SHIFT) );
-    p = ::mmap( 0, map_size, PROT_READ | PROT_WRITE, flags, fd, 0 );
-    ::close( fd );
-    if ( p == MAP_FAILED ) {
-      ::perror( "mmap" );
-      return NULL;
-    }
-  }
-  else {
-    p = ::shmat( fd, NULL, 0 );
-    if ( p == (void *) -1 ) {
-      ::perror( "shmat" );
-      ::shmctl( fd, IPC_RMID, NULL );
-      return NULL;
-    }
-    ::memcpy( (void *) &hdr, p, sizeof( hdr ) );
-    map_size = align<uint64_t>( hdr.map_size, page_align );
-    if ( ::memcmp( hdr.sig, HashTab::shared_mem_sig, SHM_TYPE_IDX ) != 0 ) {
-      fprintf( stderr, "shm sig doesn't match: [%s][%s]",
-               HashTab::shared_mem_sig, hdr.sig );
-      ::shmdt( p );
-      return NULL;
-    }
-  }
   geom.map_size         = hdr.map_size;
   geom.max_value_size   = hdr.max_value_size;
   geom.hash_entry_size  = hdr.hash_entry_size;
@@ -553,9 +666,74 @@ HashTab::attach_map( const char *map_name,  uint8_t facility,
   geom.cuckoo_arity     = hdr.cuckoo_arity;
 
   if ( ::mlock( p, map_size ) != 0 )
-    perror( "warning: mlock()" );
+    show_perror( "warning: mlock()", map_name );
   remove_closed( p );
   return (HashTab *) p;
+}
+
+int
+HashTab::remove_map( const char *map_name,  uint8_t facility ) noexcept
+{
+  const char * fn = map_name;
+  int          fd, j, flags[ 3 ];
+  key_t        key;
+  bool         is_file_mmap;
+  
+  if ( facility == 0 && (facility = parse_map_name( fn )) == 0 )
+    return -1;
+  for ( j = 0; j < 3; j++ )
+    flags[ j ] = 0;
+  switch ( facility & ( KV_FILE_MMAP | KV_POSIX_SHM | KV_SYSV_SHM ) ) {
+    default:
+      fprintf( stderr, "remove: bad facility 0x%x\n", facility );
+      return -1;
+
+    case KV_SYSV_SHM:
+      /* create with 0666 */
+      flags[ 0 ]  = SHM_R | SHM_W;
+      /* if not specified, try 1g, then 2m, finally 4k page sizes */
+      if ( ( facility & KV_HUGE_2MB ) != 0 )
+        flags[ 0 ] |= SHM_PAGE_2M;
+      else if ( ( facility & KV_HUGE_1GB ) != 0 )
+        flags[ 0 ] |= SHM_PAGE_1G;
+      else {
+        flags[ 1 ] = flags[ 0 ] | SHM_PAGE_2M;
+        flags[ 2 ] = flags[ 0 ] | SHM_PAGE_1G;
+      }
+      key = (key_t) kv_crc_c( fn, fn == NULL ? 0 : ::strlen( fn ) + 1, 0 );
+      fd = -1;
+      /* try 1g, 2m, then normal */
+      for ( j = 2; j >= 0; j-- ) {
+        if ( flags[ j ] != 0 ) {         /* create shm id exclusive */
+          fd = ::shmget( key, 0, flags[ j ] );
+          if ( fd >= 0 )
+            break;
+        }
+      }
+      if ( fd < 0 ) {
+        show_perror( "shmget", map_name );
+        return -1;
+      }
+      if ( ::shmctl( fd, IPC_RMID, NULL ) != 0 ) {
+        show_perror( "shmctl ipc_rmid", map_name );
+        return -1;
+      }
+      return 0;
+
+    case KV_FILE_MMAP:
+    case KV_POSIX_SHM:
+      is_file_mmap = ( facility & KV_FILE_MMAP ) != 0;
+      if ( is_file_mmap ) {
+        if ( ::unlink( fn ) != 0 ) {
+          show_perror( "unlink", map_name );
+        }
+      }
+      else {
+        if ( ::shm_unlink( fn ) != 0 )
+          show_perror( "shm_unlink", map_name );
+      }
+      return 0;
+  }
 }
 
 void
@@ -574,46 +752,44 @@ HashTab::operator delete( void *ptr ) noexcept
 int
 HashTab::close_map( void ) noexcept
 {
-  uint64_t page_align = (uint64_t) ::sysconf( _SC_PAGESIZE ),
-           map_size;
-  void   * p = (void *) this;
-  char     huge, type = 0;
-
+  uint64_t     page_align = (uint64_t) ::sysconf( _SC_PAGESIZE ),
+               map_size;
+  void       * p = (void *) this;
+  const char * s = &this->hdr.sig[ SHM_TYPE_IDX ];
   if ( p == NULL )
     return -2;
-  huge = this->hdr.sig[ SHM_TYPE_IDX ];
-  switch ( huge ) {
-    case FILE_TYPE: case FILE_TYPE+1: case FILE_TYPE+2:
-      type = FILE_TYPE;
-      break;
-    case POSIX_TYPE: case POSIX_TYPE+1: case POSIX_TYPE+2:
-      type = POSIX_TYPE;
-      break;
-    case SYSV_TYPE: case SYSV_TYPE+1: case SYSV_TYPE+2:
-      type = SYSV_TYPE;
-      break;
-    default:
-      perror( "no type" );
-      return -1;
+#if 0
+  int          i, j;
+  for ( i = 0; i < 4; i++ ) {
+    for ( j = 0; j < 3; j++ )
+      if ( ::memcmp( s, shm_type[ i ][ j ], SHM_TYPE_SIZE ) == 0 )
+        goto break_loop;
   }
+break_loop:;
   if ( huge == type + 1 )
     page_align = align<uint64_t>( page_align, PGSZ_2M );
   else if ( huge == type + 2 )
     page_align = align<uint64_t>( page_align, PGSZ_1G );
+#endif
   map_size = align<uint64_t>( this->hdr.map_size, page_align );
 
   if ( ::munlock( p, map_size ) != 0 )
-    perror( "warning: munlock()" );
+    ::perror( "warning: munlock()" );
   int status = 0;
-  if ( type == FILE_TYPE || type == POSIX_TYPE ) {
+  if ( s[ 0 ] == 'p' || s[ 0 ] == 'f' ) { /* posix or file */
     if ( ::munmap( p, map_size ) != 0 ) {
-      perror( "warning: munmap()" );
+      ::perror( "warning: munmap()" );
       status = -1;
     }
   }
-  else if ( ::shmdt( p ) != 0 ) {
-    perror( "warning: shmdt()" );
-    status = -1;
+  else if ( s[ 0 ] == 's' ) { /* sysv */
+    if ( ::shmdt( p ) != 0 ) {
+      ::perror( "warning: shmdt()" );
+      status = -1;
+    }
+  }
+  else if ( s[ 0 ] != 'a' ) {
+    fprintf( stderr, "bad close_map\n" );
   }
   add_closed( p );
   return status;
