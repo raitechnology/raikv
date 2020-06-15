@@ -1,6 +1,10 @@
 #ifndef __rai__raikv__atom_h__
 #define __rai__raikv__atom_h__
 
+#ifndef __x86_64__
+#error TODO: other arch
+#endif
+
 /* also include stdint.h */
 #ifdef __cplusplus
 extern "C" {
@@ -43,7 +47,7 @@ typedef volatile uint8_t  kv_atom_uint8_t;
   __atomic_store_n( a, val, __ATOMIC_RELAXED )
 
 #define kv_sync_load( a ) \
-  __atomic_load_n( a, __ATOMIC_RELAXED )
+  __atomic_load_n( a, __ATOMIC_ACQUIRE )
 
 #define kv_acquire_fence() \
   __atomic_thread_fence( __ATOMIC_ACQUIRE )
@@ -67,15 +71,16 @@ typedef volatile uint8_t  kv_atom_uint8_t;
   __sync_fetch_and_sub( a, val )
 
 #define kv_sync_store( a, val ) \
-  *(a) = val
+  kv_sync_sfence(); *(a) = val
 
 #define kv_sync_load( a ) \
-  *(a)
+  *(a); kv_sync_sfence()
 
-#define kv_acquire_fence() /* nothing for x86 */
+#define kv_acquire_fence() \
+  kv_sync_sfence() /* nothing for x86 */
 
-#define kv_release_fence() /* nothing for x86 */
-/* probably should assert arch == x86 */
+#define kv_release_fence() \
+  kv_sync_sfence() /* nothing for x86 */
 #endif
 
 static inline int
