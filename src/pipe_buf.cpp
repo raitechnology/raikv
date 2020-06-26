@@ -37,19 +37,20 @@ PipeBuf::open( const char *name,  bool do_create ) noexcept
     }
   }
   if ( fd < 0 ) {
-    ::perror( "shm_open" );
+    if ( do_create )
+      ::perror( name );
     return NULL;
   }
   if ( do_create ) {
     if ( ::ftruncate( fd, sizeof( PipeBuf ) ) != 0 ) {
-      ::perror( "ftruncate" );
+      ::perror( name );
       goto done;
     }
   }
   p = ::mmap( 0, sizeof( PipeBuf ), PROT_READ | PROT_WRITE,
               MAP_SHARED | MAP_POPULATE, fd, 0 );
   if ( p == MAP_FAILED ) {
-    ::perror( "mmap" );
+    ::perror( name );
     goto done;
   }
   ::close( fd );

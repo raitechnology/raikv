@@ -9,6 +9,8 @@
 namespace rai {
 namespace kv {
 
+/* these sync_set()/get() don't do much on x86_64 other than make sure the
+ * compiler doesn't reorder the lines of code when optimizing */
 template <class Int>
 static inline void sync_set( volatile Int &a,  const Int val ) {
   kv_sync_store( &a, val );
@@ -20,7 +22,7 @@ static inline Int sync_get( volatile Int &val ) {
   return a;
 }
 
-/* PipeBuf is a single producer, single consumer structure */
+/* A pointer into the pipe buffer has it's own cache line */
 struct PipePtr {
   union {
     uint64_t val; /* location of head or tail in buffer */
@@ -36,41 +38,75 @@ struct PipePtr {
   }
 };
 
+/* A message begins with a length header */
 struct PipeMsg {
-  uint64_t length; /* 0 = terminates msg list, >= IS_PADDING pads out to edge */
-  /* data follows */
+  uint64_t length; /* 0 = terminates msg list, high bits can contain flags */
+  /* data or padding follows */
 };
 
+/* Useful to kill( pid ), see if the other process is still alive */
 struct PipeInfo { /* the producer, src ident, and consumer, dest ident */
   union {
     struct {
-      uint32_t src_ctx_id, /* uniquely identify endpoints */
-               src_pid,
-               src_seqno,
-               dest_ctx_id,
-               dest_pid,
-               dest_seqno;
+      uint32_t snd_ctx_id, /* uniquely identify endpoints */
+               snd_pid,
+               rcv_ctx_id,
+               rcv_pid;
     } x;
     uint8_t cache_line[ 64 ];
   };
 };
 
-/* this is loosely based on Aeron single producer, single consumer */
+/* Consumers can use this for zero copy reading, access the buffer, then
+ * update the consumer_head pointer when finished */
+struct PipeReadCtx {
+  void   * data;
+  uint64_t data_len,
+           next_head,
+           fl;
+};
+
+/* Producer use this for writing vectors of messages */
+struct PipeWriteCtx {
+  uint64_t rec_len,
+           required,
+           tail,
+           record_idx,
+           available,
+           padding;
+};
+
+/* This is loosely based on Aeron's single producer, single consumer ringbuf */
 struct PipeBuf {
-  static const uint64_t CAPACITY   = 64 * 1024, /* must be power ^ 2 */
+  static const uint64_t CAPACITY   = 512 * 1024, /* must be power ^ 2 */
                         MASK       = CAPACITY - 1,
                         HDR_LEN    = sizeof( PipeMsg ),
-                        IS_PADDING = CAPACITY;
+                        IS_PADDING = ( CAPACITY << 1 ),
+                        FLAG2      = ( CAPACITY << 2 ),
+                        FLAG3      = ( CAPACITY << 3 );
   uint8_t  buf[ CAPACITY ];
 
+  /* These are always incrementing, wrapping is done by masking the values to
+   * the length of the pipe
+   *
+   *   pipe buffer
+   * +------------------------------------------------------------+
+   * |         ^               ^                      ^           |
+   * |         |               |                      |           |
+   * |       producer_head   consumer_head          producer_tail |
+   *
+   * The producer_head is always behind or equal to the consumer_head
+   * because it is only copied from the consumer when the producer_tail
+   * wraps around and no space is left.  This avoids unnecessary cache line
+   * bouncing from producer to consumer.  The producer_tail is never read
+   * by the consumer, instead the terminating record is zero length.  A
+   * consumer can check whether data is available by reading the record
+   * lenght at the consumer_head -- when non-zero, it is available.  */
   struct PipeMeta {
     PipeInfo owner;
-    /* producer write msgs here */
-    PipePtr  tail_position;
-    /* producer reads here, until full, then reads the consumer side */
-    PipePtr  producer_head_position;
-    /* consumer reads here, and updates after consuming */
-    PipePtr  consumer_head_position;
+    PipePtr  tail_counter,          /* producer write msgs here */
+             producer_head_counter, /* producer reads here */
+             consumer_head_counter; /* consumer reads here */
   } x;
 
   static PipeBuf *open( const char *name,  bool do_create ) noexcept;
@@ -78,38 +114,66 @@ struct PipeBuf {
   void close( void ) noexcept;
   static int unlink( const char *name ) noexcept;
 
-  void set_rec_length( uint64_t off,  uint64_t length ) {
+  void set_rec_length( uint64_t off,  uint64_t length,  uint64_t fl = 0 ) {
     PipeMsg & r = *(PipeMsg *) &this->buf[ off ];
-    sync_set<uint64_t>( r.length, length );
+    sync_set<uint64_t>( r.length, length | fl );
   }
 
-  uint64_t get_rec_length( uint64_t off ) {
+  uint64_t get_rec_length( uint64_t off,  uint64_t &fl ) {
     PipeMsg & r = *(PipeMsg *) &this->buf[ off ];
-    return sync_get<uint64_t>( r.length );
+    fl = sync_get<uint64_t>( r.length );
+    return fl & MASK;
+  }
+
+  bool read_ctx( PipeReadCtx &ctx ) {
+    for (;;) {
+      const uint64_t head     = this->x.consumer_head_counter,
+                     head_idx = head & MASK;
+      ctx.data_len = this->get_rec_length( head_idx, ctx.fl );
+
+      if ( (ctx.fl & IS_PADDING) == 0 ) {
+        if ( ctx.data_len == 0 )
+          return false;
+        ctx.data = &this->buf[ head_idx + HDR_LEN ];
+        ctx.next_head =
+          head + align<uint64_t>( HDR_LEN + ctx.data_len, HDR_LEN );
+        return true;
+      }
+      /* is padding, consume it */
+      this->x.consumer_head_counter = head + HDR_LEN + ctx.data_len;
+    }
+  }
+  void consume_ctx( PipeReadCtx &ctx ) {
+    this->x.consumer_head_counter = ctx.next_head;
   }
 
   uint64_t read( void *data,  size_t data_size ) {
     for (;;) {
-      const uint64_t head     = this->x.consumer_head_position;
-      const uint64_t head_idx = head & MASK;
-      const uint64_t data_len = this->get_rec_length( head_idx );
+      uint64_t       fl;
+      const uint64_t head     = this->x.consumer_head_counter,
+                     head_idx = head & MASK,
+                     data_len = this->get_rec_length( head_idx, fl );
 
-      if ( data_len < IS_PADDING ) {
+      if ( (fl & IS_PADDING) == 0 ) {
         if ( data_len == 0 )
           return 0;
         if ( data_size > data_len )
           data_size = data_len;
         ::memcpy( data, &this->buf[ head_idx + HDR_LEN ], data_size );
-        this->x.consumer_head_position =
+        this->x.consumer_head_counter =
           head + align<uint64_t>( HDR_LEN + data_len, HDR_LEN );
         return data_size;
       }
       /* is padding, consume it */
-      this->x.consumer_head_position = head + HDR_LEN + ( data_len & MASK );
+      this->x.consumer_head_counter = head + HDR_LEN + data_len;
     }
   }
 
-  uint64_t write( const void *data,  size_t data_len ) {
+  static uint64_t wrap_size( const uint64_t tail, const uint64_t head ) {
+    return CAPACITY - ( ( tail - head ) & MASK );
+  }
+
+  bool alloc_space( PipeWriteCtx &ctx,  uint64_t data_len ) {
     /* |<- used ->|<-- capacity ---------------------------->|
      * +----...---+------------------------------------------+
      * |   data   | PipeMsg |  data_len   | | PipeMsg |      |
@@ -119,46 +183,54 @@ struct PipeBuf {
      **/
     /* rec_len must be aligned with HDR_LEN, so there is never a buffer
      * fragment smaller or larger than HDR_LEN */
-    const uint64_t rec_len  = align<uint64_t>( HDR_LEN + data_len, HDR_LEN );
-    const uint64_t required = rec_len + HDR_LEN; /* terminate record w/zero */
-    const uint64_t tail     = this->x.tail_position; /* write msgs here */
+    uint64_t head = this->x.producer_head_counter;
 
-    uint64_t head       = this->x.producer_head_position;
-    uint64_t available  = CAPACITY - ( ( tail - head ) & MASK );
-    uint64_t record_idx = tail & MASK;
-    uint64_t padding    = 0;
+    ctx.rec_len    = align<uint64_t>( HDR_LEN + data_len, HDR_LEN );
+    ctx.required   = ctx.rec_len + HDR_LEN; /* terminate record w/zero */
+    ctx.tail       = this->x.tail_counter; /* write msgs here */
+    ctx.record_idx = ctx.tail & MASK;
+    ctx.available  = wrap_size( ctx.tail, head );
+    ctx.padding    = 0;
 
     /* check if have space */
-    if ( required > available ) {
-      head      = this->x.consumer_head_position; /* load from read side */
-      available = CAPACITY - ( ( tail - head ) & MASK );
-      if ( required > available ) /* full */
-        return 0;
-      this->x.producer_head_position = head;
+    if ( ctx.required > ctx.available ) {
+      head = this->x.consumer_head_counter; /* load from read side */
+      ctx.available = wrap_size( ctx.tail, head );
+      if ( ctx.required > ctx.available ) /* full */
+        return false;
+      this->x.producer_head_counter = head;
     }
     /* check if wraps around buffer */
-    if ( required > CAPACITY - record_idx ) {
-      uint64_t head_idx = head & MASK;
-      padding = CAPACITY - record_idx;
+    if ( ctx.required > CAPACITY - ctx.record_idx ) {
+      ctx.available = head & MASK;
+      ctx.padding   = CAPACITY - ctx.record_idx;
       /* head is offset from zero, where rec starts */
-      if ( required > head_idx ) {
-        head     = this->x.consumer_head_position;
-        head_idx = head & MASK;
+      if ( ctx.required > ctx.available ) {
+        head          = this->x.consumer_head_counter;
+        ctx.available = head & MASK;
 
-        if ( required > head_idx ) /* rec_len + padding exceeds avail */
-          return 0;
-        this->x.producer_head_position = head;
+        if ( ctx.required > ctx.available ) /* rec_len + padding exceeds avail*/
+          return false;
+        this->x.producer_head_counter = head;
       }
       this->set_rec_length( 0, 0 );
-      this->set_rec_length( record_idx, ( padding - HDR_LEN ) | IS_PADDING );
-      record_idx = 0;
+      this->set_rec_length( ctx.record_idx, ctx.padding - HDR_LEN, IS_PADDING );
+      ctx.record_idx = 0;
     }
+    return true;
+  }
 
-    ::memcpy( &this->buf[ record_idx + HDR_LEN ], data, data_len );
-    this->set_rec_length( record_idx + rec_len, 0 ); /* terminate w/zero */
+  uint64_t write( const void *data,  size_t data_len,  uint64_t fl = 0 ) {
+    PipeWriteCtx ctx;
+    if ( ! this->alloc_space( ctx, data_len ) )
+      return 0;
+
+    ::memcpy( &this->buf[ ctx.record_idx + HDR_LEN ], data, data_len );
+    /* terminate w/zero */
+    this->set_rec_length( ctx.record_idx + ctx.rec_len, 0 );
     /* mem fence here if not total store ordered cpu */
-    this->set_rec_length( record_idx, data_len );    /* data is valid now */
-    this->x.tail_position = tail + rec_len + padding;
+    this->set_rec_length( ctx.record_idx, data_len, fl );    /* data is valid now */
+    this->x.tail_counter = ctx.tail + ctx.rec_len + ctx.padding;
 
     return data_len;
   }
