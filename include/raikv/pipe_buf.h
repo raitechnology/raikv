@@ -115,13 +115,13 @@ struct PipeBuf {
   static int unlink( const char *name ) noexcept;
 
   void set_rec_length( uint64_t off,  uint64_t length,  uint64_t fl = 0 ) {
-    PipeMsg & r = *(PipeMsg *) &this->buf[ off ];
-    sync_set<uint64_t>( r.length, length | fl );
+    PipeMsg * r = (PipeMsg *) (void *) &this->buf[ off ];
+    sync_set<uint64_t>( r->length, length | fl );
   }
 
   uint64_t get_rec_length( uint64_t off,  uint64_t &fl ) {
-    PipeMsg & r = *(PipeMsg *) &this->buf[ off ];
-    fl = sync_get<uint64_t>( r.length );
+    PipeMsg * r = (PipeMsg *) (void *) &this->buf[ off ];
+    fl = sync_get<uint64_t>( r->length );
     return fl & MASK;
   }
 
