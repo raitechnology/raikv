@@ -211,7 +211,8 @@ HashTab::initialize( const char *map_name,  const HashTabGeom &geom ) noexcept
     rand::xoroshiro128plus &rng = this->ctx[ j ].rng;
     rng.init( (void *) &buf[ i ], sizeof( uint64_t ) * 2 );
     i += 2;
-    this->ctx[ j ].seg_num = rng.next() % nsegs;
+    if ( nsegs > 0 )
+      this->ctx[ j ].seg_num = rng.next() % nsegs;
   }
   for ( j = 0; j < DB_COUNT; j++ ) {
     this->hdr.seed[ j ].hash1 = buf[ i ];
@@ -333,7 +334,7 @@ static const int SHM_PAGE_2M = MAP_HUGETLB | ( 21 << SHM_HUGE_SHIFT ),
    server initializes */
 HashTab *
 HashTab::create_map( const char *map_name,  uint8_t facility,
-                     HashTabGeom &geom ) noexcept
+                     HashTabGeom &geom,  int map_mode /*0666*/) noexcept
 {
   const char * fn         = map_name;
   uint64_t     page_align = (uint64_t) ::sysconf( _SC_PAGESIZE ),
@@ -375,8 +376,9 @@ HashTab::create_map( const char *map_name,  uint8_t facility,
     case KV_POSIX_SHM:
       is_file_mmap = ( facility & KV_FILE_MMAP ) != 0;
       /* create with 0666 */
-      mode_flags = S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH;
-      excl       = O_CREAT | O_EXCL;
+      mode_flags  = S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH;
+      mode_flags &= map_mode;
+      excl        = O_CREAT | O_EXCL;
       /* try exclusive open first */
       oflags = O_RDWR;
       if ( is_file_mmap )
@@ -452,6 +454,7 @@ HashTab::create_map( const char *map_name,  uint8_t facility,
       /* create with 0666 */
       flags[ 0 ]  = SHM_R | SHM_W;
       flags[ 0 ] |= ( flags[ 0 ] >> 3 ) | ( flags[ 0 ] >> 6 );
+      flags[ 0 ] &= map_mode;
       /* if not specified, try 1g, then 2m, finally 4k page sizes */
       if ( ( facility & KV_HUGE_2MB ) != 0 )
         flags[ 0 ] |= SHM_PAGE_2M;
@@ -665,8 +668,9 @@ HashTab::attach_map( const char *map_name,  uint8_t facility,
   geom.cuckoo_buckets   = hdr.cuckoo_buckets;
   geom.cuckoo_arity     = hdr.cuckoo_arity;
 
-  if ( ::mlock( p, map_size ) != 0 )
-    show_perror( "warning: mlock()", map_name );
+  ::mlock( p, map_size ); /* ignore the warning, the create() will show it */
+  /*if ( ::mlock( p, map_size ) != 0 )*/
+    /*show_perror( "warning: mlock()", map_name )*/;
   remove_closed( p );
   return (HashTab *) p;
 }
@@ -954,10 +958,11 @@ kv_alloc_map( kv_geom_t *geom )
 }
 
 kv_hash_tab_t *
-kv_create_map( const char *map_name,  uint8_t facility,  kv_geom_t *geom )
+kv_create_map( const char *map_name,  uint8_t facility,  kv_geom_t *geom,
+               int map_mode )
 {
   return (kv_hash_tab_t *) (void *)
-         rai::kv::HashTab::create_map( map_name, facility, *geom );
+         rai::kv::HashTab::create_map( map_name, facility, *geom, map_mode );
 }
 
 kv_hash_tab_t *

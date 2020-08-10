@@ -279,6 +279,8 @@ CuckooAltHash::find_cuckoo_path( CuckooPosition &cp ) noexcept
                   kctx.incr_cuckfet( fetch_cnt );
                   kctx.incr_cuckmov( move_cnt );
                   /*kctx.incr_cuckbiz( busy_cnt );*/
+                  if ( status == KEY_OK || status == KEY_IS_NEW )
+                    kctx.incr_write();
                   return status;
                 }
                 status = fr_kctx.try_acquire_position( vis->from_pos );

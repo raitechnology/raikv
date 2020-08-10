@@ -181,14 +181,23 @@ pipe_test_lnk  = -lraikv
 
 $(bind)/pipe_test: $(pipe_test_objs) $(pipe_test_libs)
 
+zipf_test_objs = $(objd)/zipf_test.o
+zipf_test_deps = $(dependd)/zipf_test.d
+zipf_test_libs = $(libd)/libraikv.so
+zipf_test_lnk  = -lraikv
+
+$(bind)/zipf_test: $(zipf_test_objs) $(zipf_test_libs)
+
 all_exes    += $(bind)/kv_test $(bind)/hash_test $(bind)/ping \
                $(bind)/kv_cli $(bind)/mcs_test $(bind)/kv_server \
 	       $(bind)/load $(bind)/rela_test $(bind)/ctest \
-	       $(bind)/pq_test $(bind)/pubsub $(bind)/pipe_test
+	       $(bind)/pq_test $(bind)/pubsub $(bind)/pipe_test \
+	       $(bind)/zipf_test
 all_depends += $(kv_test_deps) $(hash_test_deps) $(ping_deps) \
                $(kv_cli_deps) $(mcs_test_deps) $(kv_server_deps) \
 	       $(load_deps) $(rela_test_deps) $(ctest_deps) \
-	       $(pq_test_deps) $(pubsub_deps) $(pipe_test_deps)
+	       $(pq_test_deps) $(pubsub_deps) $(pipe_test_deps) \
+	       $(zipf_test)
 
 all_dirs := $(bind) $(libd) $(objd) $(dependd)
 

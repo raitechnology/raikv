@@ -7,6 +7,7 @@
 #include <fcntl.h>
 #include <math.h>
 #include <ctype.h>
+#include <errno.h>
 
 #include <raikv/shm_ht.h>
 
@@ -97,10 +98,14 @@ check_thread_ctx( HashTab &map )
   uint32_t hash_entry_size = map.hdr.hash_entry_size;
   for ( uint32_t ctx_id = 1; ctx_id < MAX_CTX_ID; ctx_id++ ) {
     uint32_t pid = map.ctx[ ctx_id ].ctx_pid;
-    if ( pid == 0 ||
-         map.ctx[ ctx_id ].ctx_id == KV_NO_CTX_ID ||
-         ::kill( pid, 0 ) == 0 )
+    if ( pid == 0 || map.ctx[ ctx_id ].ctx_id == KV_NO_CTX_ID )
       continue;
+    if ( ::kill( pid, 0 ) == 0 )
+      continue;
+    if ( errno == EPERM )
+      continue;
+    printf( "ctx %u: pid %u = kill errno %d/%s\n",
+            ctx_id, pid, errno, strerror( errno ) );
 
     uint64_t used, recovered = 0;
     if ( (used = map.ctx[ ctx_id ].mcs_used) != 0 ) {
@@ -175,6 +180,7 @@ main( int argc, char *argv[] )
              * mb = get_arg( argc, argv, 2, 1, "-s", "1024" ),
              * pc = get_arg( argc, argv, 3, 1, "-k", "0.5" ),
              * cu = get_arg( argc, argv, 4, 1, "-c", "2+4" ),
+             * mo = get_arg( argc, argv, 4, 1, "-o", "ug+rw" ),
              * vz = get_arg( argc, argv, 5, 1, "-v", "1024" ),
              * ez = get_arg( argc, argv, 6, 1, "-e", "64" ),
              * at = get_arg( argc, argv, 0, 0, "-a", 0 ),
@@ -187,13 +193,14 @@ main( int argc, char *argv[] )
     fprintf( stderr,
   "%s [-m map] [-s MB] [-k ratio] [-c cuckoo a+b] "
      "[-v value-sz] [-e entry-sz] [-a] [-r]\n"
-  "  map            = name of map file (prefix w/ file:, sysv:, posix:)\n"
-  "  MB             = size of HT (MB * 1024 * 1024, default 1024)\n"
-  "  ratio          = entry to segment memory ratio (float 0 -> 1, def 0.5)\n"
-  "                   (1 = all ht, 0 = all msg -- must have some ht)\n"
-  "  cuckoo a+b     = cuckoo hash arity and buckets (default 2+4)\n"
-  "  value-sz       = max value size or min seg size (in KB, default 1024)\n"
-  "  entry-sz       = hash entry size (multiple of 64, default 64)\n"
+  "  -m map         = name of map file (prefix w/ file:, sysv:, posix:)\n"
+  "  -s MB          = size of HT (MB * 1024 * 1024, default 1024)\n"
+  "  -k ratio       = entry to segment memory ratio (float 0 -> 1, def 0.5)\n"
+  "                  (1 = all ht, 0 = all msg -- must have some ht)\n"
+  "  -c cuckoo a+b  = cuckoo hash arity and buckets (default 2+4)\n"
+  "  -o mode        = create map using mode (default: ug+rw)\n"
+  "  -v value-sz    = max value size or min seg size (in KB, default 1024)\n"
+  "  -e entry-sz    = hash entry size (multiple of 64, default 64)\n"
   "  -a             = attach to map, don't create\n"
   "  -r             = remove map\n",
              argv[ 0 ] );
@@ -223,14 +230,28 @@ main( int argc, char *argv[] )
     goto cmd_error;
 
   if ( at == NULL && rm == NULL ) {
+    int mode, x;
     geom.map_size         = mbsize;
     geom.max_value_size   = ratio < 0.999 ? valsize : 0;
     geom.hash_entry_size  = align<uint32_t>( entsize, 64 );
     geom.hash_value_ratio = ratio;
     geom.cuckoo_buckets   = buckets;
     geom.cuckoo_arity     = arity;
-    printf( "Creating map %s\n", mn );
-    map = HashTab::create_map( mn, 0, geom );
+    mode = atoi( mo );
+    if ( mode == 0 ) {
+      x = mode = 0;
+      if ( ::strchr( mo, 'r' ) != NULL ) x = 4;
+      if ( ::strchr( mo, 'w' ) != NULL ) x |= 2;
+      if ( ::strchr( mo, 'u' ) != NULL ) mode |= x << 6;
+      if ( ::strchr( mo, 'g' ) != NULL ) mode |= x << 3;
+      if ( ::strchr( mo, 'o' ) != NULL ) mode |= x;
+    }
+    if ( mode == 0 ) {
+      fprintf( stderr, "Invalide create map mode: %s (0%o)\n", mo, mode );
+      goto cmd_error;
+    }
+    printf( "Creating map %s, mode %s (0%o)\n", mn, mo, mode );
+    map = HashTab::create_map( mn, 0, geom, mode );
   }
   else if ( at != NULL ) {
     printf( "Attaching map %s\n", mn );

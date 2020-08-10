@@ -7,6 +7,7 @@
 #include <ctype.h>
 #include <pthread.h>
 #include <signal.h>
+#include <errno.h>
 
 #define SPRINTF_RELA_TIME
 #include <raikv/shm_ht.h>
@@ -108,9 +109,11 @@ fix_locks( void )
   uint32_t hash_entry_size = map->hdr.hash_entry_size;
   for ( uint32_t c = 1; c < MAX_CTX_ID; c++ ) {
     uint32_t pid = map->ctx[ c ].ctx_pid;
-    if ( pid == 0 ||
-         map->ctx[ c ].ctx_id == KV_NO_CTX_ID ||
-         ::kill( pid, 0 ) == 0 )
+    if ( pid == 0 || map->ctx[ c ].ctx_id == KV_NO_CTX_ID )
+      continue;
+    if ( ::kill( pid, 0 ) == 0 )
+      continue;
+    if ( errno == EPERM )
       continue;
 
     uint64_t used, recovered = 0;
@@ -174,6 +177,8 @@ print_stats( uint32_t c )
         alive = 1;
         if ( ::kill( pid, 0 ) == 0 )
           alive = 2;
+        else if ( errno == EPERM )
+          alive = 3;
       }
     }
     xprintf( "ctx %u%c:  pid %u, read %lu, write %lu, spin %lu, chains %lu, "

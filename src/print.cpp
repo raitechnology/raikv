@@ -33,7 +33,6 @@ char *
 rai::kv::print_map_geom( HashTab *map,  uint32_t ctx_id,  char *buf,
                          size_t buflen ) noexcept
 {
-  char sbuf[ 64 ];
   if ( buf == NULL ) {
     buf = default_buf;
     buflen = sizeof( default_buf );
@@ -46,6 +45,7 @@ rai::kv::print_map_geom( HashTab *map,  uint32_t ctx_id,  char *buf,
   xnprintf( b, sz, "map_size:             %lu (%.3fMB) (config)\n",
             map->hdr.map_size,
             (double) map->hdr.map_size / ( 1024.0 * 1024.0 ) );
+  char sbuf[ 64 ];
   xnprintf( b, sz, "created:              %s\n",
             timestamp( map->hdr.create_stamp, 0, sbuf, sizeof( sbuf ) ) );
   xnprintf( b, sz, "max_value_size:       %u (config)\n",

@@ -70,7 +70,7 @@ typedef enum kv_facility_e {
 /* the maximum thread context id */
 #define KV_MAX_CTX_ID       ( KV_HT_CTX_SIZE / KV_HT_THR_CTX_SIZE )
 /* shm_attach( shm_string ) */
-#define KV_DEFAULT_SHM      "sysv:shm.test"
+#define KV_DEFAULT_SHM      "sysv:raikv.shm"
 
 #ifdef __cplusplus
 }
@@ -402,12 +402,12 @@ public:
   }
   /* allocate new map using malloc */
   static HashTab *alloc_map( HashTabGeom &geom ) noexcept;
-  /* initialize new map using shm file name, kv_facility bits */
+  /* initialize new map using shm file name, kv_facility bits and geom */
   static HashTab *create_map( const char *map_name,  uint8_t facility,
-                              HashTabGeom &geom ) noexcept; /* mk using geom */
-  /* attaches existing map using shm file name, kv_facility bits */
+                              HashTabGeom &geom,  int map_mode ) noexcept;
+  /* attaches existing map using shm file name, kv_facility bits, return geom */
   static HashTab *attach_map( const char *map_name,  uint8_t facility,
-                              HashTabGeom &geom ) noexcept; /* return geom */
+                              HashTabGeom &geom ) noexcept;
   static int remove_map( const char *map_name,  uint8_t facility ) noexcept;
   /* a shared usage context for stats and signals */
   uint32_t attach_ctx( uint64_t key ) noexcept;
@@ -462,9 +462,9 @@ extern "C" {
 
 kv_hash_tab_t *kv_alloc_map( kv_geom_t *geom );
 kv_hash_tab_t *kv_create_map( const char *map_name,  uint8_t facility,
-                             kv_geom_t *geom );
+                              kv_geom_t *geom,  int map_mode );
 kv_hash_tab_t *kv_attach_map( const char *map_name,  uint8_t facility,
-                             kv_geom_t *geom );
+                              kv_geom_t *geom );
 void kv_close_map( kv_hash_tab_t *ht );
 
 /* calculate % load and return it, 0 <= load < 1.0 */

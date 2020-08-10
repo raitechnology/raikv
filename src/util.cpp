@@ -31,74 +31,72 @@ newhash_mix( uint64_t &a,  uint64_t &b,  uint64_t &c ) /* Bob Jenkins */
 }
 
 static void
-xor_random_bytes( void *out,  uint16_t outsz,  void *in,  uint16_t insz )
+xor_bytes( void *out,  uint16_t outsz,  void *in,  uint16_t insz )
 {
-  for ( uint16_t i = 0, j = 0; i < outsz || j < insz; i++, j++ ) {
-    ((uint8_t *) out)[ i % outsz ] ^= ((uint8_t *) in)[ j % insz ];
-  }
+  if ( insz > 0 )
+    for ( uint32_t i = 0; i < outsz; i++ )
+      ((uint8_t *) out)[ i ] ^= ((uint8_t *) in)[ i % insz ];
 }
 
-bool
+void
 rai::kv::rand::fill_urandom_bytes( void *buf,  uint16_t sz ) noexcept
 {
-  /* static pattern, doesn't change from run to run */
-  static uint64_t counter = 100001;
-  static uint64_t x = newhash_magic, y = newhash_magic;
-  uint64_t tmp[ 64 * 1024 / sizeof( uint64_t ) ];
-  uint16_t i;
-  for ( i = 0; i < sz; i += sizeof( uint64_t ) ) {
-    tmp[ i / sizeof( uint64_t ) ] = counter++;
-    newhash_mix( x, y, tmp[ i / sizeof( uint64_t ) ] );
+  if ( ::getenv( "RAIKV_STATIC_RANDOM" ) != NULL ) {
+    /* static pattern, doesn't change from run to run, for debug */
+    static uint64_t counter = 100001;
+    static uint64_t x = newhash_magic, y = newhash_magic;
+    uint64_t tmp[ 64 * 1024 / sizeof( uint64_t ) ];
+    uint16_t i;
+    for ( i = 0; i < sz; i += sizeof( uint64_t ) ) {
+      tmp[ i / sizeof( uint64_t ) ] = counter++;
+      newhash_mix( x, y, tmp[ i / sizeof( uint64_t ) ] );
+    }
+    ::memcpy( buf, tmp, sz );
   }
-  ::memcpy( buf, tmp, sz );
-  return true;
+  else {
+    static uint8_t ubuf[ 16384 ];
+    static int32_t nbytes;
+    while ( sz > 0 ) {
+      if ( nbytes <= 0 ) {
+        int fd = ::open( "/dev/urandom", O_RDONLY );
+        if ( fd >= 0 ) {
+          nbytes = ::read( fd, ubuf, sizeof( buf ) );
+          ::close( fd );
+        }
+        if ( nbytes <= 0 ) {
+          uint64_t h[ 6 ] = { 1, 2, 3, 4, 5, 6 };
+          for ( uint32_t i = 0; i < sizeof( ubuf ); ) {
+            h[ 0 ] ^= current_monotonic_time_ns();
+            h[ 1 ] ^= get_rdtsc();
+            h[ 2 ] ^= newhash_magic;
+            if ( ( h[ 0 ] & 63 ) < 32 )
+              kv_sync_pause();
+            h[ 3 ] ^= current_monotonic_time_ns();
+            if ( ( h[ 1 ] & 63 ) < 32 )
+              kv_sync_mfence();
+            h[ 4 ] ^= newhash_magic;
+            h[ 5 ] ^= get_rdtsc();
 
-#if 0
-  int fd = ::open( "/dev/urandom", O_RDONLY );
-  uint16_t i = 0, j;
-  if ( fd != -1 ) {
-    do {
-      ssize_t n = ::read( fd, &((uint8_t *) buf)[ i ], sz - i );
-      if ( n < 0 )
-        break;
-      i += (uint16_t) n;
-    } while ( i < sz );
-    ::close( fd );
-
-    if ( i == sz )
-      return true;
+            newhash_mix( h[ 0 ], h[ 1 ], h[ 2 ] );
+            newhash_mix( h[ 3 ], h[ 4 ], h[ 5 ] );
+            ::memcpy( &ubuf[ i ], h, 32 );
+            i += 32;
+          }
+          nbytes = sizeof( ubuf );
+        }
+      }
+      while ( nbytes > 0 && sz > 0 )
+        ((uint8_t *) buf)[ --sz ] = ubuf[ --nbytes ];
+    }
   }
-  ::memset( &((uint8_t *) buf)[ i ], 0, sz - i );
-  do {
-    uint64_t h[ 6 ];
-    h[ 0 ] = current_monotonic_time_ns();
-    h[ 1 ] = get_rdtsc();
-    h[ 2 ] = newhash_magic;
-    for ( j = 0; j < ( h[ 0 ] & 15 ); j++ )
-      __sync_pause();
-    h[ 3 ] = current_monotonic_time_ns();
-    for ( j = 0; j < ( h[ 1 ] & 15 ); j++ )
-      __sync_mfence();
-    h[ 4 ] = newhash_magic;
-    h[ 5 ] = get_rdtsc();
-
-    newhash_mix( h[ 0 ], h[ 1 ], h[ 2 ] );
-    newhash_mix( h[ 3 ], h[ 4 ], h[ 5 ] );
-    xor_random_bytes( &((uint8_t *) buf)[ i ], sz - i, h, sizeof( h ) );
-    i += sizeof( h );
-  } while ( i < sz );
-  return false;
-#endif
 }
 
 bool
 rai::kv::rand::xorshift1024star::init( void *seed,  uint16_t sz ) noexcept
 {
   this->p = 0;
-  if ( sz == 0 )
-    return fill_urandom_bytes( this->state, sizeof( this->state ) );
-  ::memset( this->state, 0, sizeof( this->state ) );
-  xor_random_bytes( this->state, sizeof( this->state ), seed, sz );
+  fill_urandom_bytes( this->state, sizeof( this->state ) );
+  xor_bytes( this->state, sizeof( this->state ), seed, sz );
   return true;
 }
 
@@ -115,10 +113,8 @@ rai::kv::rand::xorshift1024star::next( void ) noexcept
 bool
 rai::kv::rand::xoroshiro128plus::init( void *seed,  uint16_t sz ) noexcept
 {
-  if ( sz == 0 )
-    return fill_urandom_bytes( this->state, sizeof( this->state ) );
-  ::memset( this->state, 0, sizeof( this->state ) );
-  xor_random_bytes( this->state, sizeof( this->state ), seed, sz );
+  fill_urandom_bytes( this->state, sizeof( this->state ) );
+  xor_bytes( this->state, sizeof( this->state ), seed, sz );
   return true;
 }
 

@@ -90,10 +90,10 @@ struct KeyFragment : public kv_key_frag_s {
 enum KeyValueFlags {
   FL_NO_ENTRY        =   0x00, /* initialize */
 #define FL_CUCKOO_SHIFT 0
-  FL_CUCKOO_INC      =   0x0f, /* 0x0f << FL_CUCKOO_SHIFT, X=[0->f], hash num */
-  FL_SEQNO           =   0x10,
-  FL_MSG_LIST        =   0x20,
-  /* FL_ALIGNMENT       =   0x03, X=[0->3], data alignment: 2 << X, 2 -> 16 */
+  FL_CUCKOO_INC      =   0x07, /* 0x07 << FL_CUCKOO_SHIFT, X=[0->7], hash num */
+  FL_CLOCK           =   0x08, /* clock lru marker */
+  FL_SEQNO           =   0x10, /* has a seqno for first msg list sequence */
+  FL_MSG_LIST        =   0x20, /* has a list of messages */
   FL_SEGMENT_VALUE   =   0x40, /* value is in segment */
   FL_UPDATED         =   0x80, /* was updated recently, useful for persistence*/
   FL_IMMEDIATE_VALUE =  0x100, /* has immediate data, no segment data used */

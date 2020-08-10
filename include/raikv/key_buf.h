@@ -33,6 +33,10 @@ struct KeyBufT : public KeyFragment {
   template<class T> void set( T arg ) {
     this->copy( (const void *) &arg, sizeof( T ) );
   }
+  /* useful for integer key types */
+  template<class T> size_t get( T &arg ) const {
+    return this->get( (void *) &arg, sizeof( T ) );
+  }
   /* should probably not truncate silently */
   uint16_t copy( const KeyFragment &x ) {
     return this->copy( x.u.buf, x.keylen );
@@ -42,6 +46,12 @@ struct KeyBufT : public KeyFragment {
       len = MAX_BUF_SIZE;
     ::memcpy( this->u.buf, p, len ); /* if p == null then len = 0 */
     this->keylen = len;
+    return len;
+  }
+  size_t get( void *p,  size_t len ) const {
+    if ( len > this->keylen )
+      len = this->keylen;
+    ::memcpy( p, this->u.buf, len ); /* if p == null then len = 0 */
     return len;
   }
   void zero( void ) {
@@ -68,6 +78,10 @@ struct KeyBufAligned {
   KeyBufAligned( const KeyFragment &x ) : kb( x ) {}
   void set_string( const char *s ) { this->kb.set_string( s ); }
   template<class T> void set( T arg ) { this->kb.set( arg ); }
+  template<class T> size_t get( T &arg ) const {
+    return this->kb.get( (void *) &arg, sizeof( T ) );
+  }
+  size_t get( void *p,  size_t len ) const { return this->kb.get( p, len ); }
   void copy( const void *p,  uint16_t len ) { this->kb.copy( p, len ); }
   void zero() { this->kb.zero(); }
   void hash( uint64_t &seed,  uint64_t &seed2/*,  kv_hash128_func_t func*/ ) {

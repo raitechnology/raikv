@@ -79,6 +79,17 @@ struct xorshift1024star {
   bool init( void *seed = 0,  uint16_t sz = 0 ) noexcept; /* init state */
 
   uint64_t next( void ) noexcept;
+
+  double next_double( void ) {
+    return (double) ( this->next() & ( ( (uint64_t) 1 << 53 ) - 1 ) ) /
+           (double) ( (uint64_t) 1 << 53 );
+  }
+  xorshift1024star & operator=( const xorshift1024star &x ) {
+    for ( int i = 0; i < 16; i++ )
+      this->state[ i ] = x.state[ i ];
+    this->p = x.p;
+    return *this;
+  }
 };
 
 /* Derived from xoroshiro128plus, 2016 by David Blackman and Sebastiano Vigna */
@@ -110,9 +121,18 @@ struct xoroshiro128plus {
     this->incr();
     return result;
   }
+  double next_double( void ) {
+    return (double) ( this->next() & ( ( (uint64_t) 1 << 53 ) - 1 ) ) /
+           (double) ( (uint64_t) 1 << 53 );
+  }
+  xoroshiro128plus & operator=( const xoroshiro128plus &x ) {
+    this->state[ 0 ] = x.state[ 0 ];
+    this->state[ 1 ] = x.state[ 1 ];
+    return *this;
+  }
 };
 /* read /dev/urandom */
-bool fill_urandom_bytes( void *buf,  uint16_t sz ) noexcept;
+void fill_urandom_bytes( void *buf,  uint16_t sz ) noexcept;
 }
 
 struct SignalHandler : public kv_signal_handler_s {

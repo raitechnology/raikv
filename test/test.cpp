@@ -2,404 +2,406 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 #include <unistd.h>
+#include <pthread.h>
 
 #include <raikv/shm_ht.h>
 #include <raikv/key_buf.h>
+#include <raikv/zipf.h>
 
 using namespace rai;
 using namespace kv;
 
-void
-incr_key( KeyBuf &kb )
-{
-  for ( uint8_t j = kb.keylen - 1; ; ) {
-    if ( ++kb.u.buf[ --j ] <= '9' )
-      break;
-    kb.u.buf[ j ] = '0';
-    if ( j == 0 ) {
-      ::memmove( &kb.u.buf[ 1 ], kb.u.buf, kb.keylen );
-      kb.u.buf[ 0 ] = '1';
-      kb.keylen++;
-      break;
-    }
-  }
-}
-
-void
-print_ops( HashTab &map,  HashCounters &ops,  double ival )
-{
-  char buf[ 16 ], buf2[ 16 ], buf3[ 16 ], buf4[ 16 ];
-  printf( "ops %.1f[%s] (%.1fns) (%.2f%%,coll=%.2f) "
-         "(rd=%.1f[%s],wr=%.1f[%s],sp=%.1f[%s])\n",
-         (double) ( ops.rd + ops.wr ) / ival,
-         mem_to_string( ops.rd + ops.wr, buf ),
-         ival / (double) ( ops.rd + ops.wr ) * 1000000000.0,
-         ( (double) ops.add * 100.0 / (double) map.hdr.ht_size ),
-         1.0 + ( (double) ops.chains / (double) ( ops.rd + ops.wr ) ),
-         (double) ops.rd / ival,
-         mem_to_string( ops.rd, buf2 ),
-         (double) ops.wr / ival,
-         mem_to_string( ops.wr, buf3 ),
-         (double) ops.spins / ival,
-         mem_to_string( ops.spins, buf4 ) );
-}
-
 SignalHandler sighndl;
 
-void
-test_one( HashTab &map,  uint32_t dbx_id,  uint32_t ctx_id,
-          uint64_t test_count,  bool use_find, bool use_single,  bool one_iter )
-{
+struct Results {
+  uint64_t     total_ops;
+  double       ival,      /* seconds */
+               ops_rate,  /* ops / second */
+               ns_per,    /* nanos per operation */
+               collision, /* avg number of hash entries examined */
+               rd_rate,   /* rd ops / second */
+               wr_rate,   /* wr ops / second */
+               spin_rate; /* busy wait spins / second */
+
+  Results() : total_ops( 0 ), ival( 0 ), ops_rate( 0 ), ns_per( 0 ),
+              collision( 0 ), rd_rate( 0 ), wr_rate( 0 ), spin_rate( 0 ) {}
+
+  Results & operator+=( const Results &x ) {
+    this->total_ops += x.total_ops;
+    this->ival      += x.ival;
+    this->ops_rate  += x.ops_rate;
+    this->ns_per    += x.ns_per;
+    this->collision += x.collision;
+    this->rd_rate   += x.rd_rate;
+    this->wr_rate   += x.wr_rate;
+    this->spin_rate += x.spin_rate;
+    return *this;
+  }
+  Results & operator/=( double n ) {
+    /*this->total_ops  = (uint64_t) ( (double) this->total_ops / n );*/
+    this->ival      /= n;
+    //this->ops_rate  /= n;
+    this->ns_per    /= n;
+    this->collision /= n;
+    //this->rd_rate   /= n;
+    //this->wr_rate   /= n;
+    //this->spin_rate /= n;
+    return *this;
+  }
+
+  void print_hdr( void ) {
+    printf( "%5s%12s%12s%6s%6s%12s%12s%14s\n",
+            "ival", "tot", "op/s", "ns", "coll", "rd/s", "wr/s", "spin/s" );
+  }
+  /* cols matches up with hdr */
+  void print_stats( void ) {
+    printf( "%5.1f", this->ival );
+    printf( "%12lu", this->total_ops );
+    printf( "%12.0f", this->ops_rate );
+    printf( "%6.1f", this->ns_per );
+    printf( "%6.2f", this->collision );
+    printf( "%12.0f", this->rd_rate );
+    printf( "%12.0f", this->wr_rate );
+    printf( "%14.0f\n", this->spin_rate );
+  }
+  /* space separated */
+  void print_line( void ) {
+    printf( "%.1f ", this->ival );
+    printf( "%lu ", this->total_ops );
+    printf( "%.1f ", this->ops_rate );
+    printf( "%.1f ", this->ns_per );
+    printf( "%.2f ", this->collision );
+    printf( "%.1f ", this->rd_rate );
+    printf( "%.1f ", this->wr_rate );
+    printf( "%.1f\n", this->spin_rate );
+  }
+};
+
+struct Test {
+  HashTab         & map;
   HashDeltaCounters stats;
-  HashCounters ops, tot;
-  WorkAlloc8k wrk;
+  HashCounters      ops,
+                    tot;
+  WorkAlloc8k       wrk;
+  HashSeed          hs;
+  uint64_t          test_count,
+                    found,
+                    not_found,
+                    acquire_set,
+                    acquire_fail;
+  rand::xoroshiro128plus rand, start_rand;
+  double            load_pct,
+                    ratio_pct,
+                    num_secs,
+                    ival;
+  uint32_t          dbx_id,
+                    ctx_id,
+                    prefetch;
+  uint8_t           db_num;
+  bool              use_find,
+                    use_ratio,
+                    use_rand,
+                    use_zipf,
+                    do_fill,
+                    quiet;
+  int               thr_num,
+                    num_threads;
+  const char      * test;
+  Results           results;
+
+  void * operator new( size_t, void *ptr ) { return ptr; }
+  Test( HashTab &m,  int nthr ) : map( m ),
+      test_count( 0 ), found( 0 ), not_found( 0 ),
+      acquire_set( 0 ), acquire_fail( 0 ), num_threads( nthr ) {
+    this->rand.init();
+    this->start_rand = this->rand;
+    this->stats.zero();
+  }
+
+  void init_hash_seed( void ) {
+    this->map.hdr.get_hash_seed(
+      this->map.hdr.stat_link[ this->dbx_id ].db_num, this->hs );
+  }
+  void print_hdr( void ) noexcept;
+  void print_stats( void ) noexcept;
+  void test_one( void ) noexcept;
+  void test_rand( void ) noexcept;
+  void test_incr( void ) noexcept;
+  void test_int( void ) noexcept;
+  void run( void ) noexcept;
+  Test * copy( void ) noexcept {
+    void * p = ::malloc( sizeof( Test ) );
+    Test * t = new ( p ) Test( this->map, this->num_threads );
+    t->test_count = this->test_count;
+    t->load_pct   = this->load_pct;
+    t->ratio_pct  = this->ratio_pct;
+    t->num_secs   = this->num_secs;
+    t->prefetch   = this->prefetch;
+    t->db_num     = this->db_num;
+    t->test       = this->test;
+    t->use_find   = this->use_find;
+    t->use_ratio  = this->use_ratio;
+    t->use_rand   = this->use_rand;
+    t->use_zipf   = this->use_zipf;
+    t->do_fill    = this->do_fill;
+    t->num_secs   = this->num_secs;
+    t->quiet      = this->quiet;
+    return t;
+  }
+};
+
+void
+Test::print_hdr( void ) noexcept
+{
+  if ( this->quiet )
+    return;
+  this->results.print_hdr();
+}
+
+void
+Test::print_stats( void ) noexcept
+{
+  Results & r = this->results;
+
+  r.total_ops = this->ops.rd + this->ops.wr;
+  r.ival      = this->ival;
+  r.ops_rate  = (double) ( this->ops.rd + this->ops.wr ) / this->ival;
+  r.ns_per    = this->ival / (double) ( this->ops.rd +
+                                       this->ops.wr ) * 1000000000.0;
+  r.collision = 1.0 + ( (double) this->ops.chains /
+                        (double) ( this->ops.rd + this->ops.wr ) );
+  r.rd_rate   = (double) this->ops.rd / this->ival;
+  r.wr_rate   = (double) this->ops.wr / this->ival;
+  r.spin_rate = (double) this->ops.spins / this->ival;
+
+  if ( this->quiet )
+    return;
+
+  r.print_stats();
+}
+
+/* test latency to hit one entry over and over again, no hashing */
+void
+Test::test_one( void ) noexcept
+{
   KeyBuf kb;
-  double mono, ival, tmp;
-  HashSeed hs;
-  uint64_t i, h1, h2, k;
+  double start, mono, last;
+  uint64_t i, h1, h2, total;
   void *p;
 
-  stats.zero();
-  map.hdr.get_hash_seed( map.hdr.stat_link[ dbx_id ].db_num, hs );
   kb.zero();
-  kb.keylen = sizeof( k );
+  kb.keylen = sizeof( uint64_t );
 
   sighndl.install();
-  mono = current_monotonic_time_s();
-  map.sum_ht_thr_delta( stats, ops, tot, ctx_id );
+  this->print_hdr();
+
+  start = mono = last = current_monotonic_time_s();
+  this->map.sum_ht_thr_delta( this->stats, this->ops, this->tot, this->ctx_id );
+
+  if ( this->num_secs > 0 )
+    total = (uint64_t) ( 10 * 1000000.0 * this->num_secs ); /* estimate */
+  else
+    total = 10 * 1000000;
   while ( ! sighndl.signaled ) {
-    KeyCtx kctx( map, dbx_id, &kb );
+    KeyCtx kctx( this->map, this->dbx_id, &kb );
     kb.set( (uint64_t) 0 ); /* use value 0 */
-    hs.get( h1, h2 );
+    this->hs.get( h1, h2 );
     kb.hash( h1, h2 );
     kctx.set_hash( h1, h2 );
-    if ( use_single )
-      kctx.set( KEYCTX_IS_SINGLE_THREAD );
-    if ( use_find ) {
-      for ( i = 0; i < test_count; i++ )
-        kctx.find( &wrk );
+    if ( this->use_find ) {
+      for ( i = 0; i < total; i++ )
+        kctx.find( &this->wrk );
     }
     else {
-      for ( i = 0; i < test_count; i++ ) {
-        if ( kctx.acquire( &wrk ) <= KEY_IS_NEW ) {
+      for ( i = 0; i < total; i++ ) {
+        if ( kctx.acquire( &this->wrk ) <= KEY_IS_NEW ) {
           if ( kctx.resize( &p, 6 ) == KEY_OK )
             ::memcpy( p, "hello", 6 );
           kctx.release();
         }
       }
     }
-    ival = current_monotonic_time_s();
-    if ( ival - mono >= 1.0 ) {
-      tmp = mono; mono  = ival; ival -= tmp;
-      if ( map.sum_ht_thr_delta( stats, ops, tot, ctx_id ) > 0 )
-        print_ops( map, ops, ival );
+    mono = current_monotonic_time_s();
+    if ( this->num_secs <= 0 || mono - start >= this->num_secs ) {
+      this->ival = mono - last; last = mono;
+      if ( this->map.sum_ht_thr_delta( this->stats, this->ops, this->tot,
+                                       this->ctx_id ) > 0 )
+        this->print_stats();
+      if ( this->num_secs > 0 )
+        return;
     }
-    if ( one_iter )
-      return;
   }
 }
 
+/* test latency of a key = integer between 0 -> total_count */
 void
-test_rand( HashTab &map,  uint32_t dbx_id,  uint32_t ctx_id,
-           uint64_t test_count,  bool /*use_find*/,
-           uint32_t prefetch,  bool use_single,  bool one_iter )
+Test::test_int( void ) noexcept
 {
-  HashDeltaCounters stats;
-  HashCounters ops, tot;
-  WorkAlloc8k wrk;
-  KeyBuf kb;
-  double mono, ival, tmp;
-  void *p;
-  HashSeed hs;
-  uint64_t i, h1, h2, k;
+  ZipfianGen<99,100,rand::xoroshiro128plus> zipf( this->test_count, this->rand);
+  KeyBuf   kb, ukb;
+  double   start, mono, last;
+  void   * p;
+  uint64_t i, k, total, r;
   uint32_t j;
+  uint64_t do_bits = 0, /* find to insert ratio */
+           next    = 0;
+  uint8_t  find_b  = (uint8_t) ( 256.0 * this->ratio_pct / 100.0 ),
+           do_cnt  = 0,
+           which   = ( this->use_find ? 1 : 0 ); /* which == 1 for find */
+  bool     done    = false;
 
-  stats.zero();
-  map.hdr.get_hash_seed( map.hdr.stat_link[ dbx_id ].db_num, hs );
-  kv::rand::xorshift1024star rand;
-  if ( ! rand.init() )
-    printf( "urandom failed\n" );
-
-  KeyBufAligned * key = KeyBufAligned::new_array( NULL, test_count );
-  for ( i = 0; i < test_count; i++ ) {
-    key[ i ].zero();
-    uint16_t keylen = rand.next() % 32 + 1;
-    key[ i ].kb.keylen = keylen;
-    for ( j = 0; j < keylen; j++ )
-      key[ i ].kb.u.buf[ j ] =
-        "abcdefghijklmnopqrstuvwxyz.:0123456789"[ rand.next() % 38 ];
-  }
   sighndl.install();
+  this->print_hdr();
 
-  mono = current_monotonic_time_s();
-  for ( i = 0, k = 0; i < 1000000; i++ ) {
-    hs.get( h1, h2 );
-    key[ k ].hash( h1, h2 );
-    k  = ( k + 1 ) % test_count;
-  }
-  mono = current_monotonic_time_s() - mono;
-  printf( "hash = %.1fns %.1f/s\n",
-          mono / 1000000.0 * 1000000000.0,
-          1000000.0 / mono );
+  start = mono = last = current_monotonic_time_s();
+  this->map.sum_ht_thr_delta( this->stats, this->ops, this->tot, this->ctx_id );
 
-  const uint32_t stride = prefetch;
-  KeyCtx * kar = KeyCtx::new_array( map, dbx_id, NULL, stride );
-  mono = current_monotonic_time_s();
-  map.sum_ht_thr_delta( stats, ops, tot, ctx_id );
+  const uint32_t  stride = ( this->prefetch > 1 ? this->prefetch : 1 );
+  KeyCtx        * kar;
+  KeyBufAligned * kbar;
+  /* allocate */
+  kar  = KeyCtx::new_array( this->map, this->dbx_id, NULL, stride );
+  kbar = KeyBufAligned::new_array( NULL, stride );
+
+  i = 0;
+  if ( this->num_secs > 0 )
+    total = (uint64_t) ( 1000000.0 * this->num_secs ); /* estimate */
+  else
+    total = 10 * 1000000;
   while ( ! sighndl.signaled ) {
-    if ( stride > 1 ) {
-      kar = KeyCtx::new_array( map, dbx_id, kar, stride );
-      for ( i = 0; i < test_count; i += stride ) {
-        for ( j = 0; j < stride; j++ ) {
-          kar[ j ].set_key_hash( key[ j ] );
-          kar[ j ].prefetch( false );
-          if ( use_single )
-            kar[ j ].set( KEYCTX_IS_SINGLE_THREAD );
+    /* reinitialze */
+    kar  = KeyCtx::new_array( this->map, this->dbx_id, kar, stride );
+    kbar = KeyBufAligned::new_array( kbar, stride );
+
+    for ( k = 0; k < total; k += stride ) { /* loop for a million or more */
+
+      if ( this->use_ratio ) {
+        if ( do_cnt == 0 ) {
+          while ( do_cnt < 64 ) {
+            if ( ( do_cnt++ & 7 ) == 0 )
+              next = this->rand.next();
+            do_bits <<= 1;
+            if ( ( next & 0xff ) < find_b )
+              do_bits |= 1;
+            next >>= 8;
+          }
         }
+        which = ( do_bits & 1 );
+        do_bits >>= 1;
+        do_cnt -= 1;
+      }
+      /* use random key */
+      if ( this->use_rand ) {
+        if ( ! this->use_zipf ) {
+          for ( j = 0; j < stride; j++ ) {
+            r = this->rand.next() % this->test_count;
+            kbar[ j ].set( r );
+          }
+        }
+        else {
+          for ( j = 0; j < stride; j++ ) {
+            r = zipf.next();
+            kbar[ j ].set( r );
+          }
+        }
+      }
+      /* use integer key */
+      else {
+        for ( j = 0; j < stride; j++ )
+          kbar[ j ].set( i + j );
+      }
+      /* hash and prefetch */
+      for ( j = 0; j < stride; j++ ) {
+        kar[ j ].set_key_hash( kbar[ j ] );
+        kar[ j ].prefetch( which );
+      }
+      /* get the key value */
+      if ( which ) {
         for ( j = 0; j < stride; j++ ) {
-          if ( kar[ j ].acquire( &wrk ) <= KEY_IS_NEW ) {
-            if ( kar[ j ].resize( &p, 6 ) == KEY_OK )
-              ::memcpy( p, "hello", 6 );
+          if ( kar[ j ].find( &this->wrk ) == KEY_OK )
+            this->found++;
+          else
+            this->not_found++;
+        }
+      }
+      /* set the key value */
+      else {
+        for ( j = 0; j < stride; j++ ) {
+          bool success = false;
+          kbar[ j ].get( r );
+          if ( kar[ j ].acquire( &this->wrk ) <= KEY_IS_NEW ) {
+            if ( kar[ j ].resize( &p, 8 ) == KEY_OK ) {
+              ::memcpy( p, &r, 8 );
+              success = true;
+            }
             kar[ j ].release();
           }
+          if ( success )
+            this->acquire_set++;
+          else
+            this->acquire_fail++;
+        }
+      }
+      if ( (i += stride) >= this->test_count ) {
+        i = 0;
+        /* fill hash table */
+        if ( this->do_fill ) {
+          done = true;
+          break;
         }
       }
     }
-    else {
-      KeyCtx &kctx = kar[ 0 ];
-      if ( use_single )
-        kctx.set( KEYCTX_IS_SINGLE_THREAD );
-      for ( i = 0; i < test_count; i++ ) {
-        kctx.set_key_hash( key[ i ] );
-        if ( kctx.acquire( &wrk ) <= KEY_IS_NEW ) {
-          if ( kctx.resize( &p, 6 ) == KEY_OK )
-            ::memcpy( p, "hello", 6 );
-          kctx.release();
-        }
-      }
+    /* check if times up */
+    mono = current_monotonic_time_s();
+    if ( this->num_secs <= 0 || mono - start >= this->num_secs || done ) {
+      this->ival = mono - last; last = mono;
+      if ( this->map.sum_ht_thr_delta( this->stats, this->ops, this->tot,
+                                       this->ctx_id ) > 0 )
+        this->print_stats();
+      if ( this->num_secs > 0 || done )
+        return;
     }
-    ival = current_monotonic_time_s();
-    if ( ival - mono >= 1.0 ) {
-      tmp = mono; mono  = ival; ival -= tmp;
-      if ( map.sum_ht_thr_delta( stats, ops, tot, ctx_id ) > 0 )
-        print_ops( map, ops, ival );
-    }
-    if ( one_iter )
-      return;
   }
 }
 
 void
-test_incr( HashTab &map,  uint32_t dbx_id,  uint32_t ctx_id,
-           uint64_t test_count,  bool use_find,
-           uint32_t prefetch,  bool use_single,  bool one_iter )
+Test::run( void ) noexcept
 {
-  HashDeltaCounters stats;
-  HashCounters ops, tot;
-  WorkAlloc8k wrk;
-  KeyBuf kb;
-  double mono, ival, tmp;
-  void *p;
-  HashSeed hs;
-  uint64_t i, h1, h2, k;
-  uint32_t j;
-
-  stats.zero();
-  map.hdr.get_hash_seed( map.hdr.stat_link[ dbx_id ].db_num, hs );
-  mono = current_monotonic_time_s();
-  for ( i = 0, k = 0; i < 1000000; i++ ) {
-    if ( k == 0 ) {
-      kb.zero();
-      kb.keylen = 2;
-      kb.u.buf[ 0 ] = '0';
-    }
-    hs.get( h1, h2 );
-    kb.hash( h1, h2 );
-    k  = ( k + 1 ) % test_count;
-    incr_key( kb );
+  this->ctx_id = this->map.attach_ctx( ::getpid() );
+  if ( this->ctx_id == MAX_CTX_ID ) {
+    fprintf( stderr, "no more ctx available\n" );
+    return;
   }
-  mono = current_monotonic_time_s() - mono;
-  printf( "hash = %.1fns %.1f/s\n",
-          mono / 1000000.0 * 1000000000.0,
-          1000000.0 / mono );
+  this->dbx_id = this->map.attach_db( this->ctx_id, this->db_num );
+  this->init_hash_seed();
 
-  sighndl.install();
-  mono = current_monotonic_time_s();
-  map.sum_ht_thr_delta( stats, ops, tot, ctx_id );
-
-  const uint32_t  stride = ( prefetch > 1 ? prefetch : 1 );
-  KeyCtx        * kar    = KeyCtx::new_array( map, dbx_id, NULL, stride );
-  KeyBufAligned * kbar   = KeyBufAligned::new_array( NULL, stride );
-
-  while ( ! sighndl.signaled ) {
-    kb.zero();
-    kb.keylen = 2;
-    kb.u.buf[ 0 ] = '0';
-    if ( stride > 1 ) {
-      kar  = KeyCtx::new_array( map, dbx_id, kar, stride );
-      kbar = KeyBufAligned::new_array( kbar, stride );
-
-      for ( i = 0; i < test_count; i += stride ) {
-        for ( j = 0; j < stride; j++ ) {
-          incr_key( kb );
-          kbar[ j ] = kb;
-        }
-        for ( j = 0; j < stride; j++ ) {
-          kar[ j ].set_key_hash( kbar[ j ] );
-          kar[ j ].prefetch( use_find );
-          if ( use_single )
-            kar[ j ].set( KEYCTX_IS_SINGLE_THREAD );
-        }
-        if ( use_find ) {
-          for ( j = 0; j < stride; j++ )
-            kar[ j ].find( &wrk );
-        }
-        else {
-          for ( j = 0; j < stride; j++ ) {
-            if ( kar[ j ].acquire( &wrk ) <= KEY_IS_NEW ) {
-              if ( kar[ j ].resize( &p, 6 ) == KEY_OK )
-                ::memcpy( p, "hello", 6 );
-              kar[ j ].release();
-            }
-          }
-        }
-      }
-    }
-    else {
-      KeyCtx &kctx = kar[ 0 ];
-      for ( i = 0; i < test_count; i++ ) {
-        kctx.set_key_hash( kb );
-        if ( use_single )
-          kctx.set( KEYCTX_IS_SINGLE_THREAD );
-        if ( use_find )
-          kctx.find( &wrk );
-        else {
-          if ( kctx.acquire( &wrk ) <= KEY_IS_NEW ) {
-            if ( kctx.resize( &p, 6 ) == KEY_OK )
-              ::memcpy( p, "hello", 6 );
-            kctx.release();
-          }
-        }
-        incr_key( kb );
-      }
-    }
-    ival = current_monotonic_time_s();
-    if ( ival - mono >= 1.0 ) {
-      tmp = mono; mono  = ival; ival -= tmp;
-      if ( map.sum_ht_thr_delta( stats, ops, tot, ctx_id ) > 0 )
-        print_ops( map, ops, ival );
-    }
-    if ( one_iter )
-      return;
+  if ( ! this->quiet ) {
+    const char *s = print_map_geom( &this->map, this->ctx_id );
+    fputs( s, stdout );
+    printf( "test:        %s\n", this->test );
+    printf( "num threads: %d\n", this->num_threads );
+    printf( "elem count:  %lu\n", this->test_count );
+    printf( "prefetch:    %u\n", this->prefetch );
+    printf( "use find:    %s\n", this->use_find ? "yes" : "no" );
+    printf( "use ratio:   %s\n", this->use_ratio ? "yes" : "no" );
+    printf( "do fill:     %s\n", this->do_fill ? "yes" : "no" );
+    printf( "num secs:    %.1f\n", this->num_secs );
   }
+  if ( ::strcmp( this->test, "one" ) == 0 )
+    this->test_one();
+  else
+    this->test_int();
+
+  this->map.detach_ctx( this->ctx_id );
 }
 
-void
-test_int( HashTab &map,  uint32_t dbx_id,  uint32_t ctx_id,
-          uint64_t test_count,  bool use_find,
-          uint32_t prefetch,  bool use_single,  bool one_iter )
+static void *
+run_test( void *p )
 {
-  HashDeltaCounters stats;
-  HashCounters ops, tot;
-  WorkAlloc8k wrk;
-  KeyBuf kb, ukb;
-  double mono, ival, tmp;
-  void *p;
-  HashSeed hs;
-  uint64_t i, h1, h2, k;
-  uint32_t j;
-
-  stats.zero();
-  map.hdr.get_hash_seed( map.hdr.stat_link[ dbx_id ].db_num, hs );
-  mono = current_monotonic_time_s();
-  ukb.zero();
-  for ( i = 0, k = 0; i < 1000000; i++ ) {
-    ukb.set( k );
-    hs.get( h1, h2 );
-    ukb.hash( h1, h2 );
-    k  = ( k + 1 ) % test_count;
-  }
-  mono = current_monotonic_time_s() - mono;
-  printf( "unaligned hash = %.1fns %.1f/s\n",
-          mono / 1000000.0 * 1000000000.0,
-          1000000.0 / mono );
-
-  KeyBufAligned akb;
-  mono = current_monotonic_time_s();
-  akb.zero();
-  for ( i = 0, k = 0; i < 1000000; i++ ) {
-    akb.set( k );
-    hs.get( h1, h2 );
-    akb.hash( h1, h2 );
-    k  = ( k + 1 ) % test_count;
-  }
-  mono = current_monotonic_time_s() - mono;
-  printf( "aligned hash = %.1fns %.1f/s\n",
-          mono / 1000000.0 * 1000000000.0,
-          1000000.0 / mono );
-
-  sighndl.install();
-  mono = current_monotonic_time_s();
-  map.sum_ht_thr_delta( stats, ops, tot, ctx_id );
-
-  const uint32_t  stride = ( prefetch > 1 ? prefetch : 1 );
-  KeyCtx        * kar    = KeyCtx::new_array( map, dbx_id, NULL, stride );
-  KeyBufAligned * kbar   = KeyBufAligned::new_array( NULL, stride );
-
-  while ( ! sighndl.signaled ) {
-    if ( stride > 1 ) {
-      kar  = KeyCtx::new_array( map, dbx_id, kar, stride );
-      kbar = KeyBufAligned::new_array( kbar, stride );
-
-      for ( i = 0; i < test_count; i += stride ) {
-        for ( j = 0; j < stride; j++ ) {
-          kbar[ j ].set( i + j );
-          kar[ j ].set_key_hash( kbar[ j ] );
-          kar[ j ].prefetch( use_find );
-          if ( use_single )
-            kar[ j ].set( KEYCTX_IS_SINGLE_THREAD );
-        }
-        if ( use_find ) {
-          for ( j = 0; j < stride; j++ )
-            kar[ j ].find( &wrk );
-        }
-        else {
-          for ( j = 0; j < stride; j++ ) {
-            if ( kar[ j ].acquire( &wrk ) <= KEY_IS_NEW ) {
-              if ( kar[ j ].resize( &p, 6 ) == KEY_OK )
-                ::memcpy( p, "hello", 6 );
-              kar[ j ].release();
-            }
-          }
-        }
-      }
-    }
-    else {
-      KeyCtx &kctx = kar[ 0 ];
-      for ( i = 0; i < test_count; i++ ) {
-        kb.set( i );
-        kctx.set_key_hash( kb );
-        if ( use_single )
-          kctx.set( KEYCTX_IS_SINGLE_THREAD );
-        if ( use_find )
-          kctx.find( &wrk );
-        else if ( kctx.acquire( &wrk ) <= KEY_IS_NEW ) {
-          if ( kctx.resize( &p, 6 ) == KEY_OK )
-            ::memcpy( p, "hello", 6 );
-          kctx.release();
-        }
-      }
-    }
-    ival = current_monotonic_time_s();
-    if ( ival - mono >= 1.0 ) {
-      tmp = mono; mono  = ival; ival -= tmp;
-      if ( map.sum_ht_thr_delta( stats, ops, tot, ctx_id ) > 0 )
-        print_ops( map, ops, ival );
-    }
-    if ( one_iter )
-      return;
-  }
+  ((Test *) p)->run();
+  return NULL;
 }
 
 static const char *
@@ -416,91 +418,119 @@ main( int argc, char *argv[] )
 {
   HashTabGeom   geom;
   HashTab     * map;
-  double        load_pct;
-  uint32_t      prefetch;
-  uint8_t       db_num;
 
-  /* [sysv2m:shm.test] [int] [50] [1] [ins] [0] [0] */
   const char * mn = get_arg( argc, argv, 1, "-m", KV_DEFAULT_SHM ),
-             * te = get_arg( argc, argv, 1, "-t", "int" ),
+             * cr = get_arg( argc, argv, 1, "-c", NULL ),
+             * th = get_arg( argc, argv, 1, "-t", NULL ),
+             * te = get_arg( argc, argv, 1, "-x", "int" ),
              * pc = get_arg( argc, argv, 1, "-p", "50" ),
+             * ra = get_arg( argc, argv, 1, "-r", "90" ),
              * fe = get_arg( argc, argv, 1, "-f", "1" ),
              * op = get_arg( argc, argv, 1, "-o", "ins" ),
-             * _1 = get_arg( argc, argv, 0, "-1", 0 ),
-             * si = get_arg( argc, argv, 1, "-s", "0" ),
+             * nn = get_arg( argc, argv, 1, "-n", NULL ),
              * db = get_arg( argc, argv, 1, "-d", "0" ),
+             * qu = get_arg( argc, argv, 0, "-q", NULL ),
              * he = get_arg( argc, argv, 0, "-h", 0 );
 
   if ( he != NULL ) {
   cmd_error:;
     fprintf( stderr, "raikv version: %s\n", kv_stringify( KV_VER ) );
     fprintf( stderr,
-  "%s [-m map] [-t test] [-p pct] [-f prefetch] [-o oper] "
-     "[-1] [-s sin] [-d db-num]\n"
-  "  map            = name of map file (prefix w/ file:, sysv:, posix:)\n"
-  "  test           = test kind: one, int, rand, incr (def: int)\n"
-  "  pct            = percent coverage of total hash entries (def: 50%%)\n"
-  "  prefetch       = number of prefetches to perform (def: 1)\n"
-  "  oper           = find or insert (def: ins)\n"
-  "  -1             = one iteration (def: continue forever)\n"
-  "  sin            = single thread, no locking (def: 0)\n"
-  "  db-num         = database number to use (def: 0)\n", argv[ 0 ] );
+  "%s [-m map] [-c size] [-t test] [-p pct] [-f prefetch] [-o oper] "
+     "[-n secs] [-s sin] [-d db-num]\n"
+  "  -m map      = name of map file (prefix w/ file:, sysv:, posix:)\n"
+  "  -c size     = size of map file to create\n"
+  "  -t num-thr  = num threads to run simul (def: 0)\n"
+  "  -x test     = test kind: one, int, rand, incr (def: int)\n"
+  "  -p pct      = percent coverage of total hash entries (def: 50%%)\n"
+  "  -r ratio    = ratio of find to insert (def: 90%%)\n"
+  "  -f prefetch = number of prefetches to perform (def: 1)\n"
+  "  -o oper     = find, insert, ratio (def: ins)\n"
+  "  -n secs     = num seconds (def: continue forever)\n"
+  "  -d db-num   = database number to use (def: 0)\n", argv[ 0 ] );
     return 1;
   }
 
-  load_pct = strtod( pc, 0 );
-  if ( load_pct == 0 )
-    goto cmd_error;
-  prefetch = atoi( fe );
-  if ( prefetch == 0 )
-    goto cmd_error;
-  db_num = (uint8_t) atoi( db );
+  if ( cr != NULL ) {
+    geom.map_size         = strtod( cr, 0 ) * 1024 * 1024;
+    geom.max_value_size   = 0; /* all ht, no value */
+    geom.hash_entry_size  = 64;
+    geom.hash_value_ratio = 1;
+    geom.cuckoo_buckets   = 4;
+    geom.cuckoo_arity     = 2;
 
-  map = HashTab::attach_map( mn, 0, geom );
+    map = HashTab::create_map( mn, 0, geom, 0666 );
+  }
+  else {
+    map = HashTab::attach_map( mn, 0, geom );
+  }
   if ( map == NULL )
     return 1;
 
-  uint32_t ctx_id = map->attach_ctx( ::getpid() );
-  if ( ctx_id == MAX_CTX_ID ) {
-    printf( "no more ctx available\n" );
-    return 3;
-  }
-  uint32_t dbx_id = map->attach_db( ctx_id, db_num );
-  fputs( print_map_geom( map, ctx_id ), stdout );
-  /*kv_hash128_func_t func = KV_DEFAULT_HASH;*/
+  int nthr = ( th != NULL ? atoi( th ) : 1 );
+  if ( nthr < 1 ) nthr = 1;
+  double load_pct = strtod( pc, 0 );
+  if ( load_pct == 0 || load_pct > 100.0 )
+    goto cmd_error;
+  double ratio_pct = strtod( ra, 0 );
+  if ( ratio_pct == 0 || ratio_pct > 100.0 )
+    goto cmd_error;
+  int prefetch = atoi( fe );
+  if ( prefetch == 0 )
+    goto cmd_error;
+  uint8_t db_num = (uint8_t) atoi( db );
 
-  const uint64_t test_count = (uint64_t)
-    ( ( (double) map->hdr.ht_size * load_pct ) / 100.0 ) & ~(uint64_t) 15;
-  const bool use_find    = ::strncmp( op, "find", 4 ) == 0;
-  const bool use_single  = si[ 0 ] != '0';
-  const bool one_iter    = _1 != NULL;
+  Test test( *map, nthr );
 
-  printf( "test: %s\n", te );
-  printf( "elem count: %lu\n", test_count );
-  printf( "prefetch: %u\n", prefetch );
-  printf( "use find: %s\n", use_find ? "yes" : "no" );
-  printf( "use single: %s\n", use_single ? "yes" : "no" );
-  printf( "one iter: %s\n", one_iter ? "yes" : "no" );
+  test.load_pct   = load_pct;
+  test.ratio_pct  = ratio_pct;
+  test.prefetch   = prefetch;
+  test.db_num     = db_num;
+  test.test       = te;
+  test.test_count = (uint64_t)
+    ( ( (double) map->hdr.ht_size * test.load_pct ) / 100.0 );
+  test.use_find    = ::strncmp( op, "find", 4 ) == 0;  /* insert default */
+  test.use_ratio   = ::strncmp( op, "ratio", 5 ) == 0; /* ratio find/insert */
+  test.use_zipf    = ::strncmp( te, "zipf", 4 ) == 0;  /* use zipf sequence */
+  test.use_rand    = test.use_zipf ||
+                     ::strncmp( te, "rand", 4 ) == 0;  /* use rand sequence */
+  test.do_fill     = ::strncmp( te, "fill", 4 ) == 0;  /* insert load_pct int */
+  test.num_secs    = ( nn == NULL ? 0 : strtod( nn, 0 ) );
+  test.quiet       = ( qu != NULL || nthr > 1 );
 
-  if ( ::strcmp( te, "one" ) == 0 ) {
-    test_one( *map, dbx_id, ctx_id, test_count, use_find,
-              use_single, one_iter );
+  /* if one thread */
+  if ( nthr <= 1 ) {
+    test.run();
+    if ( test.quiet ) {
+      printf( "1 %.1f ", (double) geom.map_size / 1024.0 / 1024.0 );
+      test.results.print_line();
+    }
   }
-  else if ( ::strcmp( te, "rand" ) == 0 ) {
-    test_rand( *map, dbx_id, ctx_id, test_count, use_find,
-               prefetch, use_single, one_iter );
+  /* if multiple threads */
+  else {
+    int i = 0;
+    pthread_t tid[ 256 ];
+    Test * tid_test[ 256 ];
+
+    if ( nthr > 256 )
+      nthr = 256;
+    for ( i = 0; i < nthr; i++ ) {
+      tid_test[ i ] = test.copy();
+      pthread_create( &tid[ i ], NULL, run_test, tid_test[ i ] );
+    }
+
+    Results total;
+    for ( i = 0; i < nthr; i++ ) {
+      pthread_join( tid[ i ], NULL );
+      total += tid_test[ i ]->results;
+    }
+    total /= (double) nthr;
+    /*total.print_hdr();*/
+    printf( "%d %.1f ", nthr, (double) geom.map_size / 1024.0 / 1024.0 );
+    total.print_line();
   }
-  else if ( ::strcmp( te, "incr" ) == 0 ) {
-    test_incr( *map, dbx_id, ctx_id, test_count, use_find,
-               prefetch, use_single, one_iter );
-  }
-  else if ( ::strcmp( te, "int" ) == 0 ) {
-    test_int( *map, dbx_id, ctx_id, test_count, use_find,
-               prefetch, use_single, one_iter );
-  }
-  printf( "bye\n" );
-  map->detach_ctx( ctx_id );
-  delete map;
+  if ( ! test.quiet )
+    printf( "bye\n" );
 
   return 0;
 }

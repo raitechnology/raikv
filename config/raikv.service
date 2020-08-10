@@ -1,0 +1,13 @@
+[Unit]
+Description=Rai shared memory key-value
+
+[Service]
+ExecStart=/usr/bin/kv_server -m sysv:raikv.shm -s 2048 -k 0.25 -v 16384 -o ug+rw
+KillSignal=SIGINT
+Type=simple
+User=raikv
+Group=raikv
+
+[Install]
+WantedBy=multi-user.target
+

@@ -340,10 +340,10 @@ main( int argc,  char *argv[] )
     fprintf( stderr, "raikv version: %s\n", kv_stringify( KV_VER ) );
     fprintf( stderr,
   "%s [-m map] [-t num-thr] [-d db-num] [-x testing]\n"
-  "  map            = name of map file (prefix w/ file:, sysv:, posix:)\n"
-  "  num-thr        = number of worker threads to utilize\n"
-  "  db-num         = database number to use\n"
-  "  testing        = debug testing\n",
+  "  -m map     = name of map file (prefix w/ file:, sysv:, posix:)\n"
+  "  -t num-thr = number of worker threads to utilize\n"
+  "  -d db-num  = database number to use\n"
+  "  -x testing = debug testing\n",
              argv[ 0 ] );
     return 1;
   }
