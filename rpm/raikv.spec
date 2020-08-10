@@ -11,6 +11,7 @@ BuildRoot:	${_tmppath}
 Prefix:	        /usr
 BuildRequires:  gcc-c++
 BuildRequires:  chrpath
+BuildRequires:  systemd
 Requires(pre): shadow-utils
 Requires(post): /sbin/ldconfig
 Requires(postun): /sbin/ldconfig, /usr/sbin/userdel, /usr/sbin/groupdel
