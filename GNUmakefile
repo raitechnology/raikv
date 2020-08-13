@@ -18,6 +18,8 @@ libd      := $(build_dir)/lib64
 objd      := $(build_dir)/obj
 dependd   := $(build_dir)/dep
 
+have_pandoc := $(shell if [ -x /usr/bin/pandoc ]; then echo true; fi)
+
 # use 'make port_extra=-g' for debug build
 ifeq (-g,$(findstring -g,$(port_extra)))
   DEBUG = true
@@ -81,7 +83,9 @@ all_exes    :=
 all_libs    :=
 all_dlls    :=
 all_depends :=
+all_doc     :=
 print_defines = -DKV_VER=$(ver_build)
+test_defines  = -DKV_VER=$(ver_build)
 
 libraikv_files := key_ctx ht_linear ht_cuckoo key_hash msg_ctx ht_stats \
                   ht_init scratch_mem util rela_ts radix_sort print pipe_buf
@@ -201,9 +205,22 @@ all_depends += $(kv_test_deps) $(hash_test_deps) $(ping_deps) \
 
 all_dirs := $(bind) $(libd) $(objd) $(dependd)
 
+ifeq ($(have_pandoc),true)
+doc/kv_server.1: doc/kv_server.1.md
+	pandoc -s -t man $< -o $@
+
+doc/kv_test.1: doc/kv_test.1.md
+	pandoc -s -t man $< -o $@
+
+doc/kv_cli.1: doc/kv_cli.1.md
+	pandoc -s -t man $< -o $@
+
+all_doc += doc/kv_server.1 doc/kv_test.1 doc/kv_cli.1
+endif
+
 # the default targets
 .PHONY: all
-all: $(all_libs) $(all_dlls) $(all_exes)
+all: $(all_libs) $(all_dlls) $(all_exes) $(all_doc)
 
 # create directories
 $(dependd):

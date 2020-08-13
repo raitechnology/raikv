@@ -785,7 +785,7 @@ dump_key_data( KeyCtx &kctx )
     }
   }
 }
-
+#if 0
 static void
 print_rdtsc( uint64_t t1, uint64_t t2, uint64_t t3,
              const char *s1,  const char *s2 )
@@ -800,7 +800,7 @@ print_rdtsc( uint64_t t1, uint64_t t2, uint64_t t3, uint64_t t4,
   xprintf( "%lu [%s] %lu [%s] %lu [%s]\n",
            t2 - t1, s1, t3 - t2, s2, t4 - t3, s3 );
 }
-
+#endif
 static void
 validate_ht( HashTab *map )
 {
@@ -917,7 +917,7 @@ cli( void )
   FILE        * fp,
               * infp = stdin;
   uint64_t      exp_ns;
-  uint64_t      sz, h, t1, t2, t3, t4, h1, h2;
+  uint64_t      sz, h/*, t1, t2, t3, t4*/, h1, h2;
   HashSeed      hs;
   double        f;
   uint32_t      cnt, i, j, print_count;
@@ -1114,11 +1114,11 @@ cli( void )
           default:
           case 'g': do_get = true; break;
         }
-        t1 = get_rdtscp();
+        /*t1 = get_rdtscp();*/
         map->hdr.get_hash_seed( db_num, hs );
         hs.hash( kb, h1, h2 );
         kctx.set_hash( h1, h2 );
-        t2 = get_rdtscp();
+        /*t2 = get_rdtscp();*/
         cnt = 0;
         do {
           uint64_t i = 0, j = 0, count = 0;
@@ -1128,11 +1128,19 @@ cli( void )
             uint64_t pos;
             ::memcpy( &pos, kb.u.buf, sizeof( pos ) );
             status = kctx.fetch( &wrk, pos );
+            if ( status == KEY_OK ) {
+              KeyFragment *kb;
+              char buf[ 1024 ];
+              if ( kctx.get_key( kb ) == KEY_OK ) {
+                get_key_string( *kb, buf );
+                xprintf( "key: %s\n", buf );
+              }
+            }
           }
           if ( status == KEY_OK ) {
             bool is_msg_list = kctx.entry->test( FL_MSG_LIST );
             for (;;) {
-              t3 = get_rdtscp();
+              /*t3 = get_rdtscp();*/
               if ( is_msg_list ) {
                 msg_size_t msz;
                 i = j;
@@ -1146,9 +1154,9 @@ cli( void )
                 if ( (status = kctx.value( &data, sz )) != KEY_OK )
                   break;
               }
-              t4 = get_rdtscp();
+              /*t4 = get_rdtscp();*/
               if ( count <= 1 ) {
-                print_rdtsc( t1, t2, t3, t4, "hash", "find", "value" );
+                /*print_rdtsc( t1, t2, t3, t4, "hash", "find", "value" );*/
                 status = print_key_data( kctx, "get", sz );
                 if ( do_verbose )
                   dump_key_data( kctx );
@@ -1184,8 +1192,8 @@ cli( void )
           }
           if ( status == KEY_NOT_FOUND ) {
             if ( count == 0 ) {
-              t3 = get_rdtscp();
-              print_rdtsc( t1, t2, t3, "hash", "find" );
+              /*t3 = get_rdtscp();
+              print_rdtsc( t1, t2, t3, "hash", "find" );*/
               xprintf( "[%lu] [h=%lx]: \n",
                       kctx.pos, kctx.key );
               print_status( cmd, key, status );

@@ -32,7 +32,7 @@ A shared memory, concurrent access, key value caching system.
 make build_dir=./usr %{?_smp_mflags} dist_bins
 cp -a ./include ./usr/include
 mkdir -p ./usr/share/doc/%{name}
-cp -a ./README.md graph ./usr/share/doc/%{name}/
+cp -a ./README.md graph doc ./usr/share/doc/%{name}/
 
 %install
 rm -rf %{buildroot}
@@ -45,6 +45,8 @@ install -p -D -m 644 ./config/limit.conf %{buildroot}%{_sysconfdir}/systemd/syst
 sed -e 's:/usr/bin:%{_bindir}:;s:/var:%{_localstatedir}:;s:/etc:%{_sysconfdir}:;s:/usr/libexec:%{_libexecdir}:' \
      ./config/%{name}.service > tmp_file
 install -p -D -m 644 tmp_file %{buildroot}%{_unitdir}/%{name}.service
+install -p -d -m 755 %{buildroot}%{_mandir}/man1/
+install -p -D -m 644 ./doc/*.1 %{buildroot}%{_mandir}/man1/
 
 %clean
 rm -rf %{buildroot}
@@ -54,7 +56,8 @@ rm -rf %{buildroot}
 %{_bindir}/*
 %{_prefix}/lib64/*
 %{_includedir}/*
-%{_prefix}/share/doc/*
+%doc %{_docdir}/*
+%doc %{_mandir}/*
 %config(noreplace) %{_sysconfdir}/systemd/system/%{name}.service.d/limit.conf
 %config(noreplace) %{_unitdir}/%{name}.service
 

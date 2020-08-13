@@ -108,7 +108,7 @@ struct Test {
                     quiet;
   int               thr_num,
                     num_threads;
-  const char      * test;
+  const char      * generator;
   Results           results;
 
   void * operator new( size_t, void *ptr ) { return ptr; }
@@ -140,7 +140,7 @@ struct Test {
     t->num_secs   = this->num_secs;
     t->prefetch   = this->prefetch;
     t->db_num     = this->db_num;
-    t->test       = this->test;
+    t->generator  = this->generator;
     t->use_find   = this->use_find;
     t->use_ratio  = this->use_ratio;
     t->use_rand   = this->use_rand;
@@ -380,7 +380,7 @@ Test::run( void ) noexcept
   if ( ! this->quiet ) {
     const char *s = print_map_geom( &this->map, this->ctx_id );
     fputs( s, stdout );
-    printf( "test:        %s\n", this->test );
+    printf( "generator:   %s\n", this->generator );
     printf( "num threads: %d\n", this->num_threads );
     printf( "elem count:  %lu\n", this->test_count );
     printf( "prefetch:    %u\n", this->prefetch );
@@ -389,7 +389,7 @@ Test::run( void ) noexcept
     printf( "do fill:     %s\n", this->do_fill ? "yes" : "no" );
     printf( "num secs:    %.1f\n", this->num_secs );
   }
-  if ( ::strcmp( this->test, "one" ) == 0 )
+  if ( ::strcmp( this->generator, "one" ) == 0 )
     this->test_one();
   else
     this->test_int();
@@ -422,7 +422,7 @@ main( int argc, char *argv[] )
   const char * mn = get_arg( argc, argv, 1, "-m", KV_DEFAULT_SHM ),
              * cr = get_arg( argc, argv, 1, "-c", NULL ),
              * th = get_arg( argc, argv, 1, "-t", NULL ),
-             * te = get_arg( argc, argv, 1, "-x", "int" ),
+             * ge = get_arg( argc, argv, 1, "-x", "int" ),
              * pc = get_arg( argc, argv, 1, "-p", "50" ),
              * ra = get_arg( argc, argv, 1, "-r", "90" ),
              * fe = get_arg( argc, argv, 1, "-f", "1" ),
@@ -436,12 +436,12 @@ main( int argc, char *argv[] )
   cmd_error:;
     fprintf( stderr, "raikv version: %s\n", kv_stringify( KV_VER ) );
     fprintf( stderr,
-  "%s [-m map] [-c size] [-t test] [-p pct] [-f prefetch] [-o oper] "
-     "[-n secs] [-s sin] [-d db-num]\n"
-  "  -m map      = name of map file (prefix w/ file:, sysv:, posix:)\n"
+  "%s [-m map] [-c size] [-t num-thr] [-x gen] [-p pct] [-r ratio] "
+     "[-f prefetch] [-o oper] [-n secs] [-d db-num]\n"
+  "  -m map      = name of map file (default: " KV_DEFAULT_SHM ")\n"
   "  -c size     = size of map file to create\n"
   "  -t num-thr  = num threads to run simul (def: 0)\n"
-  "  -x test     = test kind: one, int, rand, incr (def: int)\n"
+  "  -x gen      = key generator kind: one, int, rand, zipf, fill (def: int)\n"
   "  -p pct      = percent coverage of total hash entries (def: 50%%)\n"
   "  -r ratio    = ratio of find to insert (def: 90%%)\n"
   "  -f prefetch = number of prefetches to perform (def: 1)\n"
@@ -486,17 +486,17 @@ main( int argc, char *argv[] )
   test.ratio_pct  = ratio_pct;
   test.prefetch   = prefetch;
   test.db_num     = db_num;
-  test.test       = te;
+  test.generator  = ge;
   test.test_count = (uint64_t)
     ( ( (double) map->hdr.ht_size * test.load_pct ) / 100.0 );
-  test.use_find    = ::strncmp( op, "find", 4 ) == 0;  /* insert default */
-  test.use_ratio   = ::strncmp( op, "ratio", 5 ) == 0; /* ratio find/insert */
-  test.use_zipf    = ::strncmp( te, "zipf", 4 ) == 0;  /* use zipf sequence */
-  test.use_rand    = test.use_zipf ||
-                     ::strncmp( te, "rand", 4 ) == 0;  /* use rand sequence */
-  test.do_fill     = ::strncmp( te, "fill", 4 ) == 0;  /* insert load_pct int */
-  test.num_secs    = ( nn == NULL ? 0 : strtod( nn, 0 ) );
-  test.quiet       = ( qu != NULL || nthr > 1 );
+  test.use_find   = ::strncmp( op, "find", 4 ) == 0;  /* insert default */
+  test.use_ratio  = ::strncmp( op, "ratio", 5 ) == 0; /* ratio find/insert */
+  test.use_zipf   = ::strncmp( ge, "zipf", 4 ) == 0;  /* use zipf sequence */
+  test.use_rand   = test.use_zipf ||
+                    ::strncmp( ge, "rand", 4 ) == 0;  /* use rand sequence */
+  test.do_fill    = ::strncmp( ge, "fill", 4 ) == 0;  /* insert load_pct int */
+  test.num_secs   = ( nn == NULL ? 0 : strtod( nn, 0 ) );
+  test.quiet      = ( qu != NULL || nthr > 1 );
 
   /* if one thread */
   if ( nthr <= 1 ) {

@@ -14,23 +14,118 @@
 using namespace rai;
 using namespace kv;
 
-char *
+struct Server {
+  HashTab      & map;
+  HashTabStats & hts;
+  uint64_t       stats_ival,
+                 check_ival,
+                 stats_counter;
+
+  Server( HashTab &m,  uint64_t i,  uint64_t x )
+    : map( m ), hts( *HashTabStats::create( m ) ), stats_ival( i ),
+      check_ival( x ), stats_counter( 0 ) {}
+
+  void loop( void );
+  void print_stats( void );
+  void print_ops( void );
+  void check_thread_ctx( void ); /* check for broken locks */
+};
+
+static SignalHandler sighndl;
+
+void
+Server::loop( void )
+{
+  char     junk[ 8 ];
+  ssize_t  nbytes = 0;
+  uint64_t curr   = 0,
+           last   = 0,
+           ival   = 0,
+           check  = 0,
+           stats  = 0;
+
+  sighndl.install();
+  fcntl( 0, F_SETFL, fcntl( 0, F_GETFL, 0 ) | O_NONBLOCK );
+  this->check_thread_ctx();
+  this->map.update_load();
+  last = current_monotonic_coarse_ns();
+
+  for (;;) {
+    bool do_print_stats = false;
+
+    usleep( 50 * 1000 /* 50 ms */);
+    if ( sighndl.signaled )
+      return;
+    curr   = current_monotonic_coarse_ns();
+    ival   = curr - last;
+    last   = curr;
+    stats += ival;
+    check += ival;
+
+    /* if a keyboard <cr> on cmd line or stats interval expires */
+    if ( (nbytes = read( 0, junk, sizeof( junk ) )) > 0 ||
+         stats >= this->stats_ival || this->stats_counter == 0 ) {
+      stats %= this->stats_ival;
+      if ( nbytes > 0 ) {
+        this->stats_counter = 0; /* print header again */
+        nbytes = 0;
+      }
+      do_print_stats = true;
+    }
+
+    if ( check >= this->check_ival ) {
+      check %= this->check_ival;
+      this->check_thread_ctx();
+      this->map.update_load();
+    }
+    else {
+      this->map.hdr.current_stamp = current_realtime_coarse_ns();
+    }
+    if ( do_print_stats )
+      this->print_stats();
+  }
+}
+
+void
+Server::print_stats( void )
+{
+  bool b = this->hts.fetch();
+  if ( b || ( this->stats_counter == 0 && this->hts.ival > 0 ) ) {
+    /* print hdr if stats counter == 0 */
+    if ( this->stats_counter == 0 ) {
+      fputs( print_map_geom( &this->map, MAX_CTX_ID ), stdout );
+      for ( uint32_t db = 0; db < DB_COUNT; db++ ) {
+        if ( this->map.hdr.test_db_opened( db ) ) {
+          printf( "db[ %u ].entry_cnt:%s %lu\n", db,
+                  ( ( db < 10 ) ? "   " : ( ( db < 100 ) ? "  " : " " ) ),
+                  this->hts.db_stats[ db ].last.add -
+                  this->hts.db_stats[ db ].last.drop );
+        }
+      }
+    }
+    /* print interval ops */
+    this->print_ops();
+    fflush( stdout );
+  }
+}
+
+static char *
 mstring( double f,  char *buf,  int64_t k )
 {
   return mem_to_string( (int64_t) ceil( f ), buf, k );
 }
 
 void
-print_ops( HashTab &map,  HashTabStats &hts,  uint32_t &ctr )
+Server::print_ops( void )
 {
-  HashCounters & ops  = hts.hops,
-               & tot  = hts.htot;
-  MemCounters  & chg  = hts.mops;
-  double         ival = hts.ival;
+  HashCounters & ops  = this->hts.hops,
+               & tot  = this->hts.htot;
+  MemCounters  & chg  = this->hts.mops;
+  double         ival = this->hts.ival;
   char buf[ 16 ], buf2[ 16 ], buf3[ 16 ], buf4[ 16 ], buf5[ 16 ],
        buf6[ 16 ], buf7[ 16 ], buf8[ 16 ], buf9[ 16 ];
 
-  if ( ( ctr++ % 16 ) == 0 )
+  if ( ( this->stats_counter++ % 16 ) == 0 )
     printf( "   op/s   1/ops chns    get    put   spin ht va  "
             "entry    GC  drop   hits   miss\n" );
 
@@ -56,49 +151,22 @@ print_ops( HashTab &map,  HashTabStats &hts,  uint32_t &ctr )
          mstring( (double) ops.rd / ival, buf2, 1000 ),
          mstring( (double) ops.wr / ival, buf3, 1000 ),
          mstring( (double) ops.spins / ival, buf4, 1000 ),
-         (uint32_t) ( map.hdr.ht_load * 100.0 + 0.5 ),
-         (uint32_t) ( map.hdr.value_load * 100.0 + 0.5 ),
+         (uint32_t) ( this->map.hdr.ht_load * 100.0 + 0.5 ),
+         (uint32_t) ( this->map.hdr.value_load * 100.0 + 0.5 ),
          mstring( tot.add - tot.drop, buf5, 1000 ),
          mstring( (double) chg.move_msgs / ival, buf6, 1000 ),
          mstring( (double) ops.drop / ival, buf7, 1000 ),
          mstring( (double) ops.hit / ival, buf8, 1000 ),
          mstring( (double) ops.miss / ival, buf9, 1000 ) );
 }
-#if 0
-void
-print_mem( HashTab &map,  HashCounters &ops,  MemCounters &chg,
-           MemCounters &tot,  double ival )
-{
-  char buf[ 16 ], buf2[ 16 ], buf3[ 16 ], buf4[ 16 ], buf5[ 16 ], buf6[ 16 ],
-       buf7[ 16 ];
-  printf( "mem %.1f[%s] msg %.1f[%s] avail %.1f[%s] "
-          "mov %.1f%%[%s] msize %.1f[%s] evict %.1f%%[%s] esize %.1f[%s]\n",
-          (double) chg.offset / ival,
-         mstring( tot.offset, buf, 1024 ),
-          (double) chg.msg_count / ival,
-         mstring( tot.msg_count, buf2, 1000 ),
-          (double) chg.avail_size / ival,
-         mstring( tot.avail_size, buf3, 1024 ),
-          ( (double) chg.move_msgs / ival * 100.0 ) /
-            ( (double) ( ops.rd + ops.wr ) / ival ),
-         mstring( tot.move_msgs, buf4, 1000 ),
-          (double) chg.move_size / ival,
-         mstring( tot.move_size, buf5, 1024 ),
-          ( (double) chg.evict_msgs / ival * 100.0 ) /
-            ( (double) ( ops.rd + ops.wr ) / ival ),
-         mstring( tot.evict_msgs, buf6, 1000 ),
-          (double) chg.evict_size / ival,
-         mstring( tot.evict_size, buf7, 1024 ) );
-}
-#endif
 
 void
-check_thread_ctx( HashTab &map )
+Server::check_thread_ctx( void )
 {
-  uint32_t hash_entry_size = map.hdr.hash_entry_size;
+  uint32_t hash_entry_size = this->map.hdr.hash_entry_size;
   for ( uint32_t ctx_id = 1; ctx_id < MAX_CTX_ID; ctx_id++ ) {
-    uint32_t pid = map.ctx[ ctx_id ].ctx_pid;
-    if ( pid == 0 || map.ctx[ ctx_id ].ctx_id == KV_NO_CTX_ID )
+    uint32_t pid = this->map.ctx[ ctx_id ].ctx_pid;
+    if ( pid == 0 || this->map.ctx[ ctx_id ].ctx_id == KV_NO_CTX_ID )
       continue;
     if ( ::kill( pid, 0 ) == 0 )
       continue;
@@ -108,21 +176,21 @@ check_thread_ctx( HashTab &map )
             ctx_id, pid, errno, strerror( errno ) );
 
     uint64_t used, recovered = 0;
-    if ( (used = map.ctx[ ctx_id ].mcs_used) != 0 ) {
+    if ( (used = this->map.ctx[ ctx_id ].mcs_used) != 0 ) {
       for ( uint32_t id = 0; id < 64; id++ ) {
         if ( ( used & ( (uint64_t) 1 << id ) ) == 0 )
           continue;
         uint64_t mcs_id = ( ctx_id << ThrCtxEntry::MCS_SHIFT ) | id;
-        ThrMCSLock &mcs = map.ctx[ ctx_id ].get_mcs_lock( mcs_id );
+        ThrMCSLock &mcs = this->map.ctx[ ctx_id ].get_mcs_lock( mcs_id );
         MCSStatus status;
         printf(
         "ctx %u: pid %u, mcs %u, val 0x%lx, lock 0x%lx, next 0x%lx, link %lu\n",
                  ctx_id, pid, id, mcs.val.load(), mcs.lock.load(),
                  mcs.next.load(), mcs.lock_id );
         if ( mcs.lock_id != 0 ) {
-          HashEntry *el = map.get_entry( mcs.lock_id - 1,
-                                         map.hdr.hash_entry_size );
-          ThrCtxOwner  closure( map.ctx );
+          HashEntry *el = this->map.get_entry( mcs.lock_id - 1,
+                                         this->map.hdr.hash_entry_size );
+          ThrCtxOwner  closure( this->map.ctx );
           status = mcs.recover_lock( el->hash, ZOMBIE64, mcs_id, closure );
           if ( status == MCS_OK ) {
             ValueCtr &ctr = el->value_ctr( hash_entry_size );
@@ -140,22 +208,20 @@ check_thread_ctx( HashTab &map )
           }
         }
       }
-      map.ctx[ ctx_id ].mcs_used &= ~recovered;
+      this->map.ctx[ ctx_id ].mcs_used &= ~recovered;
     }
     if ( used != recovered ) {
       printf( "ctx %u still has locks\n", ctx_id );
     }
     else {
-      map.detach_ctx( ctx_id );
+      this->map.detach_ctx( ctx_id );
     }
   }
 }
 
 static const char *
-get_arg( int argc, char *argv[], int n, int b, const char *f, const char *def )
+get_arg( int argc, char *argv[], int b, const char *f, const char *def )
 {
-  if ( n > 0 && argc > n && argv[ 1 ][ 0 ] != '-' )
-    return argv[ n ];
   for ( int i = 1; i < argc - b; i++ )
     if ( ::strcmp( f, argv[ i ] ) == 0 )
       return argv[ i + b ];
@@ -166,26 +232,28 @@ int
 main( int argc, char *argv[] )
 {
   HashTabGeom   geom;
-  SignalHandler sighndl;
-  HashTab     * map     = NULL;
-  double        ratio   = 0.5;
-  uint64_t      mbsize  = 1024 * 1024 * 1024; /* 1G */
-  uint32_t      entsize = 64,                 /* 64b */
-                valsize = 1024 * 1024;        /* 1MB */
-  uint8_t       arity   = 2;                  /* cuckoo 2+4 */
-  uint16_t      buckets = 4;
+  HashTab     * map        = NULL;
+  double        ratio      = 0.5;
+  uint64_t      stats_ival = NANOS,
+                check_ival = NANOS;
+  uint64_t      mbsize     = 1024 * 1024 * 1024; /* 1G */
+  uint32_t      entsize    = 64,                 /* 64b */
+                valsize    = 1024 * 1024;        /* 1MB */
+  uint8_t       arity      = 2;                  /* cuckoo 2+4 */
+  uint16_t      buckets    = 4;
 
-  /* [sysv2m:shm.test] [1024] [0.5] [2+4] [1024] [64] */
-  const char * mn = get_arg( argc, argv, 1, 1, "-m", KV_DEFAULT_SHM ),
-             * mb = get_arg( argc, argv, 2, 1, "-s", "1024" ),
-             * pc = get_arg( argc, argv, 3, 1, "-k", "0.5" ),
-             * cu = get_arg( argc, argv, 4, 1, "-c", "2+4" ),
-             * mo = get_arg( argc, argv, 4, 1, "-o", "ug+rw" ),
-             * vz = get_arg( argc, argv, 5, 1, "-v", "1024" ),
-             * ez = get_arg( argc, argv, 6, 1, "-e", "64" ),
-             * at = get_arg( argc, argv, 0, 0, "-a", 0 ),
-             * rm = get_arg( argc, argv, 0, 0, "-r", 0 ),
-             * he = get_arg( argc, argv, 0, 0, "-h", 0 );
+  const char * mn = get_arg( argc, argv, 1, "-m", KV_DEFAULT_SHM ),
+             * mb = get_arg( argc, argv, 1, "-s", "1024" ),
+             * pc = get_arg( argc, argv, 1, "-k", "0.25" ),
+             * cu = get_arg( argc, argv, 1, "-c", "2+4" ),
+             * mo = get_arg( argc, argv, 1, "-o", "ug+rw" ),
+             * vz = get_arg( argc, argv, 1, "-v", "2048" ),
+             * ez = get_arg( argc, argv, 1, "-e", "64" ),
+             * at = get_arg( argc, argv, 0, "-a", 0 ),
+             * rm = get_arg( argc, argv, 0, "-r", 0 ),
+             * iv = get_arg( argc, argv, 1, "-i", "1" ),
+             * ix = get_arg( argc, argv, 1, "-x", "1" ),
+             * he = get_arg( argc, argv, 0, "-h", 0 );
 
   if ( he != NULL ) {
   cmd_error:;
@@ -193,16 +261,18 @@ main( int argc, char *argv[] )
     fprintf( stderr,
   "%s [-m map] [-s MB] [-k ratio] [-c cuckoo a+b] "
      "[-v value-sz] [-e entry-sz] [-a] [-r]\n"
-  "  -m map         = name of map file (prefix w/ file:, sysv:, posix:)\n"
-  "  -s MB          = size of HT (MB * 1024 * 1024, default 1024)\n"
-  "  -k ratio       = entry to segment memory ratio (float 0 -> 1, def 0.5)\n"
+  "  -m map         = name of map file (default: " KV_DEFAULT_SHM ")\n"
+  "  -s MB          = size of HT (MB * 1024 * 1024, default: 1024)\n"
+  "  -k ratio       = entry to segment memory ratio (float 0 -> 1, def: 0.5)\n"
   "                  (1 = all ht, 0 = all msg -- must have some ht)\n"
-  "  -c cuckoo a+b  = cuckoo hash arity and buckets (default 2+4)\n"
+  "  -c cuckoo a+b  = cuckoo hash arity and buckets (default: 2+4)\n"
   "  -o mode        = create map using mode (default: ug+rw)\n"
-  "  -v value-sz    = max value size or min seg size (in KB, default 1024)\n"
-  "  -e entry-sz    = hash entry size (multiple of 64, default 64)\n"
-  "  -a             = attach to map, don't create\n"
-  "  -r             = remove map\n",
+  "  -v value-sz    = max value size or min seg size (in KB, default: 1024)\n"
+  "  -e entry-sz    = hash entry size (multiple of 64, default: 64)\n"
+  "  -a             = attach to map, don't create (default: create)\n"
+  "  -r             = remove map and then exit\n"
+  "  -i secs        = stats interval (default: 1)\n"
+  "  -x secs        = check interval (default: 1)\n",
              argv[ 0 ] );
     return 1;
   }
@@ -228,6 +298,8 @@ main( int argc, char *argv[] )
   entsize = (uint32_t) atoi( ez );
   if ( entsize == 0 )
     goto cmd_error;
+  stats_ival = (uint64_t) ( strtod( iv, 0 ) * NANOSF );
+  check_ival = (uint64_t) ( strtod( ix, 0 ) * NANOSF );
 
   if ( at == NULL && rm == NULL ) {
     int mode, x;
@@ -269,71 +341,13 @@ main( int argc, char *argv[] )
     return 1;
   //print_map_geom( map, MAX_CTX_ID );
 
-  HashTabStats * hts = HashTabStats::create( *map );
-  char         junk[ 8 ];
-  ssize_t      j;
-  uint32_t     ctr = 0;
-  double       mono = 0,
-               ival = 0,
-               tmp  = 0;
+  Server svr( *map, stats_ival, check_ival );
 
-  sighndl.install();
-  fcntl( 0, F_SETFL, fcntl( 0, F_GETFL, 0 ) | O_NONBLOCK );
-  map->update_load();
-  mono = current_monotonic_coarse_s() - 0.90; /* speed up the first loop */
-  ival = (double) ( map->hdr.current_stamp - map->hdr.create_stamp ) /
-         NANOSF;
-  for ( j = 0; ; ) {
-    for (;;) {
-      usleep( 50 * 1000 );
-      if ( sighndl.signaled )
-        goto break_loop;
-      ival = current_monotonic_coarse_s();
-      tmp  = ival - mono;
-      if ( (j = read( 0, junk, sizeof( junk ) )) > 0 || tmp >= 1.0 ) {
-        mono = ival;
-        ival = tmp;
-        break;
-      }
-    }
-    check_thread_ctx( *map );
-    map->update_load();
-    bool b = hts->fetch();
-    if ( j > 0 ) {
-      ctr = 0;
-      j = 0;
-    }
-    if ( b || ( ctr == 0 && hts->ival > 0 ) ) {
-      if ( ctr == 0 ) {
-        fputs( print_map_geom( map, MAX_CTX_ID ), stdout );
-        for ( uint32_t db = 0; db < DB_COUNT; db++ ) {
-          if ( map->hdr.test_db_opened( db ) ) {
-            printf( "db[ %u ].entry_cnt:%s %lu\n", db,
-                    ( ( db < 10 ) ? "   " : ( ( db < 100 ) ? "  " : " " ) ),
-                    hts->db_stats[ db ].last.add -
-                    hts->db_stats[ db ].last.drop );
-          }
-        }
-      }
-      print_ops( *map, *hts, ctr );
-      fflush( stdout );
-    }
-  }
-break_loop:;
+  svr.loop();
+
   printf( "bye\n" );
   fflush( stdout );
   delete map;
   return 0;
 }
 
-#if 0
-      //print_mem( *map, ops, chg, tot, ival );
-    if ( map->hdr.ht_load != last_ht_load ||
-         map->hdr.value_load != last_value_load ) {
-      last_ht_load    = map->hdr.ht_load;
-      last_value_load = map->hdr.value_load;
-      /*printf( "== load %.1f%%, ht load %.1f%%, value load %.1f%% load_pct=%u\n",
-              map->hdr.current_load * 100.0, last_ht_load * 100.0,
-              last_value_load * 100.0, map->hdr.load_percent );*/
-    }
-#endif
