@@ -13,8 +13,8 @@ main( int argc, char ** )
   static const uint64_t LOOP_CNT = 10 * 1000 * 1000,
                         REC_SIZE = 32;
   SignalHandler sighndl;
-  PipeBuf * ping = PipeBuf::open( "ping", argc == 1 ),
-          * pong = PipeBuf::open( "pong", argc == 1 );
+  PipeBuf * ping = PipeBuf::open( "ping", argc == 1, 0666 ),
+          * pong = PipeBuf::open( "pong", argc == 1, 0666 );
 
   union {
     uint8_t buf[ REC_SIZE ];

@@ -329,3 +329,12 @@ the hash table first, at the head of the chain.  If the access patterns are
 skewed like the zipf distribution, then optimizing the chain lengths would
 probably be an effective use of resources.
 
+All of the above can be recreated by running the shell scripts in the graph
+directory and using gnuplot to plot them.  The shell scripts do contain testing
+with memory usage up to 128GB, so that may need to be modified if the test
+machine does not have enough memory.
+
+```console
+$ sh /usr/share/doc/raikv/graph/run_mt_scale_write_25.sh
+$ gnuplot-qt -p -c graph/plot_mt_scale_write_25.gnuplot
+```

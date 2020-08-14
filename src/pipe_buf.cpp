@@ -18,7 +18,7 @@ using namespace rai;
 using namespace kv;
 
 PipeBuf *
-PipeBuf::open( const char *name,  bool do_create ) noexcept
+PipeBuf::open( const char *name,  bool do_create,  int pipe_mode ) noexcept
 {
   int       mode = S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH,
             flag = O_RDWR,
@@ -29,11 +29,11 @@ PipeBuf::open( const char *name,  bool do_create ) noexcept
 
   if ( do_create )
     flag |= excl;
-  fd = ::shm_open( name, flag, mode );
+  fd = ::shm_open( name, flag, mode & pipe_mode );
   if ( fd < 0 ) {
     if ( do_create ) {
       ::shm_unlink( name ); /* clean create, not open existing */
-      fd = ::shm_open( name, flag, mode );
+      fd = ::shm_open( name, flag, mode & pipe_mode );
     }
   }
   if ( fd < 0 ) {

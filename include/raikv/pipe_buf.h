@@ -109,7 +109,8 @@ struct PipeBuf {
              consumer_head_counter; /* consumer reads here */
   } x;
 
-  static PipeBuf *open( const char *name,  bool do_create ) noexcept;
+  static PipeBuf *open( const char *name,  bool do_create,
+                        int pipe_mode ) noexcept;
   void init( void ) noexcept;
   void close( void ) noexcept;
   static int unlink( const char *name ) noexcept;
