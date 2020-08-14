@@ -336,5 +336,5 @@ machine does not have enough memory.
 
 ```console
 $ sh /usr/share/doc/raikv/graph/run_mt_scale_write_25.sh
-$ gnuplot-qt -p -c graph/plot_mt_scale_write_25.gnuplot
+$ gnuplot-qt -p -c /usr/share/doc/raikv/graph/plot_mt_scale_write_25.gnuplot
 ```
