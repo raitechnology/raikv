@@ -172,10 +172,10 @@ $ sudo dnf copr disable injinj/gold
 
 The kernel command line can be changed to set the default hugepagesize to 1G
 pages.  This isn't necessary, but it may improve performance.  The memlock
-limits should be adjusted according to the KV size.  If the memory can't be
-locked, the of mapping physical memory to virtual memory by the kernel can add
+limits should be adjusted according to the KV size.  If the KV memory can't be
+locked, the mapping of virtual memory to physical memory by the kernel can add
 significant latency when dereferenced for the first time, which may be fine if
-latency irrelevent.
+initial latency irrelevent.
 
 ```console
 $ sudo vi /etc/default/grub

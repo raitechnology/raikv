@@ -42,14 +42,8 @@ static void remove_closed( void *p ) {
       shm_closed[ i ] = NULL;
   }
 }
-
-/* the constructor initializes the memory, only used in one thread context */
-HashTab::HashTab( const char *map_name,  const HashTabGeom &geom ) noexcept
-{
-  this->initialize( map_name, geom );
-}
                                           /* 0123456789012345 */
-const char HashTab::shared_mem_sig[ 16 ]  = "rai 0.1 sysv+1g";
+const char HashTab::shared_mem_sig[ KV_SIG_SIZE /* 16 */ ]  = "rai 0.1 xxxxxxx";
 static const int SHM_TYPE_IDX  = 8;
 static const int SHM_TYPE_SIZE = 8;
 static const char * shm_type[ 4 ][ 3 ] = {
@@ -65,6 +59,12 @@ static const uint8_t ALLOC_TYPE = 0, /* types that go in the SHM_TYPE_IDX pos: *
                      P2M        = 1, /* shm_type[ SYSV_TYPE ][ P2M ] */
                      P1G        = 2,
                      P4K        = 0;
+
+/* the constructor initializes the memory, only used in one thread context */
+HashTab::HashTab( const char *map_name,  const HashTabGeom &geom ) noexcept
+{
+  this->initialize( map_name, geom );
+}
 /* zero the shm ht context, this does not determine whether some other
    thread is using it */
 void
@@ -93,6 +93,7 @@ HashTab::initialize( const char *map_name,  const HashTabGeom &geom ) noexcept
   assert( sizeof( HashCounters ) * MAX_STAT_ID == HT_STATS_SIZE );
 
   ::memset( (void *) &this->hdr, 0, HT_HDR_SIZE );
+  ::memcpy( this->hdr.sig, HashTab::shared_mem_sig, KV_SIG_SIZE );
   ::memset( (void *) &this->ctx[ 0 ], 0, HT_CTX_SIZE );
   ::memset( (void *) &this->stats[ 0 ], 0, HT_STATS_SIZE );
 
@@ -250,7 +251,6 @@ HashTab::alloc_map( HashTabGeom &geom ) noexcept
   if ( p == NULL )
     return NULL;
   HashTab *ht = new ( p ) HashTab( "malloc()", geom );
-  ::memcpy( ht->hdr.sig, HashTab::shared_mem_sig, SHM_TYPE_IDX );
   ::memcpy( &ht->hdr.sig[ SHM_TYPE_IDX ], shm_type[ 0 ][ 0 ], SHM_TYPE_SIZE );
   return ht;
 }
@@ -513,12 +513,11 @@ HashTab::create_map( const char *map_name,  uint8_t facility,
         huge = P4K;
       break;
   }
+  HashTab *ht = new ( p ) HashTab( map_name, geom );
+
   /* try to lock memory */
   if ( ::mlock( p, map_size ) != 0 )
     show_perror( "warning mlock", map_name );
-
-  HashTab *ht = new ( p ) HashTab( map_name, geom );
-  ::memcpy( ht->hdr.sig, HashTab::shared_mem_sig, SHM_TYPE_IDX );
 
   switch ( facility & ( KV_FILE_MMAP | KV_POSIX_SHM | KV_SYSV_SHM ) ) {
     case KV_SYSV_SHM:
@@ -583,30 +582,49 @@ HashTab::attach_map( const char *map_name,  uint8_t facility,
       }
       key = (key_t) kv_crc_c( fn, fn == NULL ? 0 : ::strlen( fn ) + 1, 0 );
       fd = -1;
-      /* try 1g, 2m, then normal */
-      for ( j = 2; j >= 0; j-- ) {
-        if ( flags[ j ] != 0 ) {         /* create shm id exclusive */
-          fd = ::shmget( key, 0, flags[ j ] );
-          if ( fd >= 0 )
-            break;
+      for ( int fail_count = 0;; fail_count++ ) {
+        /* try 1g, 2m, then normal */
+        for ( j = 2; j >= 0; j-- ) {
+          if ( flags[ j ] != 0 ) {         /* create shm id exclusive */
+            fd = ::shmget( key, 0, flags[ j ] );
+            if ( fd >= 0 )
+              break;
+          }
         }
+        if ( fd < 0 ) {
+          if ( fail_count == 30 ) {
+            show_perror( "shmget", map_name );
+            return NULL;
+          }
+        }
+        else {
+          p = ::shmat( fd, NULL, 0 );
+          if ( p != (void *) -1 )
+            goto open_success;
+
+          if ( fail_count == 30 ) {
+            show_perror( "shmat", map_name );
+            ::close( fd );
+            return NULL;
+          }
+          ::close( fd );
+          fd = -1;
+        }
+        ::usleep( 10000 ); /* 300 ms */
       }
-      if ( fd < 0 ) {
-        show_perror( "shmget", map_name );
-        return NULL;
+    open_success:;
+      for (;;) {
+        ::memcpy( (void *) &hdr, p, sizeof( hdr ) );
+        if ( hdr.sig[ SHM_TYPE_IDX ] != 'x' && hdr.sig[ SHM_TYPE_IDX ] != '\0' )
+          break;
+        ::usleep( 1 ); /* wait for initialize to finish */
       }
-      p = ::shmat( fd, NULL, 0 );
-      if ( p == (void *) -1 ) {
-        show_perror( "shmat", map_name );
-        ::shmctl( fd, IPC_RMID, NULL );
-        return NULL;
-      }
-      ::memcpy( (void *) &hdr, p, sizeof( hdr ) );
       map_size = align<uint64_t>( hdr.map_size, page_align );
       if ( ::memcmp( hdr.sig, HashTab::shared_mem_sig, SHM_TYPE_IDX ) != 0 ) {
         fprintf( stderr, "shm sig doesn't match: [%s][%s]",
                  HashTab::shared_mem_sig, hdr.sig );
         ::shmdt( p );
+        ::close( fd );
         return NULL;
       }
       break;
@@ -614,18 +632,29 @@ HashTab::attach_map( const char *map_name,  uint8_t facility,
     case KV_FILE_MMAP:
     case KV_POSIX_SHM:
       is_file_mmap = ( facility & KV_FILE_MMAP ) != 0;
-      if ( is_file_mmap )
-        fd = ::open( fn, O_RDWR, S_IREAD | S_IWRITE );
-      else
-        fd = ::shm_open( fn, O_RDWR, S_IREAD | S_IWRITE );
-      if ( fd < 0 ) {
-        show_perror( "open", map_name );
-        return NULL;
+      for ( int fail_count = 0; ; fail_count++ ) {
+        if ( is_file_mmap )
+          fd = ::open( fn, O_RDWR, S_IREAD | S_IWRITE );
+        else
+          fd = ::shm_open( fn, O_RDWR, S_IREAD | S_IWRITE );
+        if ( fd >= 0 )
+          goto open_success2;
+        if ( fail_count == 30 ) {
+          show_perror( "open", map_name );
+          return NULL;
+        }
+        usleep( 10000 ); /* 300 ms */
       }
-      if ( ::read( fd, &hdr, sizeof( hdr ) ) != sizeof( hdr ) ) {
-        show_perror( "read", map_name );
-        ::close( fd );
-        return NULL;
+    open_success2:;
+      for (;;) {
+        if ( ::pread( fd, &hdr, sizeof( hdr ), 0 ) != sizeof( hdr ) ) {
+          show_perror( "read", map_name );
+          ::close( fd );
+          return NULL;
+        }
+        if ( hdr.sig[ SHM_TYPE_IDX ] != 'x' && hdr.sig[ SHM_TYPE_IDX ] != '\0' )
+          break;
+        ::usleep( 1 ); /* wait for initialize to finish */
       }
       if ( ::memcmp( hdr.sig, HashTab::shared_mem_sig, SHM_TYPE_IDX ) != 0 ) {
         fprintf( stderr, "shm sig doesn't match: [%s][%s]",

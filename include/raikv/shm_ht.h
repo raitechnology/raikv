@@ -71,6 +71,8 @@ typedef enum kv_facility_e {
 #define KV_MAX_CTX_ID       ( KV_HT_CTX_SIZE / KV_HT_THR_CTX_SIZE )
 /* shm_attach( shm_string ) */
 #define KV_DEFAULT_SHM      "sysv:raikv.shm"
+/* sizeof magic at first byte */
+#define KV_SIG_SIZE         16
 
 #ifdef __cplusplus
 }
@@ -100,7 +102,7 @@ static const size_t HT_FILE_HDR_SIZE      = KV_HT_FILE_HDR_SIZE, /* 1024 */
 /* hdr size should be 256b */
 struct FileHdr {
              /* first 64b, not referenced very much */
-  char       sig[ 16 ]; /* version info and mem type (a,f,g,h,p,q,r,v,w,x) */
+  char       sig[ KV_SIG_SIZE ];             /* version info and mem type */
   char       name[ MAX_FILE_HDR_NAME_LEN ];  /* name of this map file */
 
              /* second 64b, updated infreq, load calculations and stamps */
