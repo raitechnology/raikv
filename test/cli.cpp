@@ -975,12 +975,42 @@ cli( void )
       cmd_char = last_cmd = cmd[ 0 ];
     switch ( cmd_char ) {
       case 'c': /* contexts */
-        for ( uint32_t c = 0; c < MAX_CTX_ID; c++ ) {
-          if ( c == 0 || map->ctx[ c ].ctx_pid != 0 )
-            print_stats( c );
+        for ( i = 0; i < MAX_CTX_ID; i++ ) {
+          if ( map->ctx[ i ].ctx_pid != 0 )
+            print_stats( i );
         }
         break;
 
+      case 'C': { /* open contexts */
+        ThrStatLink stat[ MAX_STAT_ID ];
+        ::memcpy( stat, map->hdr.stat_link, sizeof( stat ) );
+        for ( i = 0; i < MAX_CTX_ID; i++ ) {
+          if ( map->ctx[ i ].ctx_id != KV_NO_CTX_ID &&
+               map->ctx[ i ].ctx_pid != 0 ) {
+            print_stats( i );
+            xprintf( "db:" );
+            for ( j = 0; j < MAX_STAT_ID; j++ ) {
+              if ( stat[ j ].ctx_id == i && stat[ j ].used )
+                xprintf( " %u(ln=%u)", stat[ j ].db_num, j );
+            }
+            xprintf( "\n" );
+            xprintf( "ln:" );
+            for ( j = map->ctx[ i ].db_stat_hd; j != MAX_STAT_ID; 
+                  j = stat[ j ].next ) {
+              xprintf( " %u(db=%u)", j, stat[ j ].db_num );
+            }
+            xprintf( "\n" );
+          }
+        }
+        xprintf( "stat used:" );
+        for ( i = 0; i < MAX_STAT_ID; i++ ) {
+          if ( stat[ i ].used )
+            xprintf( " %u(ctx=%u,db=%u)", i, stat[ i ].ctx_id,
+                                             stat[ i ].db_num );
+        }
+        xprintf( "\n" );
+        break;
+      }
       case 'd': /* drop */
       case 'p': /* put */
       case 'a': /* append */
@@ -1464,6 +1494,7 @@ cli( void )
         xprintf(
         "a| append key value      ; append value to key\n"
         "c| contexts              ; print stats for all contexts\n"
+        "C| open contexts         ; print stats open contexts\n"
         "d| drop key              ; drop key\n"
         "D| Dump seg#             ; dump segment data\n"
         "e| xacquire key          ; acquire key and 'E key' to release\n"

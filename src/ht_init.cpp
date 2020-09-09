@@ -880,12 +880,12 @@ HashTab::attach_db( uint32_t ctx_id,  uint8_t db ) noexcept
                 j = el.db_stat_hd;
 
   for (;;) {
-     if ( j == MAX_STAT_ID ) /* db not found */
-       break;
-     link = &this->hdr.stat_link[ j ];
-     if ( link->db_num == db )
-       return j;
-     j = link->next;
+    if ( j == MAX_STAT_ID ) /* db not found */
+      break;
+    link = &this->hdr.stat_link[ j ];
+    if ( link->db_num == db )
+      return j;
+    j = link->next;
   }
   this->hdr.set_db_opened( db );
   j = ctx_id;
@@ -897,9 +897,9 @@ HashTab::attach_db( uint32_t ctx_id,  uint8_t db ) noexcept
     if ( link->used == 0 ) /* if found a free link */
       break;
     link->busy.xchg( 0 );
-    if ( ++i == MAX_STAT_ID )
+    if ( ++i == MAX_STAT_ID * 3 )
       return KV_NO_DBSTAT_ID;
-    j += ctx_id;
+    j += MAX_CTX_ID;       /* step by ctx */
     if ( j >= MAX_STAT_ID )
       j = ( j + 1 ) % MAX_STAT_ID;
   }
@@ -910,6 +910,10 @@ HashTab::attach_db( uint32_t ctx_id,  uint8_t db ) noexcept
   link->back   = el.db_stat_tl;
   if ( el.db_stat_tl == MAX_STAT_ID )
     el.db_stat_hd = j;
+  else {
+    ThrStatLink & tl = this->hdr.stat_link[ el.db_stat_tl ];
+    tl.next = j;
+  }
   el.db_stat_tl = j;
   link->busy.xchg( 0 );
   return j;

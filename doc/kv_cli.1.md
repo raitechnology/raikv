@@ -27,6 +27,10 @@ prompting for a command.
 :   Print stats for all contexts.  A context has counters for different
 hash table operations, for example:  reads, writes, adds, drops.
 
+>C
+:   Print stats for open contexts.  Print dbs opened and which contexts are
+attached to the db.
+
 >d key
 :   Tombstone key, drop key.  Releases the value associated with the key and
 marks the hash entry as dropped.

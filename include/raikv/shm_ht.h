@@ -165,7 +165,7 @@ struct FileHdr {
     return ( ( k & this->ht_mod_mask ) * this->ht_mod_fraction ) >>
            this->ht_mod_shift;
   }
-  bool test_db_opened(  const uint8_t db ) {
+  bool test_db_opened( const uint8_t db ) {
     volatile uint64_t &ptr = this->db_opened[ ( db >> 6 ) % DB_OPENED_SIZE ];
     uint64_t mask = (uint64_t) 1 << ( db & 63 );
     return ( ptr & mask ) != 0;
