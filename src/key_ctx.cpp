@@ -26,8 +26,6 @@ KeyCtx::KeyCtx( HashTab &t,  uint32_t xid,  KeyFragment *b ) noexcept
   , msg_chain_size( 0 )
   , drop_flags( 0 )
   , flags( KEYCTX_IS_READ_ONLY )
-  , entry( 0 )
-  , msg( 0 )
   , stat( t.stats[ xid ] )
   , max_chains( t.hdr.ht_size )
 {
@@ -73,8 +71,6 @@ KeyCtx::KeyCtx( KeyCtx &kctx ) noexcept
   , msg_chain_size( 0 )
   , drop_flags( 0 )
   , flags( KEYCTX_IS_READ_ONLY )
-  , entry( 0 )
-  , msg( 0 )
   , stat( kctx.stat )
   , max_chains( kctx.ht_size )
 {
@@ -129,23 +125,50 @@ KeyCtx::new_array( HashTab &t,  uint32_t xid,  void *b,  size_t bsz ) noexcept
 KeyStatus
 KeyCtx::acquire( void ) noexcept
 {
+  KeyStatus status;
   this->init_acquire();
-  switch ( this->test( KEYCTX_IS_SINGLE_THREAD | KEYCTX_MULTI_KEY_ACQUIRE ) ) {
-    case 0:
-      if ( this->cuckoo_buckets <= 1 )
+  if kv_unlikely( this->cuckoo_buckets <= 1 ) {
+    switch ( this->test( KEYCTX_IS_SINGLE_THREAD | KEYCTX_MULTI_KEY_ACQUIRE |
+                         KEYCTX_EVICT_ACQUIRE ) ) {
+      default:
         return this->acquire_linear_probe( this->key, this->start );
-      return this->acquire_cuckoo( this->key, this->start );
-
-    default:
-      if ( this->cuckoo_buckets <= 1 )
+      case KEYCTX_MULTI_KEY_ACQUIRE:
         return this->multi_acquire_linear_probe( this->key, this->start );
-      return this->multi_acquire_cuckoo( this->key, this->start );
-
-    case KEYCTX_IS_SINGLE_THREAD: /* single thread version */
-      if ( this->cuckoo_buckets <= 1 )
-        return this->acquire_linear_probe_single_thread( this->key, this->start );
-      return this->acquire_cuckoo_single_thread( this->key, this->start );
+      case KEYCTX_IS_SINGLE_THREAD: /* single thread version */
+        return this->acquire_linear_probe_single_thread( this->key,
+                                                         this->start );
+      case KEYCTX_EVICT_ACQUIRE:
+        status = this->acquire_linear_probe( this->key, this->start );
+        break;
+    }
   }
+  else {
+    switch ( this->test( KEYCTX_IS_SINGLE_THREAD | KEYCTX_MULTI_KEY_ACQUIRE |
+                         KEYCTX_EVICT_ACQUIRE ) ) {
+      default:
+        return this->acquire_cuckoo( this->key, this->start );
+      case KEYCTX_MULTI_KEY_ACQUIRE:
+        return this->multi_acquire_cuckoo( this->key, this->start );
+      case KEYCTX_IS_SINGLE_THREAD: /* single thread version */
+        return this->acquire_cuckoo_single_thread( this->key, this->start );
+      case KEYCTX_EVICT_ACQUIRE:
+        status = this->acquire_cuckoo( this->key, this->start );
+        break;
+    }
+  }
+  if ( status == KEY_IS_NEW ) {
+    if ( this->drop_flags != FL_NO_ENTRY &&
+         ( this->drop_flags & FL_DROPPED ) == 0 ) {
+      this->entry->flags = this->drop_flags;
+      this->lock = this->key;
+      if ( this->evict_cb != NULL ) {
+        (*this->evict_cb)( (kv_key_ctx_t *) this, this->cl );
+      }
+      this->tombstone();
+      this->incr_htevict();
+    }
+  }
+  return status;
 }
 
 /* try to acquire lock for a key without waiting */
@@ -198,7 +221,13 @@ KeyCtx::tombstone( void ) noexcept
   this->entry->clear( FL_EXPIRE_STAMP | FL_UPDATE_STAMP |
                       FL_SEQNO | FL_MSG_LIST );
   if ( this->lock != 0 ) { /* if it's not new */
-    this->incr_drop();
+    if ( this->entry->db == this->db_num )
+      this->incr_drop();
+    else {
+      uint32_t id = this->ht.attach_db( this->ctx_id, this->entry->db );
+      if ( id != KV_NO_DBSTAT_ID )
+        this->ht.stats[ id ].drop++;
+    }
     this->drop_key   = this->lock;
     this->drop_key2  = this->key2;
     this->drop_flags = this->entry->flags;
@@ -219,8 +248,17 @@ KeyCtx::expire( void ) noexcept
   this->entry->clear( FL_EXPIRE_STAMP | FL_UPDATE_STAMP |
                       FL_SEQNO | FL_MSG_LIST );
   if ( this->lock != 0 ) {
-    this->incr_drop();
-    this->incr_expire();
+    if ( this->entry->db == this->db_num ) {
+      this->incr_drop();
+      this->incr_expire();
+    }
+    else {
+      uint32_t id = this->ht.attach_db( this->ctx_id, this->entry->db );
+      if ( id != KV_NO_DBSTAT_ID ) {
+        this->ht.stats[ id ].drop++;
+        this->ht.stats[ id ].expire++;
+      }
+    }
     this->drop_key   = this->lock;
     this->drop_key2  = this->key2;
     this->drop_flags = this->entry->flags;

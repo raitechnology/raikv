@@ -38,6 +38,17 @@ typedef enum kv_key_status_e {
 const char *kv_key_status_string( kv_key_status_t status );
 const char *kv_key_status_description( kv_key_status_t status );
 
+struct kv_hash_tab_s;
+struct kv_key_ctx_s;
+struct kv_msg_ctx_s;
+struct kv_key_frag_s;
+
+typedef struct kv_hash_tab_s kv_hash_tab_t;
+typedef struct kv_key_ctx_s  kv_key_ctx_t;
+typedef struct kv_msg_ctx_s  kv_msg_ctx_t;
+
+typedef void (*kv_evict_cb_t)( kv_key_ctx_t *kctx,  void *cl );
+
 #ifdef __cplusplus
 } /* extern "C" */
 #endif
@@ -83,7 +94,8 @@ enum KeyCtxFlags {
   KEYCTX_IS_HT_EVICT       = 8, /* if chains == max_chains, is eviction */
   KEYCTX_IS_SINGLE_THREAD  = 16,/* don't use thread synchronization */
   KEYCTX_NO_COPY_ON_READ   = 32,/* don't copy message on read, use seal check */
-  KEYCTX_MULTI_KEY_ACQUIRE = 64 /* when multiple keys are being acquired */
+  KEYCTX_MULTI_KEY_ACQUIRE = 64,/* when multiple keys are being acquired */
+  KEYCTX_EVICT_ACQUIRE     = 128/* when acquire should evict old on new entry */
 };
 
 typedef uint32_t msg_size_t;
@@ -103,11 +115,11 @@ struct KeyCtx {
   uint16_t       msg_chain_size,
                  drop_flags, /* flags from dropped recycle entry */
                  flags;      /* KeyCtxFlags */
-  HashEntry    * entry;   /* the entry after lookup, may be empty entry if NF*/
-  MsgHdr       * msg;     /* the msg header indexed by geom */
-                 /* ^^ 8*8 ^^  vv 8*11 + 8*4(geom) + 8 vv */ 
   HashCounters & stat;
   const uint64_t max_chains; /* drop entries after accumulating max chains */
+                 /* ^^ 8*8 ^^  vv 8*12 + 8*4(geom) + 8 vv */ 
+  HashEntry    * entry;   /* the entry after lookup, may be empty entry if NF*/
+  MsgHdr       * msg;     /* the msg header indexed by geom */
   uint64_t       chains,     /* number of chains used to find/acquire */
                  start,   /* key % ht_size */
                  key,     /* KeyBuf hash() */
@@ -120,10 +132,13 @@ struct KeyCtx {
                  serial;  /* serial number of the hash ent & message */
   ValueGeom      geom;    /* values decoded from HashEntry */
   ScratchMem   * wrk;     /* temp work allocation */
+  kv_evict_cb_t* evict_cb;
+  void         * cl;
+  size_t         end;
 
   void zero( void ) {
-    ::memset( &this->chains, 0, (uint8_t *) (void *) &( &this->wrk )[ 1 ] -
-                                (uint8_t *) (void *) &this->chains ); 
+    ::memset( &this->entry, 0, (uint8_t *) (void *) &( &this->cl )[ 1 ] -
+                               (uint8_t *) (void *) &this->entry ); 
   }
   void incr_read( uint64_t cnt = 1 )    { this->stat.rd      += cnt; }
   void incr_write( uint64_t cnt = 1 )   { this->stat.wr      += cnt; }
@@ -498,15 +513,6 @@ struct MsgIter {
 #ifdef __cplusplus
 extern "C" {
 #endif
-struct kv_hash_tab_s;
-struct kv_key_ctx_s;
-struct kv_msg_ctx_s;
-struct kv_key_frag_s;
-
-typedef struct kv_hash_tab_s kv_hash_tab_t;
-typedef struct kv_key_ctx_s  kv_key_ctx_t;
-typedef struct kv_msg_ctx_s  kv_msg_ctx_t;
-
 /* uint16_t buf[ 1024 ];
  * void *in = (void *) buf, *out;
  * kv_key_frag_t *frag[ 2 ];

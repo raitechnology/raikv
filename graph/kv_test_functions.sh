@@ -1,24 +1,31 @@
 #!/bin/bash
 
-export osver=$(lsb_release -rs | sed 's/[.].*//')
-export osdist=$(lsb_release -i | sed 's/.*:\t//')
-
-if [ "${osdist}x" == "Fedorax" ] ; then
-  export ospref=FC
-elif [ "${osdist}x" == "Ubuntux" ] ; then
-  export ospref=UB
-elif [ "${osdist}x" == "Debianx" ] ; then
-  export ospref=DEB
-else
-  export ospref=RH
-fi
-
-export PATH=../${ospref}${osver}_x86_64/bin:$PATH
-
 if ! command -v kv_test &> /dev/null
 then
-  echo "kv_test could not be found"
-  exit
+  export osver=$(lsb_release -rs | sed 's/[.].*//')
+  export osdist=$(lsb_release -i | sed 's/.*:\t//')
+
+  if [ "${osdist}x" == "Fedorax" ] ; then
+    export ospref=FC
+  elif [ "${osdist}x" == "Ubuntux" ] ; then
+    export ospref=UB
+  elif [ "${osdist}x" == "Debianx" ] ; then
+    export ospref=DEB
+  else
+    export ospref=RH
+  fi
+
+  if [ -d ../${ospref}${osver}_x86_64/bin ] ; then
+    export PATH=../${ospref}${osver}_x86_64/bin:$PATH
+  elif [ -d ${ospref}${osver}_x86_64/bin ] ; then
+    export PATH=${ospref}${osver}_x86_64/bin:$PATH
+  fi
+
+  if ! command -v kv_test &> /dev/null
+  then
+    echo "kv_test could not be found"
+    exit
+  fi
 fi
 
 export KVMARG="-m sysv:my_test"

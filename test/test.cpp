@@ -16,7 +16,15 @@ using namespace kv;
 SignalHandler sighndl;
 
 struct Results {
-  uint64_t     total_ops;
+  uint64_t     total_ops,
+               evict,
+               hit,
+               miss,
+               cuckacq,
+               cuckfet,
+               cuckmov,
+               cuckret,
+               cuckmax;
   double       ival,      /* seconds */
                ops_rate,  /* ops / second */
                ns_per,    /* nanos per operation */
@@ -25,11 +33,21 @@ struct Results {
                wr_rate,   /* wr ops / second */
                spin_rate; /* busy wait spins / second */
 
-  Results() : total_ops( 0 ), ival( 0 ), ops_rate( 0 ), ns_per( 0 ),
-              collision( 0 ), rd_rate( 0 ), wr_rate( 0 ), spin_rate( 0 ) {}
+  Results() : total_ops( 0 ), evict( 0 ), hit( 0 ), miss( 0 ), cuckacq( 0 ),
+              cuckfet( 0 ), cuckmov( 0 ), cuckmax( 0 ), ival( 0 ),
+              ops_rate( 0 ), ns_per( 0 ), collision( 0 ), rd_rate( 0 ),
+              wr_rate( 0 ), spin_rate( 0 ) {}
 
   Results & operator+=( const Results &x ) {
     this->total_ops += x.total_ops;
+    this->evict     += x.evict;
+    this->hit       += x.hit;
+    this->miss      += x.miss;
+    this->cuckacq   += x.cuckacq; /* num acquires by cuckoo path search */
+    this->cuckfet   += x.cuckfet; /* num fetches by cuckoo path search */
+    this->cuckmov   += x.cuckmov; /* num elems moved by cuckoo path search */
+    this->cuckret   += x.cuckret; /* num retries by cuckoo path search */
+    this->cuckmax   += x.cuckmax; /* ht full by cuckoo path */
     this->ival      += x.ival;
     this->ops_rate  += x.ops_rate;
     this->ns_per    += x.ns_per;
@@ -55,6 +73,10 @@ struct Results {
     printf( "%5s%12s%12s%6s%6s%12s%12s%14s\n",
             "ival", "tot", "op/s", "ns", "coll", "rd/s", "wr/s", "spin/s" );
   }
+  void print_hdr2( void ) {
+    printf( "     %12s%12s%12s%12s%12s%12s\n",
+            "hit", "mis", "evi", "acq", "fet", "mov" );
+  }
   /* cols matches up with hdr */
   void print_stats( void ) {
     printf( "%5.1f", this->ival );
@@ -66,6 +88,14 @@ struct Results {
     printf( "%12.0f", this->wr_rate );
     printf( "%14.0f\n", this->spin_rate );
   }
+  void print_stats2( void ) {
+    printf( "     %12lu", this->hit );
+    printf( "%12lu", this->miss );
+    printf( "%12lu", this->evict );
+    printf( "%12lu", this->cuckacq );
+    printf( "%12lu", this->cuckfet );
+    printf( "%12lu\n", this->cuckmov );
+  }
   /* space separated */
   void print_line( void ) {
     printf( "%.1f ", this->ival );
@@ -75,7 +105,15 @@ struct Results {
     printf( "%.2f ", this->collision );
     printf( "%.1f ", this->rd_rate );
     printf( "%.1f ", this->wr_rate );
-    printf( "%.1f\n", this->spin_rate );
+    printf( "%.1f ", this->spin_rate );
+    printf( "%lu ", this->evict );
+    printf( "%lu ", this->hit );
+    printf( "%lu ", this->miss );
+    printf( "%lu ", this->cuckacq );
+    printf( "%lu ", this->cuckfet );
+    printf( "%lu ", this->cuckmov );
+    printf( "%lu ", this->cuckret );
+    printf( "%lu\n", this->cuckmax );
   }
 };
 
@@ -105,6 +143,7 @@ struct Test {
                     use_rand,
                     use_zipf,
                     do_fill,
+                    evict,
                     quiet;
   int               thr_num,
                     num_threads;
@@ -124,15 +163,18 @@ struct Test {
     this->map.hdr.get_hash_seed(
       this->map.hdr.stat_link[ this->dbx_id ].db_num, this->hs );
   }
+  void sum_stats( void ) noexcept;
   void print_hdr( void ) noexcept;
   void print_stats( void ) noexcept;
+  void print_hdr2( void ) noexcept;
+  void print_stats2( void ) noexcept;
   void test_one( void ) noexcept;
   void test_rand( void ) noexcept;
   void test_incr( void ) noexcept;
   void test_int( void ) noexcept;
   void run( void ) noexcept;
   Test * copy( void ) noexcept {
-    void * p = ::malloc( sizeof( Test ) );
+    void * p = ::aligned_alloc( 64, sizeof( Test ) ); /* this is necessary */
     Test * t = new ( p ) Test( this->map, this->num_threads );
     t->test_count = this->test_count;
     t->load_pct   = this->load_pct;
@@ -147,6 +189,7 @@ struct Test {
     t->use_zipf   = this->use_zipf;
     t->do_fill    = this->do_fill;
     t->num_secs   = this->num_secs;
+    t->evict      = this->evict;
     t->quiet      = this->quiet;
     return t;
   }
@@ -159,13 +202,43 @@ Test::print_hdr( void ) noexcept
     return;
   this->results.print_hdr();
 }
-
 void
 Test::print_stats( void ) noexcept
+{
+  if ( this->quiet )
+    return;
+  this->results.print_stats();
+}
+void
+Test::print_hdr2( void ) noexcept
+{
+  if ( this->quiet )
+    return;
+  this->results.print_hdr2();
+}
+void
+Test::print_stats2( void ) noexcept
+{
+  if ( this->quiet )
+    return;
+  this->results.print_stats2();
+}
+
+
+void
+Test::sum_stats( void ) noexcept
 {
   Results & r = this->results;
 
   r.total_ops = this->ops.rd + this->ops.wr;
+  r.evict     = this->ops.htevict;
+  r.hit       = this->ops.hit;
+  r.miss      = this->ops.miss;
+  r.cuckacq   = this->ops.cuckacq;
+  r.cuckfet   = this->ops.cuckfet;
+  r.cuckmov   = this->ops.cuckmov;
+  r.cuckret   = this->ops.cuckret;
+  r.cuckmax   = this->ops.cuckmax;
   r.ival      = this->ival;
   r.ops_rate  = (double) ( this->ops.rd + this->ops.wr ) / this->ival;
   r.ns_per    = this->ival / (double) ( this->ops.rd +
@@ -175,11 +248,6 @@ Test::print_stats( void ) noexcept
   r.rd_rate   = (double) this->ops.rd / this->ival;
   r.wr_rate   = (double) this->ops.wr / this->ival;
   r.spin_rate = (double) this->ops.spins / this->ival;
-
-  if ( this->quiet )
-    return;
-
-  r.print_stats();
 }
 
 /* test latency to hit one entry over and over again, no hashing */
@@ -227,8 +295,10 @@ Test::test_one( void ) noexcept
     if ( this->num_secs <= 0 || mono - start >= this->num_secs ) {
       this->ival = mono - last; last = mono;
       if ( this->map.sum_ht_thr_delta( this->stats, this->ops, this->tot,
-                                       this->ctx_id ) > 0 )
+                                       this->ctx_id ) > 0 ) {
+        this->sum_stats();
         this->print_stats();
+      }
       if ( this->num_secs > 0 )
         return;
     }
@@ -251,9 +321,10 @@ Test::test_int( void ) noexcept
            do_cnt  = 0,
            which   = ( this->use_find ? 1 : 0 ); /* which == 1 for find */
   bool     done    = false;
+  uint8_t & ldper  = this->map.hdr.load_percent,
+          & critld = this->map.hdr.critical_load;
 
   sighndl.install();
-  this->print_hdr();
 
   start = mono = last = current_monotonic_time_s();
   this->map.sum_ht_thr_delta( this->stats, this->ops, this->tot, this->ctx_id );
@@ -275,8 +346,10 @@ Test::test_int( void ) noexcept
     kar  = KeyCtx::new_array( this->map, this->dbx_id, kar, stride );
     kbar = KeyBufAligned::new_array( kbar, stride );
 
-    for ( k = 0; k < total; k += stride ) { /* loop for a million or more */
-
+    /* loop for a million or more */
+    for ( k = 0; k < total; k += stride ) {
+      uint16_t evict_acquire =
+        ( ( this->evict && ldper >= critld ) ? KEYCTX_EVICT_ACQUIRE : 0 );
       if ( this->use_ratio ) {
         if ( do_cnt == 0 ) {
           while ( do_cnt < 64 ) {
@@ -316,6 +389,7 @@ Test::test_int( void ) noexcept
       for ( j = 0; j < stride; j++ ) {
         kar[ j ].set_key_hash( kbar[ j ] );
         kar[ j ].prefetch( which );
+        kar[ j ].set( evict_acquire );
       }
       /* get the key value */
       if ( which ) {
@@ -358,8 +432,13 @@ Test::test_int( void ) noexcept
     if ( this->num_secs <= 0 || mono - start >= this->num_secs || done ) {
       this->ival = mono - last; last = mono;
       if ( this->map.sum_ht_thr_delta( this->stats, this->ops, this->tot,
-                                       this->ctx_id ) > 0 )
+                                       this->ctx_id ) > 0 ) {
+        this->sum_stats();
+        this->print_hdr();
         this->print_stats();
+        this->print_hdr2();
+        this->print_stats2();
+      }
       if ( this->num_secs > 0 || done )
         return;
     }
@@ -429,6 +508,7 @@ main( int argc, char *argv[] )
              * op = get_arg( argc, argv, 1, "-o", "ins" ),
              * nn = get_arg( argc, argv, 1, "-n", NULL ),
              * db = get_arg( argc, argv, 1, "-d", "0" ),
+             * ev = get_arg( argc, argv, 0, "-e", NULL ),
              * qu = get_arg( argc, argv, 0, "-q", NULL ),
              * he = get_arg( argc, argv, 0, "-h", 0 );
 
@@ -437,7 +517,7 @@ main( int argc, char *argv[] )
     fprintf( stderr, "raikv version: %s\n", kv_stringify( KV_VER ) );
     fprintf( stderr,
   "%s [-m map] [-c size] [-t num-thr] [-x gen] [-p pct] [-r ratio] "
-     "[-f prefetch] [-o oper] [-n secs] [-d db-num]\n"
+     "[-f prefetch] [-o oper] [-n secs] [-d db-num] [-e] [-q]\n"
   "  -m map      = name of map file (default: " KV_DEFAULT_SHM ")\n"
   "  -c size     = size of map file to create\n"
   "  -t num-thr  = num threads to run simul (def: 0)\n"
@@ -447,7 +527,9 @@ main( int argc, char *argv[] )
   "  -f prefetch = number of prefetches to perform (def: 1)\n"
   "  -o oper     = find, insert, ratio (def: ins)\n"
   "  -n secs     = num seconds (def: continue forever)\n"
-  "  -d db-num   = database number to use (def: 0)\n", argv[ 0 ] );
+  "  -d db-num   = database number to use (def: 0)\n"
+  "  -e          = evict elems when ht full\n"
+  "  -q          = be quiet, only results\n", argv[ 0 ] );
     return 1;
   }
 
@@ -470,7 +552,8 @@ main( int argc, char *argv[] )
   int nthr = ( th != NULL ? atoi( th ) : 1 );
   if ( nthr < 1 ) nthr = 1;
   double load_pct = strtod( pc, 0 );
-  if ( load_pct == 0 || load_pct > 100.0 )
+  /* allow load > 100, for find misses and insert more than ht can hold */
+  if ( load_pct == 0 /*|| load_pct > 100.0*/ )
     goto cmd_error;
   double ratio_pct = strtod( ra, 0 );
   if ( ratio_pct == 0 || ratio_pct > 100.0 )
@@ -496,6 +579,7 @@ main( int argc, char *argv[] )
                     ::strncmp( ge, "rand", 4 ) == 0;  /* use rand sequence */
   test.do_fill    = ::strncmp( ge, "fill", 4 ) == 0;  /* insert load_pct int */
   test.num_secs   = ( nn == NULL ? 0 : strtod( nn, 0 ) );
+  test.evict      = ( ev != NULL );
   test.quiet      = ( qu != NULL || nthr > 1 );
 
   /* if one thread */

@@ -1490,9 +1490,21 @@ cli( void )
       case 'q': /* quit */
         goto break_loop;
 
+      case 'b':
+        if ( kctx.test( KEYCTX_EVICT_ACQUIRE ) ) {
+          kctx.clear( KEYCTX_EVICT_ACQUIRE );
+          xprintf( "evict acquire off\n" );
+        }
+        else {
+          kctx.set( KEYCTX_EVICT_ACQUIRE );
+          xprintf( "evict acquire on\n" );
+        }
+        break;
+
       default:
         xprintf(
         "a| append key value      ; append value to key\n"
+        "b| flip evict acquire    ; set or unset evict acquire\n"
         "c| contexts              ; print stats for all contexts\n"
         "C| open contexts         ; print stats open contexts\n"
         "d| drop key              ; drop key\n"

@@ -235,7 +235,7 @@ main( int argc, char *argv[] )
   HashTab     * map        = NULL;
   double        ratio      = 0.5;
   uint64_t      stats_ival = NANOS,
-                check_ival = NANOS;
+                check_ival = NANOS / 10;
   uint64_t      mbsize     = 1024 * 1024 * 1024; /* 1G */
   uint32_t      entsize    = 64,                 /* 64b */
                 valsize    = 1024 * 1024;        /* 1MB */
@@ -252,7 +252,7 @@ main( int argc, char *argv[] )
              * at = get_arg( argc, argv, 0, "-a", 0 ),
              * rm = get_arg( argc, argv, 0, "-r", 0 ),
              * iv = get_arg( argc, argv, 1, "-i", "1" ),
-             * ix = get_arg( argc, argv, 1, "-x", "1" ),
+             * ix = get_arg( argc, argv, 1, "-x", "0.1" ),
              * he = get_arg( argc, argv, 0, "-h", 0 );
 
   if ( he != NULL ) {
@@ -260,7 +260,7 @@ main( int argc, char *argv[] )
     fprintf( stderr, "raikv version: %s\n", kv_stringify( KV_VER ) );
     fprintf( stderr,
   "%s [-m map] [-s MB] [-k ratio] [-c cuckoo a+b] "
-     "[-v value-sz] [-e entry-sz] [-a] [-r]\n"
+     "[-v value-sz] [-e entry-sz] [-a] [-r] [-i secs] [-x secs]\n"
   "  -m map         = name of map file (default: " KV_DEFAULT_SHM ")\n"
   "  -s MB          = size of HT (MB * 1024 * 1024, default: 1024)\n"
   "  -k ratio       = entry to segment memory ratio (float 0 -> 1, def: 0.5)\n"
@@ -272,7 +272,7 @@ main( int argc, char *argv[] )
   "  -a             = attach to map, don't create (default: create)\n"
   "  -r             = remove map and then exit\n"
   "  -i secs        = stats interval (default: 1)\n"
-  "  -x secs        = check interval (default: 1)\n",
+  "  -x secs        = check interval (default: 0.1)\n",
              argv[ 0 ] );
     return 1;
   }
