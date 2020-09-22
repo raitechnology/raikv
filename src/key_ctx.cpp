@@ -159,13 +159,19 @@ KeyCtx::acquire( void ) noexcept
   if ( status == KEY_IS_NEW ) {
     if ( this->drop_flags != FL_NO_ENTRY &&
          ( this->drop_flags & FL_DROPPED ) == 0 ) {
+      const uint64_t k  = this->key,
+                     k2 = this->key2;
       this->entry->flags = this->drop_flags;
+      this->key  = this->drop_key;
+      this->key2 = this->drop_key2;
       this->lock = this->key;
       if ( this->evict_cb != NULL ) {
         (*this->evict_cb)( (kv_key_ctx_t *) this, this->cl );
       }
       this->tombstone();
       this->incr_htevict();
+      this->key  = k;
+      this->key2 = k2;
     }
   }
   return status;

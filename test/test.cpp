@@ -2,6 +2,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
 #include <math.h>
 #include <unistd.h>
 #include <pthread.h>
@@ -33,11 +34,9 @@ struct Results {
                wr_rate,   /* wr ops / second */
                spin_rate; /* busy wait spins / second */
 
-  Results() : total_ops( 0 ), evict( 0 ), hit( 0 ), miss( 0 ), cuckacq( 0 ),
-              cuckfet( 0 ), cuckmov( 0 ), cuckmax( 0 ), ival( 0 ),
-              ops_rate( 0 ), ns_per( 0 ), collision( 0 ), rd_rate( 0 ),
-              wr_rate( 0 ), spin_rate( 0 ) {}
-
+  Results() {
+    ::memset( this, 0, sizeof( *this ) );
+  }
   Results & operator+=( const Results &x ) {
     this->total_ops += x.total_ops;
     this->evict     += x.evict;
@@ -149,6 +148,8 @@ struct Test {
                     num_threads;
   const char      * generator;
   Results           results;
+  void            * data;
+  uint64_t          datasize;
 
   void * operator new( size_t, void *ptr ) { return ptr; }
   Test( HashTab &m,  int nthr ) : map( m ),
@@ -188,9 +189,10 @@ struct Test {
     t->use_rand   = this->use_rand;
     t->use_zipf   = this->use_zipf;
     t->do_fill    = this->do_fill;
-    t->num_secs   = this->num_secs;
     t->evict      = this->evict;
     t->quiet      = this->quiet;
+    t->data       = this->data;
+    t->datasize   = this->datasize;
     return t;
   }
 };
@@ -285,8 +287,8 @@ Test::test_one( void ) noexcept
     else {
       for ( i = 0; i < total; i++ ) {
         if ( kctx.acquire( &this->wrk ) <= KEY_IS_NEW ) {
-          if ( kctx.resize( &p, 6 ) == KEY_OK )
-            ::memcpy( p, "hello", 6 );
+          if ( kctx.resize( &p, this->datasize ) == KEY_OK )
+            ::memcpy( p, this->data, this->datasize );
           kctx.release();
         }
       }
@@ -406,8 +408,8 @@ Test::test_int( void ) noexcept
           bool success = false;
           kbar[ j ].get( r );
           if ( kar[ j ].acquire( &this->wrk ) <= KEY_IS_NEW ) {
-            if ( kar[ j ].resize( &p, 8 ) == KEY_OK ) {
-              ::memcpy( p, &r, 8 );
+            if ( kar[ j ].resize( &p, this->datasize ) == KEY_OK ) {
+              ::memcpy( p, this->data, this->datasize );
               success = true;
             }
             kar[ j ].release();
@@ -492,6 +494,22 @@ get_arg( int argc, char *argv[], int b, const char *f, const char *def )
   return def; /* default value */
 }
 
+static uint64_t
+tomem( const char *s )
+{
+  static const struct {
+    const char *s;
+    uint64_t val;
+  } suffix[] = {
+  { "B", 1 }, { "K", 1000 }, { "M", 1000 * 1000 }, { "G", 1000 * 1000 * 1000 },
+  { "KB", 1024 }, { "MB", 1024 * 1024 }, { "GB", 1024 * 1024 * 1024 }
+  };
+  for ( size_t i = 0; i < sizeof( suffix ) / sizeof( suffix[ 0 ] ); i++ )
+    if ( ::strcasecmp( suffix[ i ].s, s ) == 0 )
+      return suffix[ i ].val;
+  return 0;
+}
+
 int
 main( int argc, char *argv[] )
 {
@@ -508,6 +526,7 @@ main( int argc, char *argv[] )
              * op = get_arg( argc, argv, 1, "-o", "ins" ),
              * nn = get_arg( argc, argv, 1, "-n", NULL ),
              * db = get_arg( argc, argv, 1, "-d", "0" ),
+             * sz = get_arg( argc, argv, 1, "-z", "0" ),
              * ev = get_arg( argc, argv, 0, "-e", NULL ),
              * qu = get_arg( argc, argv, 0, "-q", NULL ),
              * he = get_arg( argc, argv, 0, "-h", 0 );
@@ -519,7 +538,7 @@ main( int argc, char *argv[] )
   "%s [-m map] [-c size] [-t num-thr] [-x gen] [-p pct] [-r ratio] "
      "[-f prefetch] [-o oper] [-n secs] [-d db-num] [-e] [-q]\n"
   "  -m map      = name of map file (default: " KV_DEFAULT_SHM ")\n"
-  "  -c size     = size of map file to create\n"
+  "  -c size     = size of map file to create in MB\n"
   "  -t num-thr  = num threads to run simul (def: 0)\n"
   "  -x gen      = key generator kind: one, int, rand, zipf, fill (def: int)\n"
   "  -p pct      = percent coverage of total hash entries (def: 50%%)\n"
@@ -528,19 +547,35 @@ main( int argc, char *argv[] )
   "  -o oper     = find, insert, ratio (def: ins)\n"
   "  -n secs     = num seconds (def: continue forever)\n"
   "  -d db-num   = database number to use (def: 0)\n"
+  "  -z data-sz  = size of data field (def: 0)\n"
   "  -e          = evict elems when ht full\n"
   "  -q          = be quiet, only results\n", argv[ 0 ] );
     return 1;
   }
 
+  double   szf = strtod( sz, 0 );
+  size_t   szl = ::strlen( sz );
+  uint64_t m;
+
+  while ( szl > 0 && isalpha( sz[ szl - 1 ] ) )
+    szl--;
+  if ( sz[ szl ] != '\0' && (m = tomem( &sz[ szl ] )) != 0 )
+    szf *= (double) m;
   if ( cr != NULL ) {
     geom.map_size         = strtod( cr, 0 ) * 1024 * 1024;
-    geom.max_value_size   = 0; /* all ht, no value */
     geom.hash_entry_size  = 64;
-    geom.hash_value_ratio = 1;
     geom.cuckoo_buckets   = 4;
     geom.cuckoo_arity     = 2;
 
+    if ( szf == 0 ) {
+      geom.max_value_size   = 0; /* all ht, no value */
+      geom.hash_value_ratio = 1;
+    }
+    else {
+      geom.max_value_size   = (uint64_t) szf + 128;
+      geom.hash_value_ratio = 1.0 / /* hash ratio of / 64 bytes */
+                    ( ( ( (uint64_t) szf | 127 ) + 129 ) / 64.0 );
+    }
     map = HashTab::create_map( mn, 0, geom, 0666 );
   }
   else {
@@ -570,6 +605,17 @@ main( int argc, char *argv[] )
   test.prefetch   = prefetch;
   test.db_num     = db_num;
   test.generator  = ge;
+  test.datasize   = (uint64_t) szf;
+  test.data       = ( test.datasize > 0 ? ::malloc( test.datasize ) : NULL );
+  if ( test.data != NULL ) {
+    for ( size_t i = 0; i < test.datasize; i++ )
+      ((uint8_t *) test.data)[ i ] = (uint8_t) i;
+  }
+  else {
+    static char hello[ 6 ] = "hello";
+    test.datasize = 6;
+    test.data     = (void *) hello;
+  }
   test.test_count = (uint64_t)
     ( ( (double) map->hdr.ht_size * test.load_pct ) / 100.0 );
   test.use_find   = ::strncmp( op, "find", 4 ) == 0;  /* insert default */
