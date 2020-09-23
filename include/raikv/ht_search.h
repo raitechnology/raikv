@@ -76,7 +76,8 @@ KeyCtx::acquire( Position &next )
       break;
     /* check for tombstoned entries */
     if ( kv_unlikely( drop == NULL && ( el->test( FL_DROPPED ) ||
-                                        this->test( KEYCTX_EVICT_ACQUIRE ) ) ) ) {
+                                        ( this->test( KEYCTX_EVICT_ACQUIRE ) &&
+                                          el->db == this->db_num ) ) ) ) {
       drop_mcs_id = cur_mcs_id;
       drop        = el;
       drop_h      = h;
