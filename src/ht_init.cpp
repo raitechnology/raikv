@@ -52,7 +52,7 @@ static const char * shm_type[ 4 ][ 3 ] = {
   { "posx+4k", "posx+2m", "posx+1g" },
   { "sysv+4k", "sysv+2m", "sysv+1g" }
 };
-static const uint8_t ALLOC_TYPE = 0, /* types that go in the SHM_TYPE_IDX pos: */
+static const uint8_t/*ALLOC_TYPE = 0, types that go in the SHM_TYPE_IDX pos: */
                      FILE_TYPE  = 1, /* 1g, 2m, 4k */
                      POSIX_TYPE = 2,
                      SYSV_TYPE  = 3,
@@ -297,8 +297,8 @@ parse_map_name( const char *&fn )
 /* 2m uses traditional huge pages (2003)
  * 1g uses gigabyte size huges pages (2.6.18)
  * https://lwn.net/Articles/374424/ */
-static const uint64_t PGSZ_2M = 2 * 1024 * 1024,
-                      PGSZ_1G = 1024 * 1024 * 1024;
+/*static const uint64_t PGSZ_2M = 2 * 1024 * 1024,
+                      PGSZ_1G = 1024 * 1024 * 1024;*/
 static void
 show_perror( const char *what,  const char *map_name )
 {

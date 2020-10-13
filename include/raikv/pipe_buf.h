@@ -45,15 +45,17 @@ struct PipeMsg {
 };
 
 /* Useful to kill( pid ), see if the other process is still alive */
+struct PipeOwner {
+  uint32_t snd_ctx_id, /* uniquely identify endpoints */
+           snd_pid,
+           rcv_ctx_id,
+           rcv_pid;
+};
+
 struct PipeInfo { /* the producer, src ident, and consumer, dest ident */
   union {
-    struct {
-      uint32_t snd_ctx_id, /* uniquely identify endpoints */
-               snd_pid,
-               rcv_ctx_id,
-               rcv_pid;
-    } x;
-    uint8_t cache_line[ 64 ];
+    PipeOwner x;
+    uint8_t   cache_line[ 64 ];
   };
 };
 

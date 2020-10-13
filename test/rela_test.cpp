@@ -66,8 +66,8 @@ print_time( uint64_t ns,  char *buf,  size_t sz )
 static const uint64_t MIN_NS      = 60 * NANOS;
 static const uint64_t HOUR_NS     = 60 * MIN_NS;
 static const uint64_t DAY_NS      = 24 * HOUR_NS;
-static const uint64_t EXP_DAYS_NS = (uint64_t) ( 700 * 24 * 60 * 60 ) * NANOS;
-static const uint64_t TWO_DAYS_NS = (uint64_t) ( 2 * 24 * 60 * 60 ) * NANOS;
+/*static const uint64_t EXP_DAYS_NS = (uint64_t) ( 700 * 24 * 60 * 60 ) * NANOS;
+static const uint64_t TWO_DAYS_NS = (uint64_t) ( 2 * 24 * 60 * 60 ) * NANOS;*/
 
 int
 main( int, char ** )
