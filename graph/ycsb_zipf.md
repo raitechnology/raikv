@@ -7,6 +7,7 @@ The function that generates keys that `kv_test` uses for the
 from a well known benchmark called the [Yahoo! Cloud Serving
 Benchmark](https://github.com/brianfrankcooper/YCSB), in the Java Class named
 [ZipfianGenerator.java](https://github.com/brianfrankcooper/YCSB/blob/master/core/src/main/java/site/ycsb/generator/ZipfianGenerator.java).
+This generator and the one in `kv_test` use a skew of 0.99.
 
 The method used by `kv_test` is by calculating the load of the hash table and
 using that to bound the limits of the key generator.  If the hash table size

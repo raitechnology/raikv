@@ -386,23 +386,9 @@ rai::kv::mem_to_string( int64_t m,  char *b,  int64_t k ) noexcept
   return s; 
 }   
 
-/* via Andrei Alexandrescu */
-static inline size_t
-uint64_digits( uint64_t v )
-{
-  for ( size_t n = 1; ; n += 4 ) {
-    if ( v < 10 )    return n;
-    if ( v < 100 )   return n + 1;
-    if ( v < 1000 )  return n + 2;
-    if ( v < 10000 ) return n + 3;
-    v /= 10000;
-  }
-}
-
 size_t
-rai::kv::uint64_to_string( uint64_t v,  char *buf ) noexcept
+rai::kv::uint64_to_string( uint64_t v,  char *buf,  size_t len ) noexcept
 {
-  const size_t len = uint64_digits( v );
   buf[ len ] = '\0';
   for ( size_t pos = len; v >= 10; ) {
     const uint64_t q = v / 10,
@@ -415,11 +401,14 @@ rai::kv::uint64_to_string( uint64_t v,  char *buf ) noexcept
 }
 
 size_t
-rai::kv::int64_to_string( int64_t v,  char *buf ) noexcept
+rai::kv::int64_to_string( int64_t v,  char *buf,  size_t len ) noexcept
 {
-  size_t len = 0;
-  if ( v < 0 ) { len++; *buf++ = '-'; v = -v; }
-  return len + uint64_to_string( (uint64_t) v, buf );
+  if ( v < 0 ) {
+    len--; *buf++ = '-';
+    v = -v;
+    return 1 + uint64_to_string( neg64( v ), buf, len - 1 );
+  }
+  return uint64_to_string( (uint64_t) v, buf, len );
 }
 
 uint64_t

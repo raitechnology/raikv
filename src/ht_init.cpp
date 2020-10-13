@@ -982,6 +982,107 @@ HashTab::detach_ctx( uint32_t ctx_id ) noexcept
   el.key.xchg( 0 );
 }
 
+int
+EvShm::open( const char *map_name,  uint8_t db_num ) noexcept
+{
+  HashTabGeom geom;
+  this->map = HashTab::attach_map( map_name, 0, geom );
+  if ( this->map != NULL )
+    return this->attach( db_num );
+  return -1;
+}
+
+int
+EvShm::create( const char *map_name,  kv_geom_t *geom,  int map_mode,
+               uint8_t db_num ) noexcept
+{
+  kv_geom_t default_geom;
+  if ( geom == NULL ) {
+    ::memset( &default_geom, 0, sizeof( default_geom ) );
+    geom = &default_geom;
+  }
+  if ( geom->map_size == 0 )
+    geom->map_size = (uint64_t) 1024*1024*1024;
+  if ( geom->hash_value_ratio <= 0.0 || geom->hash_value_ratio > 1.0 )
+    geom->hash_value_ratio = 0.25;
+  if ( geom->hash_value_ratio < 1.0 ) {
+    uint64_t value_space = (uint64_t) ( (double) geom->map_size *
+                                        ( 1.0 - geom->hash_value_ratio ) );
+    if ( geom->max_value_size == 0 || geom->max_value_size > value_space / 3 ) {
+      const uint64_t sz = 256 * 1024 * 1024;
+      uint64_t d  = 8; /* 8 = 512MB/64MB, 8 = 1G/128MB, 16 = 2G/256G */
+      geom->max_value_size = value_space / d;
+      while ( d < 128 && geom->max_value_size / 2 > sz ) {
+        geom->max_value_size /= 2;
+        d *= 2;
+      }
+    }
+  }
+  geom->hash_entry_size = 64;
+  geom->cuckoo_buckets  = 2;
+  geom->cuckoo_arity    = 4;
+  if ( map_mode == 0 )
+    map_mode = 0660;
+  this->map = HashTab::create_map( map_name, 0, *geom, map_mode );
+  if ( this->map != NULL )
+    return this->attach( db_num );
+  return -1;
+}
+
+void
+EvShm::print( void ) noexcept
+{
+  fputs( print_map_geom( this->map, this->ctx_id ), stdout );
+  HashTabStats * hts = HashTabStats::create( *this->map );
+  hts->fetch();
+  for ( uint32_t db = 0; db < DB_COUNT; db++ ) {
+    if ( this->map->hdr.test_db_opened( db ) ) {
+      printf( "db[ %u ].entry_cnt:%s %lu\n", db,
+              ( ( db < 10 ) ? "   " : ( ( db < 100 ) ? "  " : " " ) ),
+              hts->db_stats[ db ].last.add -
+              hts->db_stats[ db ].last.drop );
+    }
+  }
+  ::free( hts );
+  fflush( stdout );
+}
+
+EvShm::~EvShm() noexcept
+{
+  /* should explicity close instead */
+  /*if ( this->map != NULL )
+    this->close();*/
+}
+
+int
+EvShm::attach( uint8_t db_num ) noexcept
+{
+  /* centos don't have gettid() */
+  this->ctx_id = this->map->attach_ctx( ::syscall( SYS_gettid ) );
+  if ( this->ctx_id != MAX_CTX_ID ) {
+    this->dbx_id = this->map->attach_db( this->ctx_id, db_num );
+    return 0;
+  }
+  return -1;
+}
+
+void
+EvShm::detach( void ) noexcept
+{
+  if ( this->ctx_id != MAX_CTX_ID ) {
+    this->map->detach_ctx( this->ctx_id );
+    this->ctx_id = MAX_CTX_ID;
+  }
+}
+
+void
+EvShm::close( void ) noexcept
+{
+  this->detach();
+  delete this->map;
+  this->map = NULL;
+}
+
 extern "C" {
 kv_hash_tab_t *
 kv_alloc_map( kv_geom_t *geom )

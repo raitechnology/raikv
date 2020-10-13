@@ -164,13 +164,43 @@ double current_realtime_coarse_s( void ) noexcept; /* s + fraction (52b pr) */
  /* round 10001 to 10K, 10000123 to 10M */
 char *mem_to_string( int64_t m,  char *b,  int64_t k = 1000 ) noexcept;
 
-size_t uint64_to_string( uint64_t v,  char *buf ) noexcept;
+size_t uint64_to_string( uint64_t v,  char *buf,  size_t len ) noexcept;
 
-size_t int64_to_string( int64_t v,  char *buf ) noexcept;
+size_t int64_to_string( int64_t v,  char *buf,  size_t len ) noexcept;
+
+/* via Andrei Alexandrescu */
+inline size_t uint64_digits( uint64_t v ) {
+  for ( size_t n = 1; ; n += 4 ) {
+    if ( v < 10 )    return n;
+    if ( v < 100 )   return n + 1;
+    if ( v < 1000 )  return n + 2;
+    if ( v < 10000 ) return n + 3;
+    v /= 10000;
+  }
+}
+
+inline uint64_t neg64( int64_t v ) {
+  if ( (uint64_t) v == ( (uint64_t) 1 << 63 ) )
+    return ( (uint64_t) 1 << 63 );
+  return (uint64_t) -v;
+}
+
+inline size_t int64_digits( int64_t v ) {
+  return v < 0 ? ( uint64_digits( neg64( v ) ) + 1 ) : uint64_digits( v );
+}
+
+inline size_t uint64_to_string( uint64_t v,  char *buf ) {
+  return uint64_to_string( v, buf, uint64_digits( v ) );
+}
+
+inline size_t int64_to_string( int64_t v,  char *buf ) {
+  return int64_to_string( v, buf, int64_digits( v ) );
+}
 
 uint64_t string_to_uint64( const char *b,  size_t len ) noexcept;
 
 int64_t string_to_int64( const char *b,  size_t len ) noexcept;
+
 } /* namespace kv */
 } /* namespace rai */
 #endif

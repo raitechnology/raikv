@@ -88,7 +88,9 @@ print_defines = -DKV_VER=$(ver_build)
 test_defines  = -DKV_VER=$(ver_build)
 
 libraikv_files := key_ctx ht_linear ht_cuckoo key_hash msg_ctx ht_stats \
-                  ht_init scratch_mem util rela_ts radix_sort print pipe_buf
+                  ht_init scratch_mem util rela_ts radix_sort print pipe_buf \
+		  ev_net route_db kv_pubsub timer_queue stream_buf ev_unix \
+		  ev_tcp ev_udp
 libraikv_objs  := $(addprefix $(objd)/, $(addsuffix .o, $(libraikv_files)))
 libraikv_dbjs  := $(addprefix $(objd)/, $(addsuffix .fpic.o, $(libraikv_files)))
 libraikv_deps  := $(addprefix $(dependd)/, $(addsuffix .d, $(libraikv_files))) \
@@ -192,16 +194,46 @@ zipf_test_lnk  = -lraikv
 
 $(bind)/zipf_test: $(zipf_test_objs) $(zipf_test_libs)
 
+test_rtht_objs = $(objd)/test_rtht.o
+test_rtht_deps = $(dependd)/test_rtht.d
+test_rtht_libs = $(libd)/libraikv.so
+test_rtht_lnk  = -lraikv
+
+$(bind)/test_rtht: $(test_rtht_objs) $(test_rtht_libs)
+
+test_cr_objs = $(objd)/test_cr.o
+test_cr_deps = $(dependd)/test_cr.d
+test_cr_libs = $(libd)/libraikv.so
+test_cr_lnk  = -lraikv
+
+$(bind)/test_cr: $(test_cr_objs) $(test_cr_libs)
+
+test_delta_objs = $(objd)/test_delta.o
+test_delta_deps = $(dependd)/test_delta.d
+test_delta_libs = $(libd)/libraikv.so
+test_delta_lnk  = -lraikv
+
+$(bind)/test_delta: $(test_delta_objs) $(test_delta_libs)
+
+test_routes_objs = $(objd)/test_routes.o
+test_routes_deps = $(dependd)/test_routes.d
+test_routes_libs = $(libd)/libraikv.so
+test_routes_lnk  = -lraikv
+
+$(bind)/test_routes: $(test_routes_objs) $(test_routes_libs)
+
 all_exes    += $(bind)/kv_test $(bind)/hash_test $(bind)/ping \
                $(bind)/kv_cli $(bind)/mcs_test $(bind)/kv_server \
 	       $(bind)/load $(bind)/rela_test $(bind)/ctest \
 	       $(bind)/pq_test $(bind)/pubsub $(bind)/pipe_test \
-	       $(bind)/zipf_test
+	       $(bind)/zipf_test $(bind)/test_rtht $(bind)/test_cr \
+	       $(bind)/test_delta $(bind)/test_routes
 all_depends += $(kv_test_deps) $(hash_test_deps) $(ping_deps) \
                $(kv_cli_deps) $(mcs_test_deps) $(kv_server_deps) \
 	       $(load_deps) $(rela_test_deps) $(ctest_deps) \
 	       $(pq_test_deps) $(pubsub_deps) $(pipe_test_deps) \
-	       $(zipf_test)
+	       $(zipf_test_dpes) $(test_rtht_deps) $(test_cr_deps) \
+	       $(test_delta_deps) $(test_routes_deps)
 
 all_dirs := $(bind) $(libd) $(objd) $(dependd)
 
