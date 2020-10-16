@@ -138,14 +138,16 @@ struct MainLoop {
   }
   /* the allocs are 64 byte aligned for poll */
   void * operator new( size_t, void *ptr ) { return ptr; }
-  MainLoop( EvShm &m,  MAIN_LOOP_ARGS &args,  size_t num )
+  MainLoop( EvShm &m,  MAIN_LOOP_ARGS &args,  size_t num,
+            bool (*ini)( void * ) )
     : shm( m ), r( args ) {
     uint8_t * b = (uint8_t *) (void *) &this->thr_num;
     ::memset( b, 0, (uint8_t *) (void *) &this[ 1 ] -  b );
-    this->thr_num = num;
+    this->initialize = ini;
+    this->thr_num    = num;
   }
   /* open listeners, define this in main, this avoids a virtual function */
-  bool initialize( void ) noexcept;
+  bool (*initialize)( void * ) noexcept;
   /* initialize poll event */
   bool poll_init( void ) {
     if ( this->r.num_threads > 1 ) {
@@ -171,7 +173,8 @@ struct MainLoop {
   void run( void ) {
     while ( this->r.thr_start < this->thr_num ) /* wait for my turn */
       usleep( 1 );
-    if ( this->r.thr_error == 0 && this->poll_init() && this->initialize() ) {
+    if ( this->r.thr_error == 0 && this->poll_init() &&
+         this->initialize( this ) ) {
       this->r.thr_start++;
       this->running = true;
       for (;;) {
@@ -214,7 +217,7 @@ struct Runner {
     return nullptr;
   }
 
-  Runner( MAIN_LOOP_ARGS &r,  EvShm &shm ) {
+  Runner( MAIN_LOOP_ARGS &r,  EvShm &shm,  bool (*ini)( void * ) ) {
     this->num_thr = ( r.num_threads <= 1 ? 1 : r.num_threads );
 
     const size_t size = kv::align<size_t>( sizeof( MAIN_LOOP ), 64 );
@@ -222,7 +225,7 @@ struct Runner {
     size_t i, off = 0;
 
     for ( i = 0; i < this->num_thr && i < MAX_THREADS; i++ ) {
-      this->children[ i ] = new ( &buf[ off ] ) MAIN_LOOP( shm, r, i );
+      this->children[ i ] = new ( &buf[ off ] ) MAIN_LOOP( shm, r, i, ini );
       off += size;
     } 
     if ( this->num_thr == 1 ) {
