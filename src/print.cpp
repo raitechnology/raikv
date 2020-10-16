@@ -39,7 +39,7 @@ rai::kv::print_map_geom( HashTab *map,  uint32_t ctx_id,  char *buf,
   }
   char *b  = buf;
   size_t sz = buflen;
-  xnprintf( b, sz, "version:              %s\n", kv_stringify( KV_VER ) );
+  xnprintf( b, sz, "kv_version:           %s\n", kv_stringify( KV_VER ) );
   xnprintf( b, sz, "map_sig:              %s\n", map->hdr.sig );
   xnprintf( b, sz, "map_name:             %s\n", map->hdr.name );
   xnprintf( b, sz, "map_size:             %lu (%.3fMB) (config)\n",
