@@ -1,5 +1,5 @@
 % KV_CLI(1) Rai User's Manual
-% Chris Andreson
+% Chris Anderson
 % August 11, 2020
 
 # NAME
