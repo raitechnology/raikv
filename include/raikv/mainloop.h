@@ -111,14 +111,29 @@ struct MainLoopVars {
   }
 };
 
+/* call out to init listeners:
+ *
+ * struct Loop : public MainLoop<Args> {
+ *   bool init( void ) noexcept;
+ *
+ *   static bool initialize( void *me ) noexcept {
+ *     return ((Loop *) me)->init();
+ *   }
+ * };
+ *
+ * Runner<Args, Loop> runner( args, shm, Loop::initialize );
+ */
+typedef bool (*initialize_func_t)( void * );
+
 template<class MAIN_LOOP_ARGS>
 struct MainLoop {
-  EvPoll           poll;
-  EvShm            shm;
-  MAIN_LOOP_ARGS & r;
-  size_t           thr_num;
-  bool             running,
-                   done;
+  EvPoll            poll;
+  EvShm             shm;
+  MAIN_LOOP_ARGS  & r;
+  size_t            thr_num;
+  bool              running,
+                    done;
+  initialize_func_t initialize;
 
   template <class Sock>
   void Alloc( Sock * &s ) {
@@ -139,15 +154,13 @@ struct MainLoop {
   /* the allocs are 64 byte aligned for poll */
   void * operator new( size_t, void *ptr ) { return ptr; }
   MainLoop( EvShm &m,  MAIN_LOOP_ARGS &args,  size_t num,
-            bool (*ini)( void * ) )
+            initialize_func_t ini )
     : shm( m ), r( args ) {
     uint8_t * b = (uint8_t *) (void *) &this->thr_num;
     ::memset( b, 0, (uint8_t *) (void *) &this[ 1 ] -  b );
     this->initialize = ini;
     this->thr_num    = num;
   }
-  /* open listeners, define this in main, this avoids a virtual function */
-  bool (*initialize)( void * ) noexcept;
   /* initialize poll event */
   bool poll_init( void ) {
     if ( this->r.num_threads > 1 ) {
