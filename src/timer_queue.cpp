@@ -13,7 +13,7 @@ using namespace rai;
 using namespace kv;
 
 EvTimerQueue::EvTimerQueue( EvPoll &p )
-            : EvSocket( p, EV_TIMER_QUEUE ),
+            : EvSocket( p, p.register_type( "timer_queue" ) ),
               last( 0 ), epoch( 0 ), delta( 0 ), real( 0 )
 {
   this->sock_opts = OPT_READ_HI;

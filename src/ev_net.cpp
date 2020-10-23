@@ -22,15 +22,24 @@
 using namespace rai;
 using namespace kv;
 
-void
-EvPoll::register_type( uint8_t t,  const char *s ) noexcept
+uint8_t
+EvPoll::register_type( const char *s ) noexcept
 {
-  const char *x = this->sock_type_str[ t ];
-  this->sock_type_str[ t ] = s;
-  if ( x != NULL && ::strcmp( x, s ) != 0 ) {
-    fprintf( stderr, "duplicate type %u %s:%s\n", t, x, s );
-    exit( 1 );
+  uint8_t t = (uint8_t) kv_crc_c( s, ::strlen( s ), 0 );
+  for ( int i = 0; i < 256; i++ ) {
+    const char *x = this->sock_type_str[ t ];
+    if ( x == NULL ) {
+      this->sock_type_str[ t ] = s;
+      return t;
+    }
+    if ( ::strcmp( x, s ) == 0 )
+      return t;
+    t++;
   }
+  /* should be unique */
+  fprintf( stderr, "no types left %s\n", s );
+  exit( 1 );
+  return 0;
 }
 
 int
@@ -314,10 +323,11 @@ bool EvSocket::on_msg( EvPublish & ) noexcept { return true; }
 void EvSocket::key_prefetch( EvKeyCtx & ) noexcept {}
 int  EvSocket::key_continue( EvKeyCtx & ) noexcept { return 0; }
 
-EvListen::EvListen( EvPoll &p,  uint8_t tp,  const char *name )
-    : EvSocket( p, tp ), accept_cnt( 0 ), timer_id( (uint64_t) tp << 56 )
+EvListen::EvListen( EvPoll &p,  const char *lname,  const char *name )
+    : EvSocket( p, p.register_type( lname ) ), accept_cnt( 0 ),
+      accept_sock_type( p.register_type( name ) )
 {
-  p.register_type( tp, name );
+  this->timer_id = (uint64_t) this->accept_sock_type << 56;
 }
 
 void

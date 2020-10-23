@@ -7,8 +7,8 @@ namespace rai {
 namespace kv {
 
 struct EvTcpListen : public EvListen {
-  EvTcpListen( EvPoll &p,  uint8_t tp,  const char *name )
-    : EvListen( p, tp, name ) {}
+  EvTcpListen( EvPoll &p,  const char *lname,  const char *name )
+    : EvListen( p, lname, name ) {}
   int listen( const char *ip,  int port,  int opts,  const char *k ) noexcept;
   virtual bool accept( void ) noexcept { return false; }
   static void set_sock_opts( EvPoll &p,  int sock,  int opts );

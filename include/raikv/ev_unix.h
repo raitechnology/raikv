@@ -7,8 +7,8 @@ namespace rai {
 namespace kv {
 
 struct EvUnixListen : public EvListen {
-  EvUnixListen( EvPoll &p,  uint8_t tp,  const char *name )
-    : EvListen( p, tp, name ) {}
+  EvUnixListen( EvPoll &p,  const char *lname,  const char *name )
+    : EvListen( p, lname, name ) {}
   int listen( const char *sock,  const char *k ) noexcept;
   virtual bool accept( void ) noexcept { return false; }
 };

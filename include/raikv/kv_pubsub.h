@@ -427,7 +427,7 @@ struct KvPubSub : public EvSocket {
   void * operator new( size_t, void *ptr ) { return ptr; }
   KvPubSub( EvPoll &p,  int sock,  void *mcptr,  const char *mc,  size_t mclen,
             uint32_t xid )
-      : EvSocket( p, EV_KV_PUBSUB ),
+      : EvSocket( p, p.register_type( "kv_pubsub" ) ),
         ctx_id( p.ctx_id ), flags( KV_DO_NOTIFY ),
         dbx_id( xid ), next_seqno( 0 ),
         timer_id( (uint64_t) EV_KV_PUBSUB << 56 ), timer_cnt( 0 ),

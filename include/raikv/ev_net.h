@@ -64,19 +64,19 @@ enum EvSockFlags {
 };
 
 struct EvSocket : public PeerData /* fd and address of peer */ {
-  EvPoll & poll;       /* the parent container */
-  uint64_t prio_cnt;   /* timeslice each socket for a slot to run */
-  uint32_t state;      /* bit mask of states, the queues the sock is in */
-  uint16_t sock_opts;  /* sock opt bits above */
-  uint8_t  sock_type,  /* listen or cnnection */
-           sock_flags; /* in active list or free list */
-  uint64_t bytes_recv, /* stat counters for bytes and msgs */
-           bytes_sent,
-           msgs_recv,
-           msgs_sent;
-  uint8_t  pad[ 8 ];   /* pad out to align 256 bytes */
+  EvPoll      & poll;       /* the parent container */
+  uint64_t      prio_cnt;   /* timeslice each socket for a slot to run */
+  uint32_t      state;      /* bit mask of states, the queues the sock is in */
+  uint16_t      sock_opts;  /* sock opt bits above */
+  const uint8_t sock_type;  /* listen or connection */
+  uint8_t       sock_flags; /* in active list or free list */
+  uint64_t      bytes_recv, /* stat counters for bytes and msgs */
+                bytes_sent,
+                msgs_recv,
+                msgs_sent;
+  uint8_t       pad[ 8 ];   /* pad out to align 256 bytes */
 
-  EvSocket( EvPoll &p,  uint8_t t )
+  EvSocket( EvPoll &p,  const uint8_t t )
     : poll( p ), prio_cnt( 0 ), state( 0 ),  sock_opts( 0 ), sock_type( t ),
       sock_flags( 0 ), bytes_recv( 0 ), bytes_sent( 0 ), msgs_recv( 0 ),
       msgs_sent( 0 ) {}
@@ -258,14 +258,15 @@ struct EvPoll : public RoutePublish {
   /* socket lists, active and free lists, multiple socks are allocated at a
    * time to speed up accept and connection setup */
   kv::DLinkList<EvSocket> active_list;    /* active socks in poll */
-  kv::DLinkList<EvSocket> free_list[ 256 ]; /* free socks in poll */
-  const char            * sock_type_str[ 256 ];
+  kv::DLinkList<EvSocket> free_list[ 256 ];     /* socks for accept */
+  const char            * sock_type_str[ 256 ]; /* name of sock_type */
+  uint8_t                 next_free_type;       /* 0->256 for above */
 
   /*bool single_thread; (if kv single threaded) */
   /* alloc ALLOC_INCR(64) elems of the above list elems at a time, aligned 64 */
   template<class T>
-  T *get_free_list( kv::DLinkList<EvSocket> &free_list ) {
-    T *c = (T *) free_list.hd;
+  T *get_free_list( const uint8_t sock_type ) {
+    T *c = (T *) this->free_list[ sock_type ].hd;
     if ( c == NULL ) {
       size_t sz  = kv::align<size_t>( sizeof( T ), 64 );
       void * m   = aligned_malloc( sz * EvPoll::ALLOC_INCR );
@@ -274,16 +275,16 @@ struct EvPoll : public RoutePublish {
         return NULL;
       while ( (char *) m < end ) {
         end = &end[ -sz ];
-        c = new ( end ) T( *this );
-        c->push_free_list();
+        c = new ( end ) T( *this, sock_type );
+        this->push_free_list( c );
       }
     }
-    c->pop_free_list();
+    this->pop_free_list( c );
     return c;
   }
   template<class T, class S>
-  T *get_free_list2( kv::DLinkList<EvSocket> &free_list, S &stats ) {
-    T *c = (T *) free_list.hd;
+  T *get_free_list2( const uint8_t sock_type,  S &stats ) {
+    T *c = (T *) this->free_list[ sock_type ].hd;
     if ( c == NULL ) {
       size_t sz  = kv::align<size_t>( sizeof( T ), 64 );
       void * m   = aligned_malloc( sz * EvPoll::ALLOC_INCR );
@@ -292,12 +293,24 @@ struct EvPoll : public RoutePublish {
         return NULL;
       while ( (char *) m < end ) {
         end = &end[ -sz ];
-        c = new ( end ) T( *this, stats );
-        c->push_free_list();
+        c = new ( end ) T( *this, sock_type, stats );
+        this->push_free_list( c );
       }
     }
-    c->pop_free_list();
+    this->pop_free_list( c );
     return c;
+  }
+  void push_free_list( EvSocket *s ) {
+    if ( ! s->in_list( IN_FREE_LIST ) ) {
+      s->set_list( IN_FREE_LIST );
+      this->free_list[ s->sock_type ].push_hd( s );
+    }
+  }
+  void pop_free_list( EvSocket *s ) {
+    if ( s->in_list( IN_FREE_LIST ) ) {
+      s->set_list( IN_NO_LIST );
+      this->free_list[ s->sock_type ].pop( s );
+    }
   }
   void * operator new( size_t, void *ptr ) { return ptr; }
   void operator delete( void *ptr ) { ::free( ptr ); }
@@ -314,7 +327,7 @@ struct EvPoll : public RoutePublish {
     ::memset( this->sock_type_str, 0, sizeof( this->sock_type_str ) );
   }
   /* return false if duplicate type */
-  void register_type( uint8_t t,  const char *s ) noexcept;
+  uint8_t register_type( const char *s ) noexcept;
   int init( int numfds,  bool prefetch/*,  bool single*/ ) noexcept;
   int init_shm( EvShm &shm ) noexcept;    /* open shm pubsub */
   void add_pattern_route( const char *sub,  size_t prefix_len,  uint32_t hash,
@@ -356,10 +369,11 @@ struct EvListen : public EvSocket {
   void * operator new( size_t, void *ptr ) { return ptr; }
   void operator delete( void *ptr ) { ::free( ptr ); }
 
-  uint64_t accept_cnt, /* how many accept() calls */
-           timer_id;   /* a unique id for each socket accepted */
+  uint64_t      accept_cnt, /* how many accept() calls */
+                timer_id;   /* a unique id for each socket accepted */
+  const uint8_t accept_sock_type; /* what kind of sock is accepted */
 
-  EvListen( EvPoll &p,  uint8_t tp,  const char *name );
+  EvListen( EvPoll &p,  const char *lname,  const char *name );
 
   virtual bool accept( void ) noexcept = 0;
   virtual void write( void ) noexcept;
@@ -383,7 +397,7 @@ struct EvConnection : public EvSocket, public StreamBuf {
            pad;
   char     recv_buf[ RCV_BUFSIZE ] __attribute__((__aligned__( 64 )));
 
-  EvConnection( EvPoll &p, uint8_t t ) : EvSocket( p, t ) {
+  EvConnection( EvPoll &p, const uint8_t t ) : EvSocket( p, t ) {
     this->recv           = this->recv_buf;
     this->off            = 0;
     this->len            = 0;
@@ -451,7 +465,7 @@ struct EvUdp : public EvSocket, public StreamBuf {
             in_nsize,  /* new array size, ajusted based on activity */
             out_nmsgs;
 
-  EvUdp( EvPoll &p, uint8_t t ) : EvSocket( p, t ),
+  EvUdp( EvPoll &p, const uint8_t t ) : EvSocket( p, t ),
     in_mhdr( 0 ), out_mhdr( 0 ), in_moff( 0 ), in_nmsgs( 0 ), in_size( 0 ),
     in_nsize( 1 ), out_nmsgs( 0 ) {}
   void zero( void ) {
