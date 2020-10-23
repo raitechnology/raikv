@@ -160,6 +160,8 @@ EvPoll::get_null_fd( void ) noexcept
 int
 EvPoll::add_sock( EvSocket *s ) noexcept
 {
+  if ( s->fd < 0 ) /* must be a valid fd */
+    return -1;
   /* make enough space for fd */
   if ( (uint32_t) s->fd > this->maxfd ) {
     uint32_t xfd = align<uint32_t>( s->fd + 1, EvPoll::ALLOC_INCR );
