@@ -165,10 +165,3 @@ EvTimerQueue::process( void ) noexcept
 
 void EvTimerQueue::write( void ) noexcept {}
 void EvTimerQueue::release( void ) noexcept {}
-bool EvTimerQueue::timer_expire( uint64_t, uint64_t ) noexcept { return false; }
-bool EvTimerQueue::hash_to_sub( uint32_t, char *, size_t & ) noexcept { return false; }
-bool EvTimerQueue::on_msg( EvPublish & ) noexcept { return false; }
-void EvTimerQueue::key_prefetch( EvKeyCtx & ) noexcept {}
-int  EvTimerQueue::key_continue( EvKeyCtx & ) noexcept { return 0; }
-void EvTimerQueue::process_shutdown( void ) noexcept {}
-void EvTimerQueue::process_close( void ) noexcept {}

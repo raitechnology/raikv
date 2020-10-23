@@ -245,11 +245,12 @@ struct EvPoll : public RoutePublish {
                        maxfd,           /* current maximum fd number */
                        nfds;            /* max epoll() fds, array sz this->ev */
   int                  efd,             /* epoll fd */
+                       null_fd,         /* /dev/null fd for null sockets */
                        quit;            /* when > 0, wants to exit */
   static const size_t  ALLOC_INCR    = 64, /* alloc size of poll socket ar */
                        PREFETCH_SIZE = 8;  /* pipe size of number of pref */
-  size_t               prefetch_pending/*,
-                       prefetch_cnt[ PREFETCH_SIZE + 1 ]*/;
+  size_t               prefetch_pending;   /* count of elems in prefetch queue*/
+                   /*, prefetch_cnt[ PREFETCH_SIZE + 1 ]*/
   RouteDB              sub_route;       /* subscriptions */
   RoutePublishQueue    pub_queue;       /* temp routing queue: */
   PeerStats            peer_stats;      /* accumulator after sock closes */
@@ -260,7 +261,6 @@ struct EvPoll : public RoutePublish {
   kv::DLinkList<EvSocket> active_list;    /* active socks in poll */
   kv::DLinkList<EvSocket> free_list[ 256 ];     /* socks for accept */
   const char            * sock_type_str[ 256 ]; /* name of sock_type */
-  uint8_t                 next_free_type;       /* 0->256 for above */
 
   /*bool single_thread; (if kv single threaded) */
   /* alloc ALLOC_INCR(64) elems of the above list elems at a time, aligned 64 */
@@ -322,20 +322,27 @@ struct EvPoll : public RoutePublish {
       pubsub( 0 ), timer_queue( 0 ), prio_tick( 0 ),
       wr_timeout_ns( DEFAULT_NS_TIMEOUT ), so_keepalive_ns( DEFAULT_NS_TIMEOUT ),
       next_id( 0 ), ctx_id( kv::MAX_CTX_ID ), dbx_id( kv::MAX_STAT_ID ),
-      fdcnt( 0 ), wr_count( 0 ), maxfd( 0 ), nfds( 0 ), efd( -1 ), quit( 0 ),
-      prefetch_pending( 0 ), sub_route( *this ) /*, single_thread( false )*/ {
+      fdcnt( 0 ), wr_count( 0 ), maxfd( 0 ), nfds( 0 ), efd( -1 ),
+      null_fd( -1 ), quit( 0 ), prefetch_pending( 0 ),
+      sub_route( *this ) /*, single_thread( false )*/ {
     ::memset( this->sock_type_str, 0, sizeof( this->sock_type_str ) );
   }
   /* return false if duplicate type */
   uint8_t register_type( const char *s ) noexcept;
+  /* initialize epoll */
   int init( int numfds,  bool prefetch/*,  bool single*/ ) noexcept;
+  /* initialize kv */
   int init_shm( EvShm &shm ) noexcept;    /* open shm pubsub */
+  /* add a pattern route for hash */
   void add_pattern_route( const char *sub,  size_t prefix_len,  uint32_t hash,
                           uint32_t fd ) noexcept;
+  /* remove a pattern route for hash */
   void del_pattern_route( const char *sub,  size_t prefix_len,  uint32_t hash,
                           uint32_t fd ) noexcept;
+  /* add a subscription route for hash */
   void add_route( const char *sub,  size_t sub_len,  uint32_t hash,
                   uint32_t fd ) noexcept;
+  /* remove a subscription route for hash */
   void del_route( const char *sub,  size_t sub_len,  uint32_t hash,
                   uint32_t fd ) noexcept;
   int wait( int ms ) noexcept;            /* call epoll() with ms timeout */
@@ -344,25 +351,28 @@ struct EvPoll : public RoutePublish {
 
   enum { /* dispatch return bits */
     DISPATCH_IDLE  = 0, /* no events dispatched */
-    POLL_NEEDED    = 1, /* a timer is about to expire */
+    POLL_NEEDED    = 1, /* a timer is about to expire, timer_queue fd */
     DISPATCH_BUSY  = 2, /* some event occured */
-    BUSY_POLL      = 4, /* kv pubsub is busy looping */
-    WRITE_PRESSURE = 8  /* something in a write hi state */
+    BUSY_POLL      = 4, /* something is busy looping, like kv pubsub */
+    WRITE_PRESSURE = 8  /* something in a write hi state, retry write again */
   };
   int dispatch( void ) noexcept;          /* process any sock in the queues */
   void drain_prefetch( void ) noexcept;   /* process prefetches */
+
+  /* thse publish are used by RoutePublish::forward_msg() */
   bool publish_one( EvPublish &pub,  uint32_t *rcount_total,
-                    RoutePublishData &rpd ) noexcept;
+                    RoutePublishData &rpd ) noexcept; /* publish to one dest */
   template<uint8_t N>
   bool publish_multi( EvPublish &pub,  uint32_t *rcount_total,
-                      RoutePublishData *rpd ) noexcept;
+                      RoutePublishData *rpd ) noexcept; /* a couple of dest */
+  /* publish to more than multi destinations, uses a heap to sort dests */
   bool publish_queue( EvPublish &pub,  uint32_t *rcount_total ) noexcept;
-  uint64_t current_coarse_ns( void ) const noexcept;
-  /* add to poll set, name is a peer, alt is if listening or shm direct */
-  int add_sock( EvSocket *s ) noexcept;
+  uint64_t current_coarse_ns( void ) const noexcept; /* current time from kv*/
+  int get_null_fd( void ) noexcept;         /* return dup /dev/null fd */
+  int add_sock( EvSocket *s ) noexcept;     /* add to poll set */
   void remove_sock( EvSocket *s ) noexcept; /* remove from poll set */
   bool timer_expire( EvTimerEvent &ev ) noexcept; /* process timer event fired */
-  void process_quit( void ) noexcept;     /* quit state close socks */
+  void process_quit( void ) noexcept;       /* quit state close socks */
 };
 
 struct EvListen : public EvSocket {

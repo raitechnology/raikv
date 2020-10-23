@@ -30,7 +30,6 @@ struct EvTimerEvent {
 };
 
 struct EvTimerQueue : public EvSocket {
-  static const uint8_t EV_TIMER_QUEUE = 1; /* event timers ( read_hi events ^--^ ) */
   static const int64_t MAX_DELTA = 100 * 1000; /* 100 us */
 
   void * operator new( size_t, void *ptr ) { return ptr; }
@@ -77,13 +76,6 @@ struct EvTimerQueue : public EvSocket {
   virtual void read( void ) noexcept final;
   virtual void process( void ) noexcept final;
   virtual void release( void ) noexcept final;
-  virtual bool timer_expire( uint64_t, uint64_t ) noexcept final;
-  virtual bool hash_to_sub( uint32_t, char *, size_t & ) noexcept final;
-  virtual bool on_msg( EvPublish & ) noexcept final;
-  virtual void key_prefetch( EvKeyCtx & ) noexcept final;
-  virtual int  key_continue( EvKeyCtx & ) noexcept final;
-  virtual void process_shutdown( void ) noexcept final;
-  virtual void process_close( void ) noexcept final;
 };
 
 }

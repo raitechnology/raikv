@@ -147,6 +147,15 @@ EvPoll::wait( int ms ) noexcept
   }
   return n;
 }
+/* allocate an fd for a null sockets which are used for event based objects
+ * that wait on timers and/or subscriptions */
+int
+EvPoll::get_null_fd( void ) noexcept
+{
+  if ( this->null_fd < 0 )
+    this->null_fd = ::open( "/dev/null", O_RDWR | O_NONBLOCK );
+  return ::dup( this->null_fd );
+}
 /* enable epolling of sock fd */
 int
 EvPoll::add_sock( EvSocket *s ) noexcept
