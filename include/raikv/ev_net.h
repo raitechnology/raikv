@@ -6,6 +6,8 @@
 #include <raikv/dlinklist.h>
 #include <raikv/stream_buf.h>
 #include <raikv/route_db.h>
+/*#define EV_NET_DBG*/
+#include <raikv/ev_dbg.h>
 
 namespace rai {
 namespace kv {
@@ -63,7 +65,7 @@ enum EvSockFlags {
   IN_WRITE_QUEUE = 8
 };
 
-struct EvSocket : public PeerData /* fd and address of peer */ {
+struct EvSocket : public PeerData /* fd and address of peer */EV_DBG_INHERIT {
   EvPoll      & poll;       /* the parent container */
   uint64_t      prio_cnt;   /* timeslice each socket for a slot to run */
   uint32_t      state;      /* bit mask of states, the queues the sock is in */
@@ -174,7 +176,7 @@ struct EvSocket : public PeerData /* fd and address of peer */ {
 
 #if __cplusplus >= 201103L
   /* 64b align */
-  static_assert( 256 == sizeof( EvSocket ), "socket size" );
+  static_assert( sizeof( EvSocket ) % 256 == 0, "socket size" );
 #endif
 
 static inline void *aligned_malloc( size_t sz ) {

@@ -1660,6 +1660,7 @@ void
 KvPubSub::write( void ) noexcept
 {
   CubeRoute128 used;
+  int old_state = this->state;
 
   this->pop2( EV_WRITE, EV_WRITE_HI );
   used.zero();
@@ -1727,6 +1728,9 @@ KvPubSub::write( void ) noexcept
   /* reset sendq, free mem */
   this->sendq.init();
   this->snd_wrk.reset();
+  /* alternate write hi with read/write for balance */
+  if ( ( this->test( EV_WRITE_HI ) & old_state ) != 0 )
+    this->pushpop( EV_WRITE | EV_READ, EV_WRITE_HI );
 }
 
 static const uint64_t BACKLOG_WARN_NS   = 5 * (uint64_t) 1000000000,
@@ -2272,9 +2276,11 @@ KvPubSub::on_msg( EvPublish &pub ) noexcept
                             (const char *) pub.reply, pub.reply_len, pub.msg,
                             pub.msg_len, pub.pub_type, pub.msg_enc );
     this->idle_push( EV_WRITE );
-    /* send backpressure TODO */
   }
-  return true;
+  if ( this->backlogq.is_empty() )
+    return true;
+  /* hash backperssure, could be more specific for the stream destination */
+  return false;
 }
 
 bool

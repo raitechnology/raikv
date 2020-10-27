@@ -152,8 +152,10 @@ EvPoll::wait( int ms ) noexcept
 int
 EvPoll::get_null_fd( void ) noexcept
 {
-  if ( this->null_fd < 0 )
+  if ( this->null_fd < 0 ) {
     this->null_fd = ::open( "/dev/null", O_RDWR | O_NONBLOCK );
+    return this->null_fd;
+  }
   return ::dup( this->null_fd );
 }
 /* enable epolling of sock fd */
@@ -233,7 +235,7 @@ EvPoll::remove_sock( EvSocket *s ) noexcept
     this->fdcnt--;
   }
   /* close if wants */
-  if ( ! s->test_opts( OPT_NO_CLOSE ) ) {
+  if ( ! s->test_opts( OPT_NO_CLOSE ) && s->fd != this->null_fd ) {
     if ( ::close( s->fd ) != 0 ) {
       fprintf( stderr, "close: errno %d/%s, fd %d type %s\n",
                errno, strerror( errno ), s->fd, s->type_string() );
@@ -290,6 +292,21 @@ EvSocket::state_string( EvState state ) noexcept
   }
   return "unknown_state";
 }
+#ifdef EV_NET_DBG
+void
+EvStateDbg::print_dbg( void )
+{
+  EvSocket & sock = static_cast<EvSocket &>( *this );
+  for ( int i = 0; i < 16; i++ ) {
+    if ( this->current.cnt[ i ] != this->last.cnt[ i ] ) {
+      uint64_t diff = this->current.cnt[ i ] - this->last.cnt[ i ];
+      this->last.cnt[ i ] = this->current.cnt[ i ];
+      printf( "%s %s: %lu\n",
+        sock.kind, EvSocket::state_string( (EvState) i ), diff );
+    }
+  }
+}
+#endif
 /* vtable dispatch */
 const char *
 EvSocket::type_string( void ) noexcept
@@ -475,6 +492,7 @@ EvPoll::dispatch( void ) noexcept
     }
     s     = this->ev_queue.heap[ 0 ];
     state = s->get_dispatch_state();
+    EV_DBG_DISPATCH( s, state );
     this->prio_tick++;
     if ( state > EV_PREFETCH && this->prefetch_pending > 0 )
       goto do_prefetch;
