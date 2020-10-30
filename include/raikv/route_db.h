@@ -265,6 +265,8 @@ struct RoutePublish {
                           uint64_t event_id ) noexcept;
   bool add_timer_millis( int id,  uint32_t ival,  uint64_t timer_id,
                          uint64_t event_id ) noexcept;
+  bool add_timer_micros( int id,  uint32_t ival,  uint64_t timer_id,
+                         uint64_t event_id ) noexcept;
   bool remove_timer( int id,  uint64_t timer_id,  uint64_t event_id ) noexcept;
 
   RoutePublish() : keyspace_cnt( 0 ), keyevent_cnt( 0 ), listblkd_cnt( 0 ),

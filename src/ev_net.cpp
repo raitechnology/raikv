@@ -1217,6 +1217,15 @@ RoutePublish::add_timer_millis( int id,  uint32_t ival,  uint64_t timer_id,
 }
 
 bool
+RoutePublish::add_timer_micros( int id,  uint32_t ival,  uint64_t timer_id,
+                                uint64_t event_id ) noexcept
+{
+  EvPoll & poll = static_cast<EvPoll &>( *this );
+  return poll.timer_queue->add_timer_units( id, ival, IVAL_MICROS, timer_id,
+                                            event_id );
+}
+
+bool
 RoutePublish::remove_timer( int id,  uint64_t timer_id,
                             uint64_t event_id ) noexcept
 {

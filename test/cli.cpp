@@ -520,6 +520,8 @@ flags_string( uint16_t fl,  uint8_t type,  char *buf )
 {
   char *s = buf;
   /**buf++ = (char) ( fl & FL_ALIGNMENT ) + '0';*/
+  if ( ( fl & FL_CLOCK ) != 0 )
+    buf = copy_fl( buf, "-Clk" );
   if ( ( fl & FL_SEQNO ) != 0 )
     buf = copy_fl( buf, "-Sno" );
   if ( ( fl & FL_MSG_LIST ) != 0 )

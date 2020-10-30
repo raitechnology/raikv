@@ -853,6 +853,7 @@ KeyCtx::load( MsgCtx &msg_ctx ) noexcept
   this->update_entry( NULL, 0, el );
 
   el.set( FL_SEGMENT_VALUE );
+  el.clear( FL_CLOCK );
   this->next_serial( ValueCtr::SERIAL_MASK );
   msg_ctx.geom.serial = el.value_ptr( this->hash_entry_size ).
                          set_serial( this->serial );
@@ -910,7 +911,7 @@ KeyCtx::resize( void *res,  uint64_t size,  bool copy ) noexcept
     return KEY_WRITE_ILLEGAL;
 
   HashEntry & el = *this->entry;
-
+  el.clear( FL_CLOCK );
   switch ( el.test( FL_SEGMENT_VALUE | FL_IMMEDIATE_VALUE ) ) {
     case FL_IMMEDIATE_VALUE: {
       uint8_t  * value = el.immediate_value(),
@@ -1083,6 +1084,7 @@ KeyCtx::append_vector( uint64_t count,  void *vec,  msg_size_t *size,
   }
 
   el.set( FL_MSG_LIST );
+  el.clear( FL_CLOCK );
   switch ( el.test( FL_SEGMENT_VALUE | FL_IMMEDIATE_VALUE ) ) {
     case FL_IMMEDIATE_VALUE: {
       uint8_t  * value = el.immediate_value(),
