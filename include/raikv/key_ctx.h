@@ -409,6 +409,8 @@ struct KeyCtx {
    * table, but copied data;  if acquire() is used, ptr will reference the shm
    * table data */
   KeyStatus value( void *ptr,  uint64_t &size ) noexcept;
+  /* same as value() but must be write mode, increments serial for update */
+  KeyStatus value_update( void *ptr,  uint64_t &size ) noexcept;
 
   /* append message size,
    * if stream size is larger than max_size, return KEY_MSG_LIST_FULL */
@@ -444,8 +446,10 @@ struct KeyCtx {
     return this->entry->test( FL_EXPIRE_STAMP ) != 0 &&
            this->check_expired() == KEY_EXPIRED;
   }
-  /* test if hash entry expire timer < ht.hdr.current_stamp */
+  /* test if hash entry expire timer < ht.hdr.current_stamp, then KEY_EXPIRED */
   KeyStatus check_expired( void ) noexcept;
+  /* test if hash entry updaste timer < age, if true then return KEY_EXPIRED */
+  KeyStatus check_update( uint64_t age_ns ) noexcept;
   /* release the data used by entry */
   KeyStatus release_data( void ) noexcept;
   /* release the data used by dropped entry when chain == max_chains */

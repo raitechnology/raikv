@@ -992,6 +992,50 @@ KeyCtx::value( void *data,  uint64_t &size ) noexcept
     default:
       return KEY_NO_VALUE;
   }
+  if ( ! this->test( KEYCTX_IS_READ_ONLY ) )
+    el.clear( FL_CLOCK );
+  *(void **) data = (void *) msg;
+  return KEY_OK;
+}
+
+/* get the value for updaste, incrment serial counter */
+KeyStatus
+KeyCtx::value_update( void *data,  uint64_t &size ) noexcept
+{
+  if ( this->test( KEYCTX_IS_READ_ONLY ) )
+    return KEY_WRITE_ILLEGAL;
+
+  HashEntry & el = *this->entry;
+  KeyStatus   mstatus;
+  uint8_t   * msg;
+
+  switch ( el.test( FL_SEGMENT_VALUE | FL_IMMEDIATE_VALUE ) ) {
+    case FL_IMMEDIATE_VALUE: {
+      this->next_serial( ValueCtr::SERIAL_MASK );
+      /* size stashed at end */
+      size = el.value_ctr( this->hash_entry_size ).size;
+      /* data after hdr in hash entry */
+      msg = el.immediate_value();
+      break;
+    }
+    case FL_SEGMENT_VALUE: {
+      if ( this->msg == NULL &&
+           ( (mstatus = this->attach_msg( ATTACH_WRITE )) != KEY_OK ) )
+        return mstatus;
+      this->next_serial( ValueCtr::SERIAL_MASK );
+      this->geom.serial = el.value_ptr( this->hash_entry_size ).
+                             set_serial( this->serial );
+      /* fetch the sizes before testing is_msg_valid() */
+      uint64_t hdr_size = this->msg->hdr_size();
+      size = this->msg->msg_size;
+      /* data starts after hdr */
+      msg  = (uint8_t *) this->msg->ptr( hdr_size );
+      break;
+    }
+    default:
+      return KEY_NO_VALUE;
+  }
+  el.clear( FL_CLOCK );
   *(void **) data = (void *) msg;
   return KEY_OK;
 }
@@ -1602,6 +1646,29 @@ KeyCtx::check_expired( void ) noexcept
       break;
   }
   if ( exp_ns < this->ht.hdr.current_stamp )
+    return KEY_EXPIRED;
+  return KEY_OK;
+}
+
+KeyStatus
+KeyCtx::check_update( uint64_t age_ns ) noexcept
+{
+  HashEntry & el = *this->entry;
+  uint64_t    exp_ns, upd_ns;
+
+  switch ( el.test( FL_EXPIRE_STAMP | FL_UPDATE_STAMP ) ) {
+    default:
+      return KEY_OK;
+    case FL_UPDATE_STAMP:
+      upd_ns = el.rela_stamp( this->hash_entry_size ).u.stamp;
+      break;
+    case FL_UPDATE_STAMP | FL_EXPIRE_STAMP:
+      el.rela_stamp( this->hash_entry_size ).get(
+        this->ht.hdr.create_stamp, this->ht.hdr.current_stamp,
+        exp_ns, upd_ns );
+      break;
+  }
+  if ( upd_ns < age_ns )
     return KEY_EXPIRED;
   return KEY_OK;
 }
