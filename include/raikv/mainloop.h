@@ -35,41 +35,42 @@ struct MainLoopVars {
     this->desc[ this->n++ ] = s;
   }
   static const char *get_arg( int argc, const char *argv[], int b,
-                              const char *f, const char *def ) {
+                      const char *f, const char *def, const char *env = 0 ) {
     for ( int i = 1; i < argc - b; i++ )
       if ( ::strcmp( f, argv[ i ] ) == 0 ) /* -m map -p port */
         return argv[ i + b ];
-    return def; /* default value */
+    const char *var = ( env != NULL ? ::getenv( env ) : NULL );
+    return ( var == NULL ? def : var ); /* default value or env var */
   }
   static bool streq( const char *s,  const char *t ) {
     return ::strcmp( s, t ) == 0;
   }
   static bool bool_arg( int argc, const char *argv[], int b,
-                        const char *f, const char *def ) {
-    const char *s = get_arg( argc, argv, b, f, def );
+                        const char *f, const char *def,  const char *env = 0 ) {
+    const char *s = get_arg( argc, argv, b, f, def, env );
     return ( s != nullptr && b == 0 ) ||
            ( s != nullptr && b == 1 && ( streq( s, "1" ) || streq( s, "true" ) ) );
   }
   static int int_arg( int argc, const char *argv[], int b,
-                      const char *f, const char *def ) {
-    const char *s = get_arg( argc, argv, b, f, def );
+                      const char *f, const char *def,  const char *env = 0 ) {
+    const char *s = get_arg( argc, argv, b, f, def, env );
     return ( s == nullptr ? 0 : atoi( s ) );
   }
   void print_help( void ) const {
     printf(
-      "  -m map   = kv shm map name       (" KV_DEFAULT_SHM ")\n" );
+      "  -m map   = kv shm map name       (" KV_DEFAULT_SHM ") (" KV_MAP_NAME_ENV ")\n" );
     for ( int i = 0; i < n; i++ )
       printf( "%s\n", this->desc[ i ] );
     printf(
-      "  -D dbnum = default db num        (0)\n"
-      "  -x maxfd = max fds               (10000)\n"
-      "  -k secs  = keep alive timeout    (16)\n"
-      "  -f prefe = prefetch keys:        (1) 0 = no, 1 = yes\n"
-      "  -P       = set SO_REUSEPORT for clustering multiple instances\n"
-      "  -t nthr  = spawn N threads       (1) (implies -P)\n"
-      "  -4       = use only ipv4 listeners\n"
-      "  -s       = do not use signal USR1 publish notification\n"
-      "  -b       = busy poll\n"
+      "  -D dbnum = default db num        (0) (" KV_DB_NUM_ENV ")\n"
+      "  -x maxfd = max fds               (10000) (" KV_MAXFD_ENV ")\n"
+      "  -k secs  = keep alive timeout    (16) (" KV_KEEPALIVE_ENV ")\n"
+      "  -f prefe = prefetch keys:        (1) 0 = no, 1 = yes (" KV_PREFETCH_ENV ")\n"
+      "  -P       = set SO_REUSEPORT for clustering multiple instances (" KV_REUSEPORT_ENV ")\n"
+      "  -t nthr  = spawn N threads       (1) (implies -P) (" KV_NUM_THREADS_ENV ")\n"
+      "  -4       = use only ipv4 listeners (" KV_IPV4_ONLY_ENV ")\n"
+      "  -s       = do not use signal USR1 publish notification (" KV_USE_SIGUSR_ENV ")\n"
+      "  -b       = busy poll (" KV_BUSYPOLL_ENV ")\n"
       "  -X       = do not listen to default ports, only using cmd line\n" );
   }
   bool parse_args( int argc, const char *argv[] ) {
@@ -80,19 +81,20 @@ struct MainLoopVars {
       this->print_help();
       return false;
     }
-    this->map_name      = get_arg( argc, argv, 1, "-m", KV_DEFAULT_SHM );
-    this->db_num        = (uint8_t) int_arg( argc, argv, 1, "-D", "0" );
-    this->maxfd         = int_arg(  argc, argv, 1, "-x", "10000" );
-    this->timeout       = int_arg(  argc, argv, 1, "-k", "16" );
-    this->use_prefetch  = bool_arg( argc, argv, 1, "-f", "1" );
-    this->busy_poll     = bool_arg( argc, argv, 0, "-b", 0 );
-    this->use_reuseport = bool_arg( argc, argv, 0, "-P", 0 );
-    this->num_threads   = int_arg(  argc, argv, 1, "-t", "1" );
-    this->use_ipv4      = bool_arg( argc, argv, 0, "-4", 0 );
-    this->use_sigusr    = bool_arg( argc, argv, 0, "-s", 0 );
-    this->all           = ! bool_arg( argc, argv, 0, "-X", 0 );
-    this->tcp_opts      = DEFAULT_TCP_LISTEN_OPTS;
-    this->udp_opts      = DEFAULT_UDP_LISTEN_OPTS;
+    this->map_name = get_arg( argc, argv, 1, "-m", KV_DEFAULT_SHM,
+                                                   KV_MAP_NAME_ENV );
+    this->db_num = (uint8_t) int_arg( argc, argv, 1, "-D", "0", KV_DB_NUM_ENV );
+    this->maxfd       = int_arg(  argc, argv, 1, "-x", "10000", KV_MAXFD_ENV );
+    this->timeout     = int_arg(  argc, argv, 1, "-k", "16", KV_KEEPALIVE_ENV );
+    this->use_prefetch = bool_arg( argc, argv, 1, "-f", "1", KV_PREFETCH_ENV );
+    this->busy_poll   = bool_arg( argc, argv, 0, "-b", 0, KV_BUSYPOLL_ENV );
+    this->use_reuseport = bool_arg( argc, argv, 0, "-P", 0, KV_REUSEPORT_ENV );
+    this->num_threads = int_arg(  argc, argv, 1, "-t", "1", KV_NUM_THREADS_ENV);
+    this->use_ipv4    = bool_arg( argc, argv, 0, "-4", 0, KV_IPV4_ONLY_ENV );
+    this->use_sigusr  = bool_arg( argc, argv, 0, "-s", 0, KV_USE_SIGUSR_ENV );
+    this->all         = ! bool_arg( argc, argv, 0, "-X", 0 );
+    this->tcp_opts    = DEFAULT_TCP_LISTEN_OPTS;
+    this->udp_opts    = DEFAULT_UDP_LISTEN_OPTS;
     if ( this->num_threads > 1 ) /* each thread has a port */
       this->use_reuseport = true;
     if ( ! this->use_reuseport ) {

@@ -73,6 +73,23 @@ typedef enum kv_facility_e {
 #define KV_DEFAULT_SHM      "sysv:raikv.shm"
 /* sizeof magic at first byte */
 #define KV_SIG_SIZE         16
+/* env for options -m sysv:raikv.shm -s 2048 -k 0.25 -c 2+4 -o ug+rw -v 2048 */
+#define KV_MAP_NAME_ENV    "KV_MAP_NAME"
+#define KV_MAP_SIZE_ENV    "KV_MAP_SIZE"
+#define KV_HT_RATIO_ENV    "KV_HT_RATIO"
+#define KV_CUCKOO_ENV      "KV_CUCKOO"
+#define KV_MAP_MODE_ENV    "KV_MAP_MODE"
+#define KV_VALUE_SIZE_ENV  "KV_VALUE_SIZE"
+#define KV_ENTRY_SIZE_ENV  "KV_ENTRY_SIZE"
+#define KV_DB_NUM_ENV      "KV_DB_NUM"
+#define KV_MAXFD_ENV       "KV_MAXFD"
+#define KV_KEEPALIVE_ENV   "KV_KEEPALIVE"
+#define KV_PREFETCH_ENV    "KV_PREFETCH"
+#define KV_BUSYPOLL_ENV    "KV_BUSYPOLL"
+#define KV_REUSEPORT_ENV   "KV_REUSEPORT"
+#define KV_NUM_THREADS_ENV "KV_NUM_THREADS"
+#define KV_IPV4_ONLY_ENV   "KV_IPV4_ONLY"
+#define KV_USE_SIGUSR_ENV  "KV_USE_SIGUSR"
 
 #ifdef __cplusplus
 }

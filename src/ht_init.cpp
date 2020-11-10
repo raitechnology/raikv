@@ -467,38 +467,43 @@ HashTab::create_map( const char *map_name,  uint8_t facility,
       key = (key_t) kv_crc_c( fn, fn == NULL ? 0 : ::strlen( fn ) + 1, 0);
       fd = -1;
       /* try 1g, 2m, then normal */
-      for ( j = 2; j >= 0; j-- ) {
-        if ( flags[ j ] != 0 ) {         /* create shm id exclusive */
-          fd = ::shmget( key, map_size, flags[ j ] | excl );
-          if ( fd >= 0 )
-            break;
-        }
-      }
-      if ( fd < 0 ) {
+      for ( int tries = 0; ; tries++ ) {
         for ( j = 2; j >= 0; j-- ) {
-          if ( flags[ j ] != 0 ) {        /* try getting without exclusive */
-            fd = ::shmget( key, 0, flags[ j ] );
+          if ( flags[ j ] != 0 ) {         /* create shm id exclusive */
+            fd = ::shmget( key, map_size, flags[ j ] | excl );
             if ( fd >= 0 )
               break;
           }
         }
-        if ( fd >= 0 ) {
-          ::shmctl( fd, IPC_RMID, NULL ); /* remove it first, then create it */
-          fd = -1;
+        if ( fd < 0 ) {
+          show_perror( "shmget", map_name );
+          if ( tries > 0 )
+            return NULL;
+          fprintf( stderr, "Trying to remove: %s\n", map_name );
+        }
+        if ( fd < 0 ) {
           for ( j = 2; j >= 0; j-- ) {
-            if ( flags[ j ] != 0 ) {
-              fd = ::shmget( key, map_size, flags[ j ] | excl );
+            if ( flags[ j ] != 0 ) {        /* try getting without exclusive */
+              fd = ::shmget( key, 0, flags[ j ] );
               if ( fd >= 0 )
                 break;
             }
           }
+          if ( fd >= 0 ) {
+            ::shmctl( fd, IPC_RMID, NULL ); /* remove it first, then create it */
+            fd = -1;
+            for ( j = 2; j >= 0; j-- ) {
+              if ( flags[ j ] != 0 ) {
+                fd = ::shmget( key, map_size, flags[ j ] | excl );
+                if ( fd >= 0 )
+                  break;
+              }
+            }
+          }
         }
+        if ( fd >= 0 )
+          break;
       }
-      if ( fd < 0 ) {
-        show_perror( "shmget", map_name );
-        return NULL;
-      }
-
       p = ::shmat( fd, NULL, 0 );
       if ( p == (void *) -1 ) {
         show_perror( "shmat", map_name );

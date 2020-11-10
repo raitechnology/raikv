@@ -84,13 +84,13 @@ all_libs    :=
 all_dlls    :=
 all_depends :=
 all_doc     :=
-print_defines = -DKV_VER=$(ver_build)
-test_defines  = -DKV_VER=$(ver_build)
+print_defines  = -DKV_VER=$(ver_build)
+server_defines = -DKV_VER=$(ver_build)
 
 libraikv_files := key_ctx ht_linear ht_cuckoo key_hash msg_ctx ht_stats \
                   ht_init scratch_mem util rela_ts radix_sort print pipe_buf \
-		  ev_net route_db kv_pubsub timer_queue stream_buf ev_unix \
-		  ev_tcp ev_udp monitor
+		  ev_net route_db kv_pubsub kv_msg timer_queue stream_buf \
+		  ev_unix ev_tcp ev_udp monitor
 libraikv_objs  := $(addprefix $(objd)/, $(addsuffix .o, $(libraikv_files)))
 libraikv_dbjs  := $(addprefix $(objd)/, $(addsuffix .fpic.o, $(libraikv_files)))
 libraikv_deps  := $(addprefix $(dependd)/, $(addsuffix .d, $(libraikv_files))) \

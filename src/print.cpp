@@ -48,6 +48,8 @@ rai::kv::print_map_geom( HashTab *map,  uint32_t ctx_id,  char *buf,
   char sbuf[ 64 ];
   xnprintf( b, sz, "created:              %s\n",
             timestamp( map->hdr.create_stamp, 0, sbuf, sizeof( sbuf ) ) );
+  xnprintf( b, sz, "create_stamp:         0x%lx\n",
+            map->hdr.create_stamp );
   xnprintf( b, sz, "max_value_size:       %u (config)\n",
             map->hdr.max_value_size );
   xnprintf( b, sz, "immed_value_size:     %u (calc)\n",

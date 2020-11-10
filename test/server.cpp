@@ -16,12 +16,14 @@ using namespace rai;
 using namespace kv;
 
 static const char *
-get_arg( int argc, char *argv[], int b, const char *f, const char *def )
+get_arg( int argc, char *argv[], int b, const char *f, const char *def,
+         const char *env = 0 )
 {
   for ( int i = 1; i < argc - b; i++ )
     if ( ::strcmp( f, argv[ i ] ) == 0 )
       return argv[ i + b ];
-  return def; /* default value */
+  const char *var = ( env != NULL ? ::getenv( env ) : NULL );
+  return ( var == NULL ? def : var ); /* default value or env var */
 }
 
 int
@@ -38,13 +40,14 @@ main( int argc, char *argv[] )
   uint8_t       arity      = 2;                  /* cuckoo 2+4 */
   uint16_t      buckets    = 4;
 
-  const char * mn = get_arg( argc, argv, 1, "-m", KV_DEFAULT_SHM ),
-             * mb = get_arg( argc, argv, 1, "-s", "2048" ),
-             * pc = get_arg( argc, argv, 1, "-k", "0.25" ),
-             * cu = get_arg( argc, argv, 1, "-c", "2+4" ),
-             * mo = get_arg( argc, argv, 1, "-o", "ug+rw" ),
-             * vz = get_arg( argc, argv, 1, "-v", "2048" ),
-             * ez = get_arg( argc, argv, 1, "-e", "64" ),
+  const char * mn = get_arg( argc, argv, 1, "-m",
+                             KV_DEFAULT_SHM, KV_MAP_NAME_ENV ),
+             * mb = get_arg( argc, argv, 1, "-s", "2048",  KV_MAP_SIZE_ENV ),
+             * pc = get_arg( argc, argv, 1, "-k", "0.25",  KV_HT_RATIO_ENV ),
+             * cu = get_arg( argc, argv, 1, "-c", "2+4",   KV_CUCKOO_ENV ),
+             * mo = get_arg( argc, argv, 1, "-o", "ug+rw", KV_MAP_MODE_ENV ),
+             * vz = get_arg( argc, argv, 1, "-v", "2048",  KV_VALUE_SIZE_ENV ),
+             * ez = get_arg( argc, argv, 1, "-e", "64",    KV_ENTRY_SIZE_ENV ),
              * at = get_arg( argc, argv, 0, "-a", 0 ),
              * rm = get_arg( argc, argv, 0, "-r", 0 ),
              * iv = get_arg( argc, argv, 1, "-i", "1" ),
@@ -55,20 +58,19 @@ main( int argc, char *argv[] )
   cmd_error:;
     fprintf( stderr, "raikv version: %s\n", kv_stringify( KV_VER ) );
     fprintf( stderr,
-  "%s [-m map] [-s MB] [-k ratio] [-c cuckoo a+b] "
-     "[-v value-sz] [-e entry-sz] [-a] [-r] [-i secs] [-x secs]\n"
-  "  -m map         = name of map file (default: " KV_DEFAULT_SHM ")\n"
-  "  -s MB          = size of HT (MB * 1024 * 1024, default: 1024)\n"
-  "  -k ratio       = entry to segment memory ratio (float 0 -> 1, def: 0.5)\n"
-  "                  (1 = all ht, 0 = all msg -- must have some ht)\n"
-  "  -c cuckoo a+b  = cuckoo hash arity and buckets (default: 2+4)\n"
-  "  -o mode        = create map using mode (default: ug+rw)\n"
-  "  -v value-sz    = max value size or min seg size (in KB, default: 1024)\n"
-  "  -e entry-sz    = hash entry size (multiple of 64, default: 64)\n"
-  "  -a             = attach to map, don't create (default: create)\n"
-  "  -r             = remove map and then exit\n"
-  "  -i secs        = stats interval (default: 1)\n"
-  "  -x secs        = check interval (default: 0.1)\n",
+  "%s\n"
+  "  -m map        = name of map file (" KV_DEFAULT_SHM ") (" KV_MAP_NAME_ENV ")\n"
+  "  -s MB         = size of HT in MB (2048) (" KV_MAP_SIZE_ENV ")\n"
+  "  -k ratio      = entry to value ratio (float 0 -> 1, 0.25) (" KV_HT_RATIO_ENV ")\n"
+  "                 (1 = all ht, 0 = all msg -- must have some ht)\n"
+  "  -c cuckoo a+b = cuckoo hash arity and buckets (2+4) (" KV_CUCKOO_ENV ")\n"
+  "  -o mode       = create map using mode (ug+rw) (" KV_MAP_MODE_ENV ")\n"
+  "  -v value-sz   = max value size in KB (2048) (" KV_VALUE_SIZE_ENV ")\n"
+  "  -e entry-sz   = hash entry size (mult of 64, 64) (" KV_ENTRY_SIZE_ENV ")\n"
+  "  -a            = attach to map, don't create (create)\n"
+  "  -r            = remove map and then exit\n"
+  "  -i secs       = stats interval (1)\n"
+  "  -x secs       = check interval (0.1)\n",
              argv[ 0 ] );
     return 1;
   }
