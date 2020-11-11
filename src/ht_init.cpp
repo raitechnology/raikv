@@ -327,8 +327,12 @@ static const int MAP_PAGE_2M = MAP_HUGETLB | ( 21 << MAP_HUGE_SHIFT ),
 /* sysv shm page size shift */
 #define SHM_HUGE_SHIFT 26
 #endif
-static const int SHM_PAGE_2M = MAP_HUGETLB | ( 21 << SHM_HUGE_SHIFT ),
-                 SHM_PAGE_1G = MAP_HUGETLB | ( 30 << SHM_HUGE_SHIFT );
+#ifndef SHM_HUGETLB
+/* flag set for page size */
+#define SHM_HUGETLB 04000
+#endif
+static const int SHM_PAGE_2M = SHM_HUGETLB | ( 21 << SHM_HUGE_SHIFT ),
+                 SHM_PAGE_1G = SHM_HUGETLB | ( 30 << SHM_HUGE_SHIFT );
 
 /* XXX this needs synchronization so that clients don't attach before
    server initializes */
