@@ -29,15 +29,16 @@ using namespace kv;
 
 enum reg_kind { IS_GLOB, IS_NATS };
 
-static void
+static int
 do_match( reg_kind t,  const char **pat,  size_t pc,
-                       const char **match,  size_t mc )
+                       const char **match,  size_t mc,
+                       int *mat )
 {
+  int fail = 0;
   for ( size_t i = 0; i < pc; i++ ) {
     pcre2_real_code_8       * re = NULL; /* pcre regex compiled */
     pcre2_real_match_data_8 * md = NULL; /* pcre match context  */
-    char       buf[ 256 ];
-    PatternCvt cvt( buf, sizeof( buf ) );
+    PatternCvt cvt;
     size_t     erroff;
     int        rc, rj = 0,
                error;
@@ -48,13 +49,13 @@ do_match( reg_kind t,  const char **pat,  size_t pc,
       rc = cvt.convert_rv( pat[ i ], ::strlen( pat[ i ] ) );
     printf( "\n(%s) \"%s\" : \"%.*s\" -> \"%.*s\" (%lu)\n",
             ( t == IS_GLOB ? "glob" : "rv" ), pat[ i ],
-            (int) cvt.off, buf, (int) cvt.prefixlen, pat[ i ],
+            (int) cvt.off, cvt.out, (int) cvt.prefixlen, pat[ i ],
             cvt.prefixlen );
     if ( rc != 0 ) {
       printf( "convert failed\n" );
       continue;
     }
-    re = pcre2_compile( (uint8_t *) buf, cvt.off, 0, &error, &erroff, 0 );
+    re = pcre2_compile( (uint8_t *) cvt.out, cvt.off, 0, &error, &erroff, 0 );
     if ( re != NULL )
       rj = pcre2_jit_compile( re, PCRE2_JIT_COMPLETE );
     if ( re == NULL || rj != 0 ) {
@@ -76,15 +77,22 @@ do_match( reg_kind t,  const char **pat,  size_t pc,
         if ( k == 9999 ) {
           if ( j == 0 ) {
             uint64_t t2 = kv_get_rdtsc();
-            printf( "%lu\n", ( t2 - t1 ) / ( 9999 * mc ) );
+            printf( "avg %lu cycles\n", ( t2 - t1 ) / ( 9999 * mc ) );
           }
-          printf( "rc[%d]: %.*s %s\n", rc, (int) cvt.off, buf, match[ j ] );
+          printf( "%s == %s   %s", pat[ i ], match[ j ], rc == 1 ? "(yes)" : "(no)" );
+          if ( rc != mat[ i * mc + j ] ) {
+            printf( " (failed %d!=%d [%d])\n", rc, mat[ i * mc + j ], (int) ( i * mc + j ) );
+            fail++;
+          }
+          else
+            printf( "\n" );
         }
       }
     }
     pcre2_match_data_free( md );
     pcre2_code_free( re );
   }
+  return fail;
 }
 
 int
@@ -99,11 +107,23 @@ main( int, char ** )
     "hello*"
   };
   const char *match[] = {
-    "hello", "hallo", "hxllo",
-    "hllo", "heeeello",
-    "hillo",
+    "hello",
+    "hallo",
+    "hxllo",
+    "hllo",
+    "heeeello",
     "hbllo",
-    "ehello", "helloworld"
+    "ehello",
+    "helloworld"
+  };
+  int mat[] = {
+                  /* "hello", "hallo", "hxllo", "hllo", "heeeello", "hbllo", "ehello", "helloworld" */
+  /* "h?ll*"     */        1,       1,       1,     -1,         -1,       1,       -1,           1,
+  /* "h*llo"     */        1,       1,       1,      1,          1,       1,       -1,          -1,
+  /* "h[ae]llo"  */        1,       1,      -1,     -1,         -1,      -1,       -1,          -1,
+  /* "h[^e]llo"  */       -1,       1,       1,     -1,         -1,       1,       -1,          -1,
+  /* "h[a-b]llo" */       -1,       1,      -1,     -1,         -1,       1,       -1,          -1,
+  /* "hello*"    */        1,      -1,      -1,     -1,         -1,      -1,       -1,           1,
   };
 
   const char *patrv[] = {
@@ -120,15 +140,27 @@ main( int, char ** )
     "testing.again",
     "he.world",
   };
+  int matrv[] = {
+                      /* "hello.world", "hallo", "hello.world.again", "testing.again", "he.world" */
+  /* "hello.*"       */              1,      -1,                  -1,              -1,         -1,
+  /* "hello.>"       */              1,      -1,                   1,              -1,         -1,
+  /* "hello.*.>"     */             -1,      -1,                   1,              -1,         -1,
+  /* "*.again"       */             -1,      -1,                  -1,               1,         -1,
+  /* "hello.*.again" */             -1,      -1,                   1,              -1,         -1,
+  };
 
   const size_t pc = sizeof( pat ) / sizeof( pat[ 0 ] );
   const size_t mc = sizeof( match ) / sizeof( match[ 0 ] );
   const size_t prvc = sizeof( patrv ) / sizeof( patrv[ 0 ] );
   const size_t mrvc = sizeof( matchrv ) / sizeof( matchrv[ 0 ] );
 
-  do_match( IS_GLOB, pat, pc, match, mc );
-  do_match( IS_NATS, patrv, prvc, matchrv, mrvc );
+  int n = do_match( IS_GLOB, pat, pc, match, mc, mat ),
+      m = do_match( IS_NATS, patrv, prvc, matchrv, mrvc, matrv );
 
-  return 0;
+  if ( n + m == 0 )
+    printf( "success\n" );
+  else
+    printf( "failed : %d\n", n + m );
+  return n + m == 0 ? 0 : 1;
 }
 

@@ -68,10 +68,16 @@ struct KvMsg {
     ::memcpy( &stamp, this->stamp_w, sizeof( stamp ) );
     return stamp;
   }
-  void set_seqno_stamp( uint64_t seq,  uint64_t stamp ) {
+  void set_seqno( uint64_t seq ) {
     seq |= KV_MAGIC;
     ::memcpy( this->seqno_w, &seq, sizeof( this->seqno_w ) );
+  }
+  void set_stamp( uint64_t stamp ) {
     ::memcpy( this->stamp_w, &stamp, sizeof( this->stamp_w ) );
+  }
+  void set_seqno_stamp( uint64_t seq,  uint64_t stamp ) {
+    this->set_seqno( seq );
+    this->set_stamp( stamp );
   }
   bool is_valid( uint32_t sz ) const {
     if ( sz < this->size ||
@@ -102,47 +108,55 @@ struct KvSubMsg : public KvMsg {
            msg_size; /* size of message data */
   uint16_t sublen,   /* length of subject, not including null char */
            replylen; /* length of reply, not including null char */
-  uint8_t  code,     /* 'K' */
+  uint8_t  code,     /* pub type */
            msg_enc;  /* MD msg encoding type */
   char     buf[ 2 ]; /* subject\0\reply\0 */
 
-/* | 0x98    0x04    0x00    0x00    0x00    0x00    0x00    0x00 |
- * | seqno                                                        |
- * | 0x64    0x00    0x00    0x00 |  0x04 |  0x03  | 0x03 |  0x06 |
- * | size                         |  src  | dstart | dend |  type |
- * | 0x22    0x6d    0x9d    0xef |  0x36    0x00    0x00    0x00 |
- * | hash                         |  msg_size                     |
- * | 0x04    0x00 |  0x00    0x00 |  0x70 |  0x02  | 0x70    0x69
- * | sublen       |  replylen     |  code | msg_enc| subject   
- *   0x6e    0x67 |  0x00 |  0x00 |  0x4b  | 0x01  | 0x40  | 0x22
- *   ping                 | reply |  stype | prefc | prefix| hash
- *   0x6d    0x9d    0xef    0x00    0x99    0x04    0x00    0x00
- *   hash                 | align |  data ->
- *   0x00    0x00    0x00    0x00    0x00    0x00    0x00    0x00
- *   0x00    0x00    0x00    0x00    0x00    0x00    0x00    0x00
- */
-
-/* 00   02 00 00 00  00 00 00 00 <- seqno
-   08   40 00 00 00              <- size
-        02 01 01 07              <- src, dstart, dend, type (7 = publish)
-   10   22 6d 9d ef              <- hash
-        04 00 00 00              <- msg size
-   18   04 00                    <- sublen
-   2a   00 00                    <- replylen
-   2c   70 02                    <- code, msg_enc
-   2e   70 69 6e 67  00          <- ping
-   23   00                       <- reply
-   24   4b                       <- src type (K)
-   25   01                       <- prefix cnt
-   26   40                       <- prefix 64 = full (0-63 = partial)
-   27   22 6d 9d ef              <- hash of prefix (dup of hash)
-   2b   00                       <- align
-   2c   01 00 00 00              <- msg_data (4 byte aligned) */
+/*  seqno      : 3
+    stamp      : 0x1646ad58b35d4e8d
+    size       : 96
+    src        : 8
+    dest_start : 0
+    dest_end   : 128
+    msg_type   : sub
+    hash       : 3c354a65
+    msg_size   : 0
+    sublen     : 14
+    prefix_cnt : 0
+    replylen   : 38
+    subject()  : RSF.REC.INTC.O
+    reply()    : _INBOX.0A040416.97B655FB19E6F10E32A0.3
+       |      seqno       |magic |        stamp           |
+   0   03 00 00 00  00 00 b8 8d  8d 4e 5d b3  58 ad 46 16           N] X F   
+       |    size   |src|st|en|ty|  hash      |msg_size    |
+  10   60 00 00 00  08 00 80 02  65 4a 35 3c  00 00 00 00  `       eJ5<      
+       |slen|rlen  |co|ml|  subject ...
+  20   0e 00 26 00  4c 00 52 53  46 2e 52 45  43 2e 49 4e    & L RSF.REC.IN  
+       subject ...    |  reply ...
+  30   54 43 2e 4f  00 5f 49 4e  42 4f 58 2e  30 41 30 34  TC.O _INBOX.0A04  
+                 reply ...
+  40   30 34 31 36  2e 39 37 42  36 35 35 46  42 31 39 45  0416.97B655FB19E  
+                                            |srt|pc|align
+  50   36 46 31 30  45 33 32 41  30 2e 33 00  56 00 00 00  6F10E32A0.3 V     */
   char * subject( void ) {
     return this->buf;
   }
   char * reply( void ) {
     return &this->buf[ this->sublen + 1 ];
+  }
+  bool subject_equals( const char *s,  size_t len ) const {
+    return (size_t) this->sublen == len && ::memcmp( this->buf, s, len ) == 0;
+  }
+  bool subject_equals( const KvSubMsg &submsg ) const {
+    return this->subject_equals( submsg.buf, submsg.sublen );
+  }
+  bool reply_equals( const char *s,  size_t len ) const {
+    return (size_t) this->replylen == len &&
+                    ::memcmp( &this->buf[ this->sublen + 1 ], s, len ) == 0;
+  }
+  bool reply_equals( const KvSubMsg &submsg ) const {
+    return this->reply_equals( &submsg.buf[ submsg.sublen + 1 ],
+                               submsg.replylen );
   }
   /* src type + prefix hashes + msg data */
   uint8_t * trail( void ) {
@@ -274,7 +288,23 @@ struct KvSendQueue {
     : stamp( ns ), next_seqno( 0 ), send_size( 0 ), send_cnt( 0 ),
       send_src( src ) {}
 
-  KvMsg * create_kvmsg( KvMsgType mtype,  size_t sz ) noexcept {
+  KvSubMsg * copy_kvsubmsg( const KvSubMsg &cpy ) {
+    return (KvSubMsg *) this->copy_kvmsg( cpy );
+  }
+  KvMsg * copy_kvmsg( const KvMsg &cpy ) {
+    KvMsgList * l = (KvMsgList *)
+      this->snd_wrk.alloc( align<size_t>( sizeof( KvMsgList ) + cpy.size, 8 ) );
+    KvMsg & msg = l->msg;
+
+    l->init_route();
+    ::memcpy( &msg, &cpy, cpy.size );
+    this->sendq.push_tl( l );
+    this->send_size += cpy.size;
+    this->send_cnt++;
+    return &msg;
+  }
+
+  KvMsg * create_kvmsg( KvMsgType mtype,  size_t sz ) {
     if ( sz > MAX_KV_MSG_SIZE )
       return NULL;
     KvMsgList * l = (KvMsgList *)
@@ -292,14 +322,15 @@ struct KvSendQueue {
   void create_kvpublish( uint32_t h,  const char *sub,  size_t sublen,
                          const uint8_t *pref,  const uint32_t *hash,
                          uint8_t pref_cnt,  const char *reply,
-                         size_t rlen,  const void *msgdata,  size_t msgsz,
+                         size_t replylen,  const void *msgdata,  size_t msgsz,
                          uint8_t code,  uint8_t msg_enc ) noexcept;
   KvSubMsg * create_kvsubmsg( uint32_t h,  const char *sub,  size_t sublen,
-                              char src_type,  KvMsgType mtype,  const char *rep,
-                              size_t rlen ) noexcept;
+                              char src_type,  KvMsgType mtype,  uint8_t code,
+                              const char *rep,  size_t replylen ) noexcept;
   KvSubMsg * create_kvpsubmsg( uint32_t h,  const char *pattern,  size_t patlen,
                                const char *prefix,  uint8_t prefix_len,
-                               char src_type,  KvMsgType mtype ) noexcept;
+                               char src_type,  KvMsgType mtype,
+                               uint8_t code ) noexcept;
 };
 
 static inline bool is_kv_bcast( uint8_t msg_type ) {

@@ -131,14 +131,15 @@ struct KvSubRoute {
 };
 
 struct KvSubTab : public RouteVec<KvSubRoute> {};
-
+#if 0
 struct KvSubNotifyList {
   KvSubNotifyList * next, * back;
   bool in_list;
-  virtual void on_sub( KvSubMsg &submsg ) noexcept;
+  virtual void on_sub( uint32_t src_fd,  uint32_t rcnt,
+                       KvSubMsg &submsg ) noexcept;
   KvSubNotifyList() : next( 0 ), back( 0 ), in_list( false ) {}
 };
-
+#endif
 enum KvPubSubFlag {
   KV_DO_NOTIFY     = 1, /* whether to notify external processes of inbox msgs */
   KV_INITIAL_SCAN  = 2, /* set after initial scan is complete */
@@ -153,7 +154,7 @@ struct KvFragAsm {
   uint8_t  buf[ 8 ];
 };
 
-struct KvPubSub : public EvSocket, public KvSendQueue {
+struct KvPubSub : public EvSocket, public KvSendQueue, public RouteNotify {
   static const uint8_t  EV_KV_PUBSUB = 9;
   static const uint16_t KV_NO_SIGUSR = 1;
   uint16_t     ctx_id;           /* my endpoint */
@@ -190,7 +191,7 @@ struct KvPubSub : public EvSocket, public KvSendQueue {
   KvFragAsm   * frag_asm[ KV_MAX_CTX_ID ];  /* fragment asm per source */
   /*uint64_t      last_seqno[ KV_MAX_CTX_ID ];*/
 
-  kv::DLinkList<KvSubNotifyList> sub_notifyq; /* notify for subscribes */
+  /*kv::DLinkList<KvSubNotifyList> sub_notifyq;  notify for subscribes */
   kv::DLinkList<KvMsgQueue>      backlogq;    /* ibx which have pending sends */
 
   kv::WorkAllocT< 256 > rt_wrk,     /* wrk for rt_kctx kv */
@@ -224,6 +225,7 @@ struct KvPubSub : public EvSocket, public KvSendQueue {
     /* ::memset( this->last_seqno, 0, sizeof( this->last_seqno ) ); */
     this->PeerData::init_peer( sock, NULL, "kv" );
     this->kctx.ht.hdr.get_hash_seed( this->kctx.db_num, this->hs );
+    p.add_route_notify( *this );
   }
 
   static KvPubSub *create( EvPoll &p,  uint8_t db_num ) noexcept;
@@ -249,18 +251,23 @@ struct KvPubSub : public EvSocket, public KvSendQueue {
                  KvMsgQueue &ibx,  uint64_t vec_size ) noexcept;
   bool send_kv_vec( size_t cnt,  KvMsg **vec,  kv::msg_size_t *siz,
                     KvMsgQueue &ibx,  uint64_t vec_size ) noexcept;
-  void do_sub( uint32_t h,  const char *sub,  size_t sublen,
-               uint32_t sub_id,  uint32_t rcnt,  char src_type,
-               const char *rep = NULL,  size_t rlen = 0 ) noexcept;
-  void do_unsub( uint32_t h,  const char *sub,  size_t sublen,
-                 uint32_t sub_id,  uint32_t rcnt,  char src_type ) noexcept;
-  void do_psub( uint32_t h,  const char *pattern,  size_t patlen,
-                const char *prefix,  uint8_t prefix_len,
-                uint32_t sub_id,  uint32_t rcnt,  char src_type ) noexcept;
-  void do_punsub( uint32_t h,  const char *pattern,  size_t patlen,
-                  const char *prefix,  uint8_t prefix_len,
-                  uint32_t sub_id,  uint32_t rcnt,  char src_type ) noexcept;
-  void forward_sub( KvSubMsg &submsg ) noexcept;
+  /* RouteNotify */
+  virtual void on_sub( uint32_t h,  const char *sub,  size_t sublen,
+                       uint32_t src_fd,  uint32_t rcnt,  char src_type,
+                       const char *rep,  size_t rlen ) noexcept;
+  virtual void on_unsub( uint32_t h,  const char *sub,  size_t sublen,
+                         uint32_t src_fd,  uint32_t rcnt,
+                         char src_type ) noexcept;
+  virtual void on_psub( uint32_t h,  const char *pattern,  size_t patlen,
+                        const char *prefix,  uint8_t prefix_len,
+                        uint32_t src_fd,  uint32_t rcnt,
+                        char src_type ) noexcept;
+  virtual void on_punsub( uint32_t h,  const char *pattern,  size_t patlen,
+                          const char *prefix,  uint8_t prefix_len,
+                          uint32_t src_fd,  uint32_t rcnt,
+                          char src_type ) noexcept;
+  /*void forward_sub( uint32_t src_fd,  uint32_t rcnt,
+                    KvSubMsg &submsg ) noexcept;*/
   void scan_ht( void ) noexcept;
   size_t resolve_routes( CubeRoute128 &used ) noexcept;
   /*void check_seqno( void ) noexcept;*/

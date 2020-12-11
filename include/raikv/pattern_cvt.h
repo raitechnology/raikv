@@ -7,28 +7,44 @@ namespace kv {
 /* convert glob pattern or nats/rv/capr sub pattern to pcre pattern */
 struct PatternCvt {
   static const size_t MAX_PREFIX_LEN = 63; /* uint64_t bit mask */
+  char   buf[ 128 ];
   char * out;          /* utf8 or utf32 char classes */
   size_t off,          /* off will be > maxlen on buf space failure */
          prefixlen;    /* size of literal prefix */
-  const size_t maxlen; /* max size of output */
+  size_t maxlen;       /* max size of output */
+  void * tmp;          /* tmp alloc if needed */
+  bool   match_prefix; /* if matching prefix of subject */
 
-  PatternCvt( char *o, size_t len )
-    : out( o ), off( 0 ), prefixlen( 0 ), maxlen( len ) {}
+  PatternCvt()
+    : out( this->buf ), off( 0 ), prefixlen( 0 ), maxlen( sizeof( this->buf ) ),
+      tmp( 0 ), match_prefix( false ) {}
+  ~PatternCvt() {
+    if ( this->tmp != NULL )
+      ::free( this->tmp );
+  }
+
+  void more_out( void ) {
+    size_t len = this->maxlen * 2;
+    void *p = ::realloc( this->tmp, len );
+    if ( p != NULL ) {
+      if ( this->tmp == NULL )
+        ::memcpy( p, this->buf, this->off );
+      this->tmp    = p;
+      this->maxlen = len;
+      this->out    = (char *) p;
+    }
+  }
 
   void char_out( char c ) {
+    if ( this->off == this->maxlen )
+      this->more_out();
     if ( ++this->off <= this->maxlen )
       this->out[ off - 1 ] = c;
   }
 
   void str_out( const char *s,  size_t len ) {
-    size_t i = this->off;
-    if ( (this->off += len) <= this->maxlen ) {
-      for (;;) {
-        this->out[ i++ ] = (char) (uint8_t) *s++;
-        if ( --len == 0 )
-          break;
-      }
-    }
+    for ( size_t i = 0; i < len; i++ )
+      this->char_out( s[ i ] );
   }
   /* return 0 on success or -1 on failure
    * normal glob rules:
@@ -39,7 +55,7 @@ struct PatternCvt {
   int convert_glob( const char *pattern,  size_t patlen ) {
     size_t k, j = 0;
     bool   inside_bracket,
-           anchor_end = true;
+           anchor_end = ! this->match_prefix;
 
     this->off = 0;
     if ( patlen > 0 ) {
@@ -92,6 +108,7 @@ struct PatternCvt {
             case '[':
               if ( j > k ) j = k;
               inside_bracket = true;
+              this->char_out( '[' );
               break;
             default:
               this->char_out( pattern[ k ] );
@@ -121,7 +138,7 @@ struct PatternCvt {
    */
   int convert_rv( const char *pattern,  size_t patlen ) {
     size_t k, j = 0;
-    bool   anchor_end = true;
+    bool   anchor_end = ! this->match_prefix;
 
     this->off = 0;
     if ( patlen > 0 ) {

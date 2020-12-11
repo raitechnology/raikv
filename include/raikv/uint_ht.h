@@ -14,9 +14,14 @@ struct UIntHashTab {
            tab_mask;    /* tab_size - 1 */
   Elem     tab[ 1 ];
 
-  UIntHashTab( uint32_t sz ) : elem_count( 0 ), tab_mask( sz - 1 ) {
-    uint8_t * u = (uint8_t *) (void *) &this->tab[ this->tab_mask + 1 ];
+  UIntHashTab( uint32_t sz ) : tab_mask( sz - 1 ) {
+    this->clear_all();
+  }
+  void clear_all( void ) {
+    uint32_t sz = this->tab_mask + 1;
+    uint8_t * u = (uint8_t *) (void *) &this->tab[ sz ];
     ::memset( u, 0, ( sz + 7 ) / 8 );
+    this->elem_count = 0;
   }
   void * operator new( size_t, void *ptr ) { return ptr; }
   void operator delete( void *ptr ) { ::free( ptr ); }

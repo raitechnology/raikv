@@ -13,10 +13,11 @@ void
 KvSendQueue::create_kvpublish( uint32_t h,  const char *sub,  size_t sublen,
                                const uint8_t *pref,  const uint32_t *hash,
                                uint8_t pref_cnt,  const char *reply,
-                               size_t rlen,  const void *msgdata,  size_t msgsz,
-                               uint8_t code,  uint8_t msg_enc ) noexcept
+                               size_t replylen,  const void *msgdata,
+                               size_t msgsz,  uint8_t code,
+                               uint8_t msg_enc ) noexcept
 {
-  size_t hsz = KvSubMsg::hdr_size( sublen, rlen, pref_cnt ),
+  size_t hsz = KvSubMsg::hdr_size( sublen, replylen, pref_cnt ),
          asz = kv::align<size_t>( msgsz, sizeof( uint32_t ) ),
          fsz, off, left, frag_msgsz, afrag;
   KvSubMsg * msg;
@@ -64,7 +65,7 @@ KvSendQueue::create_kvpublish( uint32_t h,  const char *sub,  size_t sublen,
   msg->code    = code;
   msg->msg_enc = msg_enc;
   msg->set_subject( sub, sublen );
-  msg->set_reply( reply, rlen );
+  msg->set_reply( reply, replylen );
   msg->set_src_type( 'K' );
   msg->set_prefix_cnt( pref_cnt );
   for ( i = 0; i < pref_cnt; i++ ) {
@@ -77,18 +78,18 @@ KvSendQueue::create_kvpublish( uint32_t h,  const char *sub,  size_t sublen,
 
 KvSubMsg *
 KvSendQueue::create_kvsubmsg( uint32_t h,  const char *sub,  size_t sublen,
-                              char src_type,  KvMsgType mtype,  const char *rep,
-                              size_t rlen ) noexcept
+                              char src_type,  KvMsgType mtype,  uint8_t code,
+                              const char *rep,  size_t replylen ) noexcept
 {
-  size_t     sz  = KvSubMsg::calc_size( sublen, rlen, 0, 0 );
+  size_t     sz  = KvSubMsg::calc_size( sublen, replylen, 0, 0 );
   KvSubMsg * msg = (KvSubMsg *) this->create_kvmsg( mtype, sz );
   if ( msg != NULL ) {
     msg->hash     = h;
     msg->msg_size = 0;
-    msg->code     = 'L'; /*CAPR_LISTEN*/
+    msg->code     = code;
     msg->msg_enc  = 0;
     msg->set_subject( sub, sublen );
-    msg->set_reply( rep, rlen );
+    msg->set_reply( rep, replylen );
     msg->set_src_type( src_type );
     msg->set_prefix_cnt( 0 );
   }
@@ -98,14 +99,15 @@ KvSendQueue::create_kvsubmsg( uint32_t h,  const char *sub,  size_t sublen,
 KvSubMsg *
 KvSendQueue::create_kvpsubmsg( uint32_t h,  const char *pattern,  size_t patlen,
                                const char *prefix,  uint8_t prefix_len,
-                               char src_type,  KvMsgType mtype ) noexcept
+                               char src_type,  KvMsgType mtype,
+                               uint8_t code ) noexcept
 {
   size_t     sz  = KvSubMsg::calc_size( patlen, prefix_len, 0, 1 );
   KvSubMsg * msg = (KvSubMsg *) this->create_kvmsg( mtype, sz );
   if ( msg != NULL ) {
     msg->hash     = h;
     msg->msg_size = 0;
-    msg->code     = 'L'; /*CAPR_LISTEN*/
+    msg->code     = code;
     msg->msg_enc  = 0;
     msg->set_subject( pattern, patlen );
     msg->set_reply( prefix, prefix_len );
@@ -160,11 +162,14 @@ KvMsg::print( void ) noexcept
     printf( "hash       : %x\r\n"
             "msg_size   : %u\r\n"
             "sublen     : %u\r\n"
+            "code       : %u\r\n"
+            "msg_enc    : %u\r\n"
             "prefix_cnt : %u\r\n"
             "replylen   : %u\r\n"
             "subject()  : %s\r\n"
             "reply()    : %s\r\n",
-      sub.hash, sub.msg_size, sub.sublen, prefix_cnt,
+      sub.hash, sub.msg_size, sub.sublen, sub.code,
+      sub.msg_enc, prefix_cnt,
       sub.replylen, sub.subject(), sub.reply() );
     if ( prefix_cnt > 0 ) {
       for ( uint8_t i = 0; i < prefix_cnt; i++ ) {

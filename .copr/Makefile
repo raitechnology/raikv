@@ -5,9 +5,9 @@ date   := $(shell date +"%a %b %d %Y")
 rpmdir := $(shell pwd)
 
 major_num   := 1
-minor_num   := 4
+minor_num   := 5
 patch_num   := 0
-build_num   := 63
+build_num   := 64
 version     := $(major_num).$(minor_num).$(patch_num)
 ver_build   := $(version)-$(build_num)
 name_ver    := $(name)-$(ver_build)

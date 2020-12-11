@@ -2,8 +2,6 @@
 #define __rai_raikv__ev_net_h__
 
 #include <raikv/shm_ht.h>
-#include <raikv/prio_queue.h>
-#include <raikv/dlinklist.h>
 #include <raikv/stream_buf.h>
 #include <raikv/route_db.h>
 /*#define EV_NET_DBG*/
@@ -253,7 +251,7 @@ struct EvPoll : public RoutePublish {
                        PREFETCH_SIZE = 8;  /* pipe size of number of pref */
   size_t               prefetch_pending;   /* count of elems in prefetch queue*/
                    /*, prefetch_cnt[ PREFETCH_SIZE + 1 ]*/
-  RouteDB              sub_route;       /* subscriptions */
+  RoutePDB             sub_route;       /* subscriptions */
   RoutePublishQueue    pub_queue;       /* temp routing queue: */
   PeerStats            peer_stats;      /* accumulator after sock closes */
      /* this causes a message matching multiple wildcards to be sent once */
@@ -335,18 +333,20 @@ struct EvPoll : public RoutePublish {
   int init( int numfds,  bool prefetch/*,  bool single*/ ) noexcept;
   /* initialize kv */
   int init_shm( EvShm &shm ) noexcept;    /* open shm pubsub */
+#if 0
   /* add a pattern route for hash */
-  void add_pattern_route( const char *sub,  size_t prefix_len,  uint32_t hash,
-                          uint32_t fd ) noexcept;
+  uint32_t add_pattern_route( const char *sub,  size_t prefix_len,  uint32_t hash,
+                              uint32_t fd ) noexcept;
   /* remove a pattern route for hash */
-  void del_pattern_route( const char *sub,  size_t prefix_len,  uint32_t hash,
-                          uint32_t fd ) noexcept;
+  uint32_t del_pattern_route( const char *sub,  size_t prefix_len,  uint32_t hash,
+                              uint32_t fd ) noexcept;
   /* add a subscription route for hash */
-  void add_route( const char *sub,  size_t sub_len,  uint32_t hash,
-                  uint32_t fd ) noexcept;
+  uint32_t add_route( const char *sub,  size_t sub_len,  uint32_t hash,
+                      uint32_t fd ) noexcept;
   /* remove a subscription route for hash */
-  void del_route( const char *sub,  size_t sub_len,  uint32_t hash,
-                  uint32_t fd ) noexcept;
+  uint32_t del_route( const char *sub,  size_t sub_len,  uint32_t hash,
+                      uint32_t fd ) noexcept;
+#endif
   int wait( int ms ) noexcept;            /* call epoll() with ms timeout */
 
   void idle_close( EvSocket *s,  uint64_t ns ) noexcept;

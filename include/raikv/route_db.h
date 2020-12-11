@@ -6,6 +6,7 @@
 #include <raikv/key_hash.h>
 #include <raikv/util.h>
 #include <raikv/prio_queue.h>
+#include <raikv/dlinklist.h>
 
 struct sockaddr;
 
@@ -70,6 +71,144 @@ struct CodeRef { /* refs to a route space, which is a list of fds */
   }
   size_t word_size( void ) const {
     return alloc_words( this->ecnt );
+  }
+};
+
+/* Use DeltaCoder to compress routes, manage hash -> route list */
+struct RouteZip {
+  static const uint32_t INI_SPC = 16;
+  struct PushRouteSpc {
+    uint32_t   size;
+    uint32_t * ptr;
+    uint32_t   spc[ INI_SPC ];
+    PushRouteSpc() : size( INI_SPC ) {
+      this->ptr = this->spc;
+    }
+  };
+  UIntHashTab  * zht;            /* code ref hash -> code buf offset */
+  uint32_t     * code_buf,       /* list of code ref, which is array of code */
+               * code_spc_ptr,   /* temporary code space */
+               * route_spc_ptr,  /* temporary route space */
+                 code_end,       /* end of code_buf[] list */
+                 code_size,      /* size of code_buf[] */
+                 code_free,      /* amount free between 0 -> code_end */
+                 code_spc_size,  /* size of code_spc_ptr */
+                 route_spc_size, /* size of route_spc_ptr */
+                 code_buf_spc[ INI_SPC * 4 ], /* initial code_buf[] */
+                 code_spc[ INI_SPC ],         /* initial code_spc_ptr[] */
+                 route_spc[ INI_SPC ];        /* initial code_route_ptr[] */
+  PushRouteSpc   push_route_spc[ 64 ]; /* stack of space for 64 wildcards, */
+                  /* this is used to merge routes of several matches together */
+
+  RouteZip() noexcept;
+
+  /* zht[pos] refcounts code ref */
+  void deref_codep( CodeRef *p ) {
+    if ( p != NULL && --p->ref == 0 ) {
+      this->code_free += p->word_size();
+      if ( this->code_free * 2 > this->code_end )
+        this->gc_code_ref_space();
+    }
+  }
+  uint32_t *make_route_space( uint32_t i ) noexcept;
+
+  uint32_t *make_push_route_space( uint8_t n,  uint32_t i ) noexcept;
+
+  uint32_t *make_code_space( uint32_t i ) noexcept;
+
+  uint32_t *make_code_ref_space( uint32_t i,  uint32_t &off ) noexcept;
+
+  void gc_code_ref_space( void ) noexcept;
+
+  static uint32_t insert_route( uint32_t r,  uint32_t *routes,  uint32_t rcnt );
+
+  static uint32_t delete_route( uint32_t r,  uint32_t *routes,  uint32_t rcnt );
+
+  uint32_t compress_routes( uint32_t *routes,  uint32_t rcnt ) noexcept;
+
+  uint32_t decompress_routes( uint32_t r,  uint32_t *&routes,
+                              CodeRef *&p ) noexcept;
+  uint32_t push_decompress_routes( uint8_t n,  uint32_t r,
+                                   uint32_t *&routes ) noexcept;
+  uint32_t decompress_one( uint32_t r ) noexcept;
+};
+
+/* Map a subscription hash to a route list using RouteZip */
+struct RouteDB : public RouteZip {
+  static const uint16_t MAX_PRE = 64, /* wildcard prefix routes */
+                        SUB_RTE = 64; /* non-wildcard routes */
+  UIntHashTab * rt_hash[ MAX_PRE + 1 ]; /* route hash -> code | code ref hash */
+  uint32_t      pre_seed[ 64 ];
+  uint64_t      pat_mask;        /* mask of subject prefixes, up to 64 */
+
+  RouteDB() noexcept;
+
+  uint32_t prefix_seed( size_t prefix_len ) const {
+    if ( prefix_len > 63 )
+      return this->pre_seed[ 63 ];
+    return this->pre_seed[ prefix_len ];
+  }
+  bool first_hash( uint32_t &pos,  uint32_t &h,  uint32_t &v ) {
+    UIntHashTab * xht = this->rt_hash[ SUB_RTE ];
+    if ( xht->first( pos ) ) {
+      xht->get( pos, h, v );
+      return true;
+    }
+    return false;
+  }
+  bool next_hash( uint32_t &pos,  uint32_t &h,  uint32_t &v ) {
+    UIntHashTab * xht = this->rt_hash[ SUB_RTE ];
+    if ( xht->next( pos ) ) {
+      xht->get( pos, h, v );
+      return true;
+    }
+    return false;
+  }
+  uint32_t add_route( uint16_t prefix_len,  uint32_t hash,
+                      uint32_t r ) noexcept;
+  uint32_t del_route( uint16_t prefix_len,  uint32_t hash,
+                      uint32_t r ) noexcept;
+  bool is_member( uint16_t prefix_len,  uint32_t hash,  uint32_t x ) noexcept;
+
+  bool is_sub_member( uint32_t hash,  uint32_t r ) {
+    return this->is_member( SUB_RTE, hash, r );
+  }
+  uint32_t add_pattern_route( uint32_t hash, uint32_t r, uint16_t prefix_len ) {
+    return this->add_route( prefix_len, hash, r );
+  }
+  uint32_t del_pattern_route( uint32_t hash, uint32_t r, uint16_t prefix_len ) {
+    return this->del_route( prefix_len, hash, r );
+  }
+  uint32_t add_sub_route( uint32_t hash, uint32_t r ) {
+    return this->add_route( SUB_RTE, hash, r );
+  }
+  uint32_t del_sub_route( uint32_t hash, uint32_t r ) {
+    return this->del_route( SUB_RTE, hash, r );
+  }
+  uint32_t get_route( uint16_t prefix_len,  uint32_t hash,
+                      uint32_t *&routes ) {
+    UIntHashTab * xht = this->rt_hash[ prefix_len ];
+    uint32_t  pos, val;
+    CodeRef * p;
+    if ( xht->find( hash, pos, val ) )
+      return this->decompress_routes( val, routes, p );
+    return 0;
+  }
+  uint32_t get_sub_route( uint32_t hash,  uint32_t *&routes ) {
+    return this->get_route( SUB_RTE, hash, routes );
+  }
+  uint32_t push_get_route( uint16_t prefix_len,  uint8_t n,  uint32_t hash,
+                           uint32_t *&routes ) {
+    UIntHashTab * xht = this->rt_hash[ prefix_len ];
+    uint32_t pos, val;
+    if ( xht->find( hash, pos, val ) )
+      return this->push_decompress_routes( n, val, routes );
+    return 0;
+  }
+  uint32_t get_route_count( uint16_t prefix_len,  uint32_t hash ) noexcept;
+
+  uint32_t get_sub_route_count( uint32_t hash ) {
+    return this->get_route_count( SUB_RTE, hash );
   }
 };
 
@@ -236,31 +375,61 @@ struct PeerData {
   virtual void retired_stats( PeerStats & )  { return; }
 };
 
+struct RouteNotify {
+  RouteNotify * next,
+              * back;
+  uint8_t       in_notify;
+  RouteNotify() : next( 0 ), back( 0 ), in_notify( 0 ) {}
+
+  virtual void on_sub( uint32_t h,  const char *sub,  size_t len,
+                       uint32_t fd,  uint32_t rcnt,  char src_type,
+                       const char *rep,  size_t rlen ) noexcept;
+  virtual void on_unsub( uint32_t h,  const char *sub,  size_t len,
+                         uint32_t fd,  uint32_t rcnt,
+                         char src_type ) noexcept;
+  virtual void on_psub( uint32_t h,  const char *pattern,  size_t len,
+                        const char *prefix,  uint8_t prefix_len,
+                        uint32_t fd,  uint32_t rcnt,
+                        char src_type ) noexcept;
+  virtual void on_punsub( uint32_t h,  const char *pattern,  size_t len,
+                          const char *prefix,  uint8_t prefix_len,
+                          uint32_t fd,  uint32_t rcnt,
+                          char src_type ) noexcept;
+};
+
 struct KvPrefHash;
 struct RoutePublish {
-  int32_t keyspace_cnt, /* count of __keyspace@N__ subscribes active */
-          keyevent_cnt, /* count of __keyevent@N__ subscribes active */
-          listblkd_cnt, /* count of __listblkd@N__ subscribes active */
-          zsetblkd_cnt, /* count of __zsetblkd@N__ subscribes active */
-          strmblkd_cnt, /* count of __strmblkd@N__ subscribes active */
-          monitor__cnt; /* count of __monitor_@N__ subscribes active */
-  uint16_t key_flags;    /* bits set for key subs above (EKF_KEYSPACE_FWD|..) */
+  kv::DLinkList<RouteNotify> notify_list;
+  uint32_t keyspace, /* route of __keyspace@N__ subscribes active */
+           keyevent, /* route of __keyevent@N__ subscribes active */
+           listblkd, /* route of __listblkd@N__ subscribes active */
+           zsetblkd, /* route of __zsetblkd@N__ subscribes active */
+           strmblkd, /* route of __strmblkd@N__ subscribes active */
+           monitor;  /* route of __monitor_@N__ subscribes active */
+  uint16_t key_flags; /* bits set for key subs above:
+                         EKF_KEYSPACE_FWD | EKF_KEYEVENT_FWD |
+                         EKF_LISTBLKD_NOT | EKF_ZSETBLKD_NOT |
+                         EKF_STRMBLKD_NOT | EKF_MONITOR */
+
   bool forward_msg( EvPublish &pub,  uint32_t *rcount_total,  uint8_t pref_cnt,
                     KvPrefHash *ph ) noexcept;
   bool hash_to_sub( uint32_t r,  uint32_t h,  char *key,
                     size_t &keylen ) noexcept;
-  void update_keyspace_count( const char *sub,  size_t len,  int add ) noexcept;
+  void update_keyspace_route( uint32_t &val,  uint16_t bit,  int add,
+                              uint32_t fd ) noexcept;
+  void update_keyspace_count( const char *sub,  size_t len,  int add,
+                              uint32_t fd ) noexcept;
   void notify_sub( uint32_t h,  const char *sub,  size_t len,
-                   uint32_t sub_id,  uint32_t rcnt,  char src_type,
+                   uint32_t fd,  uint32_t rcnt,  char src_type,
                    const char *rep = NULL,  size_t rlen = 0 ) noexcept;
   void notify_unsub( uint32_t h,  const char *sub,  size_t len,
-                     uint32_t sub_id,  uint32_t rcnt,  char src_type ) noexcept;
+                     uint32_t fd,  uint32_t rcnt,  char src_type ) noexcept;
   void notify_psub( uint32_t h,  const char *pattern,  size_t len,
                     const char *prefix,  uint8_t prefix_len,
-                    uint32_t sub_id,  uint32_t rcnt,  char src_type ) noexcept;
+                    uint32_t fd,  uint32_t rcnt,  char src_type ) noexcept;
   void notify_punsub( uint32_t h,  const char *pattern,  size_t len,
                      const char *prefix,  uint8_t prefix_len,
-                     uint32_t sub_id,  uint32_t rcnt,  char src_type ) noexcept;
+                     uint32_t fd,  uint32_t rcnt,  char src_type ) noexcept;
   bool add_timer_seconds( int id,  uint32_t ival,  uint64_t timer_id,
                           uint64_t event_id ) noexcept;
   bool add_timer_millis( int id,  uint32_t ival,  uint64_t timer_id,
@@ -269,113 +438,27 @@ struct RoutePublish {
                          uint64_t event_id ) noexcept;
   bool remove_timer( int id,  uint64_t timer_id,  uint64_t event_id ) noexcept;
 
-  RoutePublish() : keyspace_cnt( 0 ), keyevent_cnt( 0 ), listblkd_cnt( 0 ),
-                   zsetblkd_cnt( 0 ), strmblkd_cnt( 0 ), monitor__cnt( 0 ),
+  void add_route_notify( RouteNotify &x ) {
+    if ( ! x.in_notify ) {
+      x.in_notify = 1;
+      this->notify_list.push_tl( &x );
+    }
+  }
+  void remove_route_notify( RouteNotify &x ) {
+    if ( x.in_notify ) {
+      x.in_notify = 0;
+      this->notify_list.pop( &x );
+    }
+  }
+
+  RoutePublish() : keyspace( 0 ), keyevent( 0 ), listblkd( 0 ),
+                   zsetblkd( 0 ), strmblkd( 0 ), monitor( 0 ),
                    key_flags( 0 ) {}
 };
 
-struct RouteDB {
-  static const uint32_t INI_SPC = 16;
-  struct PushRouteSpc {
-    uint32_t   size;
-    uint32_t * ptr;
-    uint32_t   spc[ INI_SPC ];
-    PushRouteSpc() : size( INI_SPC ) {
-      this->ptr = this->spc;
-    }
-  };
-
-  RoutePublish & rte;
-  DeltaCoder     dc;             /* code          -> route list */
-  UIntHashTab  * xht,            /* route hash    -> code | code ref hash */
-               * zht;            /* code ref hash -> code buf offset */
-  uint64_t       pat_mask;       /* mask of subject prefixes, up to 64 */
-  uint32_t     * code_buf,       /* list of code ref, which is array of code */
-               * code_spc_ptr,   /* temporary code space */
-               * route_spc_ptr,  /* temporary route space */
-                 code_end,       /* end of code_buf[] list */
-                 code_size,      /* size of code_buf[] */
-                 code_free,      /* amount free between 0 -> code_end */
-                 code_spc_size,  /* size of code_spc_ptr */
-                 route_spc_size, /* size of route_spc_ptr */
-                 code_buf_spc[ INI_SPC * 4 ], /* initial code_buf[] */
-                 code_spc[ INI_SPC ],         /* initial code_spc_ptr[] */
-                 route_spc[ INI_SPC ],        /* initial code_route_ptr[] */
-                 pre_seed[ 64 ],  /* hash seed of the prefix: _SYS.W<N>. */
-                 pre_count[ 64 ]; /* count of subjects sharing a prefix N */
-  PushRouteSpc   push_route_spc[ 64 ];
-
-  RouteDB( RoutePublish &rp ) : rte( rp ), xht( 0 ), zht( 0 ), code_buf( 0 ),
-              code_end( 0 ), code_size( INI_SPC * 4 ), code_free( 0 ),
-              code_spc_size( INI_SPC ), route_spc_size( INI_SPC ) {
-    this->code_buf      = this->code_buf_spc;
-    this->code_spc_ptr  = this->code_spc;
-    this->route_spc_ptr = this->route_spc;
-    this->init_prefix_seed();
-  }
-
-  void init_prefix_seed( void ) noexcept;
-
-  bool first_hash( uint32_t &pos,  uint32_t &h,  uint32_t &v ) {
-    if ( this->xht != NULL && this->xht->first( pos ) ) {
-      this->xht->get( pos, h, v );
-      return true;
-    }
-    return false;
-  }
-  bool next_hash( uint32_t &pos,  uint32_t &h,  uint32_t &v ) {
-    if ( this->xht->next( pos ) ) {
-      this->xht->get( pos, h, v );
-      return true;
-    }
-    return false;
-  }
-  uint32_t *make_route_space( uint32_t i ) noexcept;
-
-  uint32_t *make_push_route_space( uint8_t n,  uint32_t i ) noexcept;
-
-  uint32_t *make_code_space( uint32_t i ) noexcept;
-
-  uint32_t *make_code_ref_space( uint32_t i,  uint32_t &off ) noexcept;
-
-  void gc_code_ref_space( void ) noexcept;
-
-  uint32_t compress_routes( uint32_t *routes,  uint32_t rcnt ) noexcept;
-
-  uint32_t decompress_routes( uint32_t r,  uint32_t *&routes,
-                              bool deref ) noexcept;
-  uint32_t push_decompress_routes( uint8_t n,  uint32_t r,
-                                   uint32_t *&routes ) noexcept;
-  uint32_t decompress_one( uint32_t r ) noexcept;
-
-  uint32_t add_route( uint32_t hash,  uint32_t r ) noexcept;
-
-  uint32_t del_route( uint32_t hash,  uint32_t r ) noexcept;
-
-  uint32_t add_pattern_route( uint32_t hash,  uint32_t r,
-                              uint16_t pre_len ) noexcept;
-  uint32_t del_pattern_route( uint32_t hash,  uint32_t r,
-                              uint16_t pre_len ) noexcept;
-  uint32_t prefix_seed( size_t prefix_len ) {
-    if ( prefix_len > 63 )
-      return this->pre_seed[ 63 ];
-    return this->pre_seed[ prefix_len ];
-  }
-  bool is_member( uint32_t hash,  uint32_t x ) noexcept;
-
-  uint32_t get_route( uint32_t hash,  uint32_t *&routes ) {
-    uint32_t pos, val;
-    if ( this->xht != NULL && this->xht->find( hash, pos, val ) )
-      return this->decompress_routes( val, routes, false );
-    return 0;
-  }
-  uint32_t push_get_route( uint8_t n,  uint32_t hash,  uint32_t *&routes ) {
-    uint32_t pos, val;
-    if ( this->xht != NULL && this->xht->find( hash, pos, val ) )
-      return this->push_decompress_routes( n, val, routes );
-    return 0;
-  }
-  uint32_t get_route_count( uint32_t hash ) noexcept;
+struct RoutePDB : public RouteDB {
+  RoutePublish & rte; /* implemented in EvPoll since the fd database is there */
+  RoutePDB( RoutePublish &rp ) : rte( rp ) {}
 };
 
 }

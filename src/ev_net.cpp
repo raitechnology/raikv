@@ -694,7 +694,7 @@ RoutePublish::forward_msg( EvPublish &pub,  uint32_t *rcount_total,
 {
   EvPoll   & poll      = static_cast<EvPoll &>( *this );
   uint32_t * routes    = NULL;
-  uint32_t   rcount    = poll.sub_route.get_route( pub.subj_hash, routes ),
+  uint32_t   rcount    = poll.sub_route.get_sub_route( pub.subj_hash, routes ),
              hash;
   uint8_t    n         = 0;
   bool       flow_good = true;
@@ -722,7 +722,7 @@ RoutePublish::forward_msg( EvPublish &pub,  uint32_t *rcount_total,
       }
       hash = kv_crc_c( pub.subject, bi.i, poll.sub_route.prefix_seed( bi.i ) );
     found_hash:;
-      rcount = poll.sub_route.push_get_route( n, hash, routes );
+      rcount = poll.sub_route.push_get_route( bi.i, n, hash, routes );
       if ( rcount > 0 ) {
         rpd[ n ].hash   = hash;
         rpd[ n ].prefix = bi.i;
@@ -765,10 +765,46 @@ RoutePublish::hash_to_sub( uint32_t r,  uint32_t h,  char *key,
     b = s->hash_to_sub( h, key, keylen );
   return b;
 }
+/* modify keyspace route */
+inline void
+RoutePublish::update_keyspace_route( uint32_t &val,  uint16_t bit,
+                                     int add,  uint32_t fd ) noexcept
+{
+  RoutePDB & sub_route = static_cast<EvPoll &>( *this ).sub_route;
+  uint32_t   rcnt = 0, xcnt = 0;
+  uint32_t * routes = NULL, tmp_route[ 1 ];
+  CodeRef  * p = NULL;
+
+  /* if bit is set, then val has routes */
+  if ( ( this->key_flags & bit ) != 0 )
+    rcnt = sub_route.decompress_routes( val, routes, p );
+  else
+    routes = tmp_route;
+  /* if unsub or sub */
+  if ( add < 0 )
+    xcnt = RouteZip::delete_route( fd, routes, rcnt );
+  else
+    xcnt = RouteZip::insert_route( fd, routes, rcnt );
+  /* if route changed */
+  if ( xcnt != rcnt ) {
+    /* if route deleted */
+    if ( xcnt == 0 ) {
+      val = 0;
+      this->key_flags &= ~bit;
+    }
+    /* otherwise added */
+    else {
+      this->key_flags |= bit;
+      val = sub_route.compress_routes( routes, xcnt );
+    }
+    /* don't need old route code */
+    sub_route.deref_codep( p );
+  }
+}
 /* track number of subscribes to keyspace subjects to enable them */
 inline void
 RoutePublish::update_keyspace_count( const char *sub,  size_t len,
-                                     int add ) noexcept
+                                     int add,  uint32_t fd ) noexcept
 {
   /* keyspace subjects are special, since subscribing to them can create
    * some overhead */
@@ -778,126 +814,136 @@ RoutePublish::update_keyspace_count( const char *sub,  size_t len,
                     zblk[] = "__zsetblkd@",
                     sblk[] = "__strmblkd@",
                     moni[] = "__monitor_@";
-
   if ( ::memcmp( kspc, sub, len ) == 0 ) /* len <= 11, could match multiple */
-    this->keyspace_cnt += add;
+    this->update_keyspace_route( this->keyspace, EKF_KEYSPACE_FWD, add, fd );
   if ( ::memcmp( kevt, sub, len ) == 0 )
-    this->keyevent_cnt += add;
+    this->update_keyspace_route( this->keyevent, EKF_KEYEVENT_FWD, add, fd );
   if ( ::memcmp( lblk, sub, len ) == 0 )
-    this->listblkd_cnt += add;
+    this->update_keyspace_route( this->listblkd, EKF_LISTBLKD_NOT, add, fd );
   if ( ::memcmp( zblk, sub, len ) == 0 )
-    this->zsetblkd_cnt += add;
+    this->update_keyspace_route( this->zsetblkd, EKF_ZSETBLKD_NOT, add, fd );
   if ( ::memcmp( sblk, sub, len ) == 0 )
-    this->strmblkd_cnt += add;
+    this->update_keyspace_route( this->strmblkd, EKF_STRMBLKD_NOT, add, fd );
   if ( ::memcmp( moni, sub, len ) == 0 )
-    this->monitor__cnt += add;
+    this->update_keyspace_route( this->monitor , EKF_MONITOR     , add, fd );
 
-  this->key_flags = ( ( this->keyspace_cnt == 0 ? 0 : EKF_KEYSPACE_FWD ) |
-                      ( this->keyevent_cnt == 0 ? 0 : EKF_KEYEVENT_FWD ) |
-                      ( this->listblkd_cnt == 0 ? 0 : EKF_LISTBLKD_NOT ) |
-                      ( this->zsetblkd_cnt == 0 ? 0 : EKF_ZSETBLKD_NOT ) |
-                      ( this->strmblkd_cnt == 0 ? 0 : EKF_STRMBLKD_NOT ) |
-                      ( this->monitor__cnt == 0 ? 0 : EKF_MONITOR      ) );
   /*printf( "%.*s %d key_flags %x\n", (int) len, sub, add, this->key_flags );*/
 }
+#if 0
 /* external patterns from kv pubsub */
-void
+uint32_t
 EvPoll::add_pattern_route( const char *sub,  size_t prefix_len,  uint32_t hash,
                            uint32_t fd ) noexcept
 {
   size_t pre_len = ( prefix_len < 11 ? prefix_len : 11 );
-  /* if first route added for hash */
-  if ( this->sub_route.add_pattern_route( hash, fd, prefix_len ) == 1 ) {
+  uint32_t n = this->sub_route.add_pattern_route( hash, fd, prefix_len );
+  if ( n == 1 ) { /* if first route added for hash */
     /*printf( "add_pattern %.*s\n", (int) prefix_len, sub );*/
     this->update_keyspace_count( sub, pre_len, 1 );
   }
+  return n;
 }
 
-void
+uint32_t
 EvPoll::del_pattern_route( const char *sub,  size_t prefix_len,  uint32_t hash,
                            uint32_t fd ) noexcept
 {
   size_t pre_len = ( prefix_len < 11 ? prefix_len : 11 );
-  /* if last route deleted */
-  if ( this->sub_route.del_pattern_route( hash, fd, prefix_len ) == 0 ) {
+  uint32_t n = this->sub_route.del_pattern_route( hash, fd, prefix_len );
+  if ( n == 0 ) { /* if last route deleted */
     /*printf( "del_pattern %.*s\n", (int) prefix_len, sub );*/
     this->update_keyspace_count( sub, pre_len, -1 );
   }
+  return n;
 }
 /* external routes from kv pubsub */
-void
+uint32_t
 EvPoll::add_route( const char *sub,  size_t sub_len,  uint32_t hash,
                    uint32_t fd ) noexcept
 {
-  /* if first route added for hash */
-  if ( this->sub_route.add_route( hash, fd ) == 1 ) {
+  uint32_t n = this->sub_route.add_route( hash, fd );
+  if ( n == 1 ) { /* if first route added for hash */
     if ( sub_len > 11 ) {
       /*printf( "add_route %.*s\n", (int) sub_len, sub );*/
       this->update_keyspace_count( sub, 11, 1 );
     }
   }
+  return n;
 }
 
-void
+uint32_t
 EvPoll::del_route( const char *sub,  size_t sub_len,  uint32_t hash,
                    uint32_t fd ) noexcept
 {
-  /* if last route deleted */
-  if ( this->sub_route.del_route( hash, fd ) == 0 ) {
+  uint32_t n = this->sub_route.del_route( hash, fd );
+  if ( n == 0 ) { /* if last route deleted */
     if ( sub_len > 11 ) {
       /*printf( "del_route %.*s\n", (int) sub_len, sub );*/
       this->update_keyspace_count( sub, 11, -1 );
     }
   }
+  return n;
 }
+#endif
 /* client subscribe, notify to kv pubsub */
 void
 RoutePublish::notify_sub( uint32_t h,  const char *sub,  size_t len,
-                          uint32_t sub_id,  uint32_t rcnt,  char src_type,
+                          uint32_t fd,  uint32_t rcnt,  char src_type,
                           const char *rep,  size_t rlen ) noexcept
 {
-  EvPoll & poll = static_cast<EvPoll &>( *this );
   if ( len > 11 )
-    this->update_keyspace_count( sub, 11, 1 );
-  poll.pubsub->do_sub( h, sub, len, sub_id, rcnt, src_type, rep, rlen );
+    this->update_keyspace_count( sub, 11, 1, fd );
+  for ( RouteNotify *p = this->notify_list.hd; p != NULL; p = p->next ) {
+    p->on_sub( h, sub, len, fd, rcnt, src_type, rep, rlen );
+  }
 }
 
 void
 RoutePublish::notify_unsub( uint32_t h,  const char *sub,  size_t len,
-                            uint32_t sub_id,  uint32_t rcnt,
+                            uint32_t fd,  uint32_t rcnt,
                             char src_type ) noexcept
 {
-  EvPoll & poll = static_cast<EvPoll &>( *this );
   if ( len > 11 )
-    this->update_keyspace_count( sub, 11, -1 );
-  poll.pubsub->do_unsub( h, sub, len, sub_id, rcnt, src_type );
+    this->update_keyspace_count( sub, 11, -1, fd );
+  for ( RouteNotify *p = this->notify_list.hd; p != NULL; p = p->next ) {
+    p->on_unsub( h, sub, len, fd, rcnt, src_type );
+  }
 }
 /* client pattern subscribe, notify to kv pubsub */
 void
 RoutePublish::notify_psub( uint32_t h,  const char *pattern,  size_t len,
                            const char *prefix,  uint8_t prefix_len,
-                           uint32_t sub_id,  uint32_t rcnt,
+                           uint32_t fd,  uint32_t rcnt,
                            char src_type ) noexcept
 {
-  EvPoll & poll = static_cast<EvPoll &>( *this );
   size_t pre_len = ( prefix_len < 11 ? prefix_len : 11 );
-  this->update_keyspace_count( prefix, pre_len, 1 );
-  poll.pubsub->do_psub( h, pattern, len, prefix, prefix_len,
-                        sub_id, rcnt, src_type );
+  this->update_keyspace_count( prefix, pre_len, 1, fd );
+  for ( RouteNotify *p = this->notify_list.hd; p != NULL; p = p->next ) {
+    p->on_psub( h, pattern, len, prefix, prefix_len, fd, rcnt, src_type );
+  }
 }
 
 void
 RoutePublish::notify_punsub( uint32_t h,  const char *pattern,  size_t len,
                              const char *prefix,  uint8_t prefix_len,
-                             uint32_t sub_id,  uint32_t rcnt,
+                             uint32_t fd,  uint32_t rcnt,
                              char src_type ) noexcept
 {
-  EvPoll & poll = static_cast<EvPoll &>( *this );
   size_t pre_len = ( prefix_len < 11 ? prefix_len : 11 );
-  this->update_keyspace_count( prefix, pre_len, -1 );
-  poll.pubsub->do_punsub( h, pattern, len, prefix, prefix_len,
-                          sub_id, rcnt, src_type );
+  this->update_keyspace_count( prefix, pre_len, -1, fd );
+  for ( RouteNotify *p = this->notify_list.hd; p != NULL; p = p->next ) {
+    p->on_punsub( h, pattern, len, prefix, prefix_len, fd, rcnt, src_type );
+  }
 }
+/* defined for vtable to avoid pure virtuals */
+void RouteNotify::on_sub( uint32_t,  const char *,  size_t,  uint32_t,
+                          uint32_t,  char,  const char *,  size_t ) noexcept {}
+void RouteNotify::on_unsub( uint32_t,  const char *,  size_t,
+                            uint32_t,  uint32_t,  char ) noexcept {}
+void RouteNotify::on_psub( uint32_t,  const char *,  size_t, const char *,
+                           uint8_t,  uint32_t,  uint32_t, char ) noexcept {}
+void RouteNotify::on_punsub( uint32_t,  const char *,  size_t, const char *,
+                             uint8_t, uint32_t,  uint32_t, char ) noexcept {}
 /* shutdown and close all open socks */
 void
 EvPoll::process_quit( void ) noexcept
