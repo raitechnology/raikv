@@ -46,11 +46,12 @@ int
 EvPoll::init( int numfds,  bool prefetch/*,  bool single*/ ) noexcept
 {
   uint32_t n  = align<uint32_t>( numfds, 2 ); /* 64 bit boundary */
-  size_t   sz = ( sizeof( this->ev[ 0 ] ) +
-                  sizeof( this->wr_poll[ 0 ] ) ) * n;
+  size_t   sz = sizeof( this->ev[ 0 ] ) * n;
   if ( prefetch )
     this->prefetch_queue = EvPrefetchQueue::create();
   /*this->single_thread = single;*/
+  this->init_ns = current_realtime_coarse_ns();
+  this->now_ns  = this->init_ns;
 
   if ( (this->efd = ::epoll_create( n )) < 0 ) {
     perror( "epoll" );
@@ -62,7 +63,6 @@ EvPoll::init( int numfds,  bool prefetch/*,  bool single*/ ) noexcept
     perror( "malloc" );
     return -1;
   }
-  this->wr_poll     = (EvSocket **) (void *) &this->ev[ n ];
   this->timer_queue = EvTimerQueue::create_timer_queue( *this );
   if ( this->timer_queue == NULL )
     return -1;
@@ -75,30 +75,60 @@ EvPoll::init_shm( EvShm &shm ) noexcept
   this->map    = shm.map;
   this->ctx_id = shm.ctx_id;
   this->dbx_id = shm.dbx_id;
-  if ( (this->pubsub = KvPubSub::create( *this, 254 )) == NULL ) {
-    fprintf( stderr, "unable to open kv pub sub\n" );
-    return -1;
+  if ( this->map != NULL ) {
+    if ( (this->pubsub = KvPubSub::create( *this, 254 )) == NULL ) {
+      fprintf( stderr, "unable to open kv pub sub\n" );
+      return -1;
+    }
   }
   return 0;
+}
+
+void
+EvPoll::add_write_poll( EvSocket *s ) noexcept
+{
+  struct epoll_event event;
+  s->poll_bytes_sent = s->bytes_sent;
+  s->set_poll( IN_EPOLL_WRITE );
+  ::memset( &event, 0, sizeof( struct epoll_event ) );
+  event.data.fd = s->fd;
+  event.events  = EPOLLOUT | EPOLLRDHUP/* | EPOLLET*/;
+  if ( ::epoll_ctl( this->efd, EPOLL_CTL_MOD, s->fd, &event ) < 0 ) {
+    perror( "epoll_ctl pollout" );
+    s->set_poll( IN_EPOLL_READ );
+    s->popall();
+    s->idle_push( EV_CLOSE );
+    return;
+  }
+  this->wr_count++;
+  if ( this->wr_timeout_ns != 0 )
+    this->push_write_queue( s );
+}
+
+void
+EvPoll::remove_write_poll( EvSocket *s ) noexcept
+{
+  struct epoll_event event;
+  this->remove_write_queue( s );
+  s->set_poll( IN_EPOLL_READ );
+  s->pop( EV_WRITE_POLL );
+  s->idle_push( EV_WRITE_HI );
+  this->wr_count--;
+  ::memset( &event, 0, sizeof( struct epoll_event ) );
+  event.data.fd = s->fd;
+  event.events  = EPOLLIN | EPOLLRDHUP | EPOLLET;
+  if ( ::epoll_ctl( this->efd, EPOLL_CTL_MOD, s->fd, &event ) < 0 ) {
+    perror( "epoll_ctl pollin" );
+    s->popall();
+    s->idle_push( EV_CLOSE );
+  }
 }
 
 int
 EvPoll::wait( int ms ) noexcept
 {
-  struct epoll_event event;
   EvSocket *s;
-  int n;
-  while ( this->wr_count > 0 ) {
-    s = this->wr_poll[ --this->wr_count ];
-    ::memset( &event, 0, sizeof( struct epoll_event ) );
-    event.data.fd = s->fd;
-    event.events  = EPOLLOUT | EPOLLRDHUP | EPOLLET;
-    if ( ::epoll_ctl( this->efd, EPOLL_CTL_MOD, s->fd, &event ) < 0 ) {
-      perror( "epoll_ctl pollout" );
-    }
-    if ( this->wr_timeout_ns != 0 )
-      this->push_write_queue( s );
-  }
+  int n, m = 0;
   n = ::epoll_wait( this->efd, this->ev, this->nfds, ms );
   if ( n < 0 ) {
     if ( errno == EINTR )
@@ -108,44 +138,49 @@ EvPoll::wait( int ms ) noexcept
   }
   for ( int i = 0; i < n; i++ ) {
     s = this->sock[ this->ev[ i ].data.fd ];
-    if ( ( this->ev[ i ].events & ( EPOLLIN | EPOLLRDHUP ) ) != 0 ) {
+    if ( ( this->ev[ i ].events & ( EPOLLIN | EPOLLRDHUP | EPOLLERR ) ) != 0 ) {
       if ( s->test( EV_WRITE_POLL ) ) { /* full output buffers, can't read */
+        /* is a EPOLLRDHUP or an EPOLLERR, close it */
         this->remove_write_queue( s );
         s->popall();
-        s->idle_push( EV_CLOSE );
+        s->idle_push( EV_CLOSE ); /* maybe print err since bytes were unsent */
       }
       else {
         EvState ev = EV_READ;
         if ( s->test_opts( OPT_READ_HI ) )
           ev = EV_READ_HI;
+        /* add read event */
         s->idle_push( ev );
       }
     }
     if ( ( this->ev[ i ].events & EPOLLOUT ) != 0 ) {
       if ( s->test( EV_WRITE_POLL ) ) { /* if not closed above */
-        this->remove_write_queue( s );
-        s->pop( EV_WRITE_POLL );
-        s->idle_push( EV_WRITE_HI );
-        ::memset( &event, 0, sizeof( struct epoll_event ) );
-        event.data.fd = s->fd;
-        event.events  = EPOLLIN | EPOLLRDHUP | EPOLLET;
-        if ( ::epoll_ctl( this->efd, EPOLL_CTL_MOD, s->fd, &event ) < 0 ) {
-          perror( "epoll_ctl pollin" );
-        }
+        /* move back to read poll and try to write */
+        this->remove_write_poll( s );
       }
     }
   }
+  /* check if write pollers are timing out */
   if ( ! this->ev_write.is_empty() ) {
     uint64_t ns = this->current_coarse_ns();
-    do {
+    for (;;) {
       s = this->ev_write.heap[ 0 ];
-      if ( ns - s->PeerData::active_ns > this->wr_timeout_ns &&
-           ns > s->PeerData::active_ns ) {
-        this->idle_close( s, ns - s->PeerData::active_ns );
+      if ( ns <= s->PeerData::active_ns ) /* XXX should use monotonic time */
+        break;
+      uint64_t delta = ns - s->PeerData::active_ns;
+      if ( delta > this->wr_timeout_ns ) {
+        this->remove_write_poll( s );
+        this->idle_close( s, delta );
+        m++;
+        if ( this->ev_write.is_empty() )
+          break;
       }
-    } while ( ! this->ev_write.is_empty() );
+      else {
+        break;
+      }
+    }
   }
-  return n;
+  return n + m; /* returns the number of new events */
 }
 /* allocate an fd for a null sockets which are used for event based objects
  * that wait on timers and/or subscriptions */
@@ -188,6 +223,7 @@ EvPoll::add_sock( EvSocket *s ) noexcept
   if ( ! s->test_opts( OPT_NO_POLL ) ) {
     /* add to poll set */
     struct epoll_event event;
+    s->set_poll( IN_EPOLL_READ );
     ::memset( &event, 0, sizeof( struct epoll_event ) );
     event.data.fd = s->fd;
     event.events  = EPOLLIN | EPOLLRDHUP | EPOLLET;
@@ -225,6 +261,7 @@ EvPoll::remove_sock( EvSocket *s ) noexcept
   /* remove poll set */
   if ( (uint32_t) s->fd <= this->maxfd && this->sock[ s->fd ] == s ) {
     if ( ! s->test_opts( OPT_NO_POLL ) ) {
+      s->set_poll( IN_NO_LIST );
       ::memset( &event, 0, sizeof( struct epoll_event ) );
       event.data.fd = s->fd;
       event.events  = 0;
@@ -432,11 +469,21 @@ EvPoll::drain_prefetch( void ) noexcept
 }
 
 uint64_t
-EvPoll::current_coarse_ns( void ) const noexcept
+EvPoll::current_coarse_ns( void ) noexcept
 {
   if ( this->map != NULL )
-    return this->map->hdr.current_stamp;
-  return current_realtime_coarse_ns();
+    this->now_ns = this->map->hdr.current_stamp;
+  else
+    this->now_ns = current_realtime_coarse_ns();
+  return this->now_ns;
+}
+
+uint64_t
+EvPoll::create_ns( void ) const noexcept
+{
+  if ( this->map != NULL )
+    return this->map->hdr.create_stamp;
+  return this->init_ns;
 }
 
 int
@@ -545,7 +592,7 @@ EvPoll::dispatch( void ) noexcept
       if ( s->test( EV_WRITE_HI ) ) {
         if ( s->test( EV_WRITE_POLL ) ) {
           ret |= POLL_NEEDED;
-          this->wr_poll[ this->wr_count++ ] = s;
+          this->add_write_poll( s );
           continue; /* don't put into event queue */
         }
         ret |= WRITE_PRESSURE;
@@ -1367,6 +1414,7 @@ EvConnection::write( void ) noexcept
     strm.flush();
   else if ( strm.wr_pending == 0 ) {
     this->pop3( EV_WRITE, EV_WRITE_HI, EV_WRITE_POLL );
+    this->push( EV_READ_LO );
     return;
   }
   ::memset( &h, 0, sizeof( h ) );
@@ -1391,6 +1439,7 @@ EvConnection::write( void ) noexcept
     if ( strm.wr_pending == 0 ) {
       strm.reset();
       this->pop3( EV_WRITE, EV_WRITE_HI, EV_WRITE_POLL );
+      this->push( EV_READ_LO );
     }
     else {
       for (;;) {
@@ -1622,28 +1671,33 @@ void
 EvSocket::idle_push( EvState s ) noexcept
 {
   /* if no state, not currently in the queue */
-  if ( this->state == 0 ) {
-  do_push:;
-    this->push( s );
-    this->prio_cnt = this->poll.prio_tick;
-    this->poll.push_event_queue( this );
-  }
-  /* check if added state requires queue to be rearranged */
-  else {
-    int x1 = __builtin_ffs( this->state ),
-        x2 = __builtin_ffs( this->state | ( 1 << s ) );
-    /* new state has higher priority than current state, reorder queue */
-    if ( x1 > x2 ) {
-      if ( this->in_queue( IN_EVENT_QUEUE ) ) {
-        this->set_queue( IN_NO_QUEUE );
-        this->poll.ev_queue.remove( this );
-      }
-      goto do_push; /* pop, then push */
-    }
-    /* otherwise, current state >= the new state, in the correct order */
-    else {
+  if ( ! this->in_poll( IN_EPOLL_WRITE ) ) {
+    if ( ! this->in_queue( IN_EVENT_QUEUE ) ) {
+    do_push:;
       this->push( s );
+      this->prio_cnt = this->poll.prio_tick;
+      this->poll.push_event_queue( this );
     }
+    /* check if added state requires queue to be rearranged */
+    else {
+      int x1 = __builtin_ffs( this->state ),
+          x2 = __builtin_ffs( this->state | ( 1 << s ) );
+      /* new state has higher priority than current state, reorder queue */
+      if ( x1 > x2 ) {
+        if ( this->in_queue( IN_EVENT_QUEUE ) ) {
+          this->set_queue( IN_NO_QUEUE );
+          this->poll.ev_queue.remove( this );
+        }
+        goto do_push; /* pop, then push */
+      }
+      /* otherwise, current state >= the new state, in the correct order */
+      else {
+        this->push( s );
+      }
+    }
+  }
+  else { /* waiting on write */
+    this->push( s );
   }
 }
 

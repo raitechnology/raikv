@@ -23,7 +23,11 @@ struct MainLoopVars {
                 use_sigusr,   /* true to use sig usr to signal messages */
                 busy_poll,    /* true to busy poll kv msgs */
                 use_prefetch, /* prefetch keys in batches */
-                all;          /* start all ports with default */
+                all,          /* start all ports with default */
+                no_threads,   /* don't want threading options */
+                no_reuseport, /* don't want so_reuseport */
+                no_map,       /* don't want shm */
+                no_default;   /* don't want discard default -X */
   uint8_t       db_num;       /* which db to attach */
 
   const char * desc[ 16 ]; /* extra help arg descriptions */
@@ -57,21 +61,27 @@ struct MainLoopVars {
     return ( s == nullptr ? 0 : atoi( s ) );
   }
   void print_help( void ) const {
-    printf(
-      "  -m map   = kv shm map name       (" KV_DEFAULT_SHM ") (" KV_MAP_NAME_ENV ")\n" );
+    if ( ! this->no_map )
+      printf(
+        "  -m map   = kv shm map name       (" KV_DEFAULT_SHM ") (" KV_MAP_NAME_ENV ")\n" );
     for ( int i = 0; i < n; i++ )
       printf( "%s\n", this->desc[ i ] );
-    printf(
-      "  -D dbnum = default db num        (0) (" KV_DB_NUM_ENV ")\n"
-      "  -x maxfd = max fds               (10000) (" KV_MAXFD_ENV ")\n"
-      "  -k secs  = keep alive timeout    (16) (" KV_KEEPALIVE_ENV ")\n"
-      "  -f prefe = prefetch keys:        (1) 0 = no, 1 = yes (" KV_PREFETCH_ENV ")\n"
-      "  -P       = set SO_REUSEPORT for clustering multiple instances (" KV_REUSEPORT_ENV ")\n"
-      "  -t nthr  = spawn N threads       (1) (implies -P) (" KV_NUM_THREADS_ENV ")\n"
-      "  -4       = use only ipv4 listeners (" KV_IPV4_ONLY_ENV ")\n"
-      "  -s       = do not use signal USR1 publish notification (" KV_USE_SIGUSR_ENV ")\n"
-      "  -b       = busy poll (" KV_BUSYPOLL_ENV ")\n"
-      "  -X       = do not listen to default ports, only using cmd line\n" );
+    if ( ! this->no_map )
+      printf( "  -D dbnum = default db num          (0) (" KV_DB_NUM_ENV ")\n" );
+    printf( "  -x maxfd = max fds                 (10000) (" KV_MAXFD_ENV ")\n" );
+    printf( "  -k secs  = keep alive timeout      (16) (" KV_KEEPALIVE_ENV ")\n" );
+    if ( ! this->no_map )
+      printf( "  -f prefe = prefetch keys:          (1) 0 = no, 1 = yes (" KV_PREFETCH_ENV ")\n" );
+    if ( ! this->no_reuseport )
+      printf( "  -P       = set SO_REUSEPORT for clustering multiple instances (" KV_REUSEPORT_ENV ")\n" );
+    if ( ! this->no_threads )
+      printf( "  -t nthr  = spawn N threads         (1) (implies -P) (" KV_NUM_THREADS_ENV ")\n" );
+    printf( "  -4       = use only ipv4 listeners (" KV_IPV4_ONLY_ENV ")\n" );
+    if ( ! this->no_map )
+      printf( "  -s       = do not use signal USR1 publish notification (" KV_USE_SIGUSR_ENV ")\n" );
+    printf( "  -b       = busy poll               (" KV_BUSYPOLL_ENV ")\n" );
+    if ( ! this->no_default )
+      printf( "  -X       = do not listen to default ports, only using cmd line\n" );
   }
   bool parse_args( int argc, const char *argv[] ) {
     /* check help */
@@ -81,20 +91,31 @@ struct MainLoopVars {
       this->print_help();
       return false;
     }
-    this->map_name = get_arg( argc, argv, 1, "-m", KV_DEFAULT_SHM,
-                                                   KV_MAP_NAME_ENV );
-    this->db_num = (uint8_t) int_arg( argc, argv, 1, "-D", "0", KV_DB_NUM_ENV );
+    if ( ! this->no_map ) {
+      this->map_name = get_arg( argc, argv, 1, "-m", KV_DEFAULT_SHM,
+                                                     KV_MAP_NAME_ENV );
+      this->db_num = (uint8_t) int_arg( argc, argv, 1, "-D", "0", KV_DB_NUM_ENV );
+    }
+    else {
+      this->map_name = "none";
+    }
     this->maxfd       = int_arg(  argc, argv, 1, "-x", "10000", KV_MAXFD_ENV );
     this->timeout     = int_arg(  argc, argv, 1, "-k", "16", KV_KEEPALIVE_ENV );
-    this->use_prefetch = bool_arg( argc, argv, 1, "-f", "1", KV_PREFETCH_ENV );
+    if ( ! this->no_map )
+      this->use_prefetch = bool_arg( argc, argv, 1, "-f", "1", KV_PREFETCH_ENV );
     this->busy_poll   = bool_arg( argc, argv, 0, "-b", 0, KV_BUSYPOLL_ENV );
-    this->use_reuseport = bool_arg( argc, argv, 0, "-P", 0, KV_REUSEPORT_ENV );
-    this->num_threads = int_arg(  argc, argv, 1, "-t", "1", KV_NUM_THREADS_ENV);
-    this->use_ipv4    = bool_arg( argc, argv, 0, "-4", 0, KV_IPV4_ONLY_ENV );
-    this->use_sigusr  = bool_arg( argc, argv, 0, "-s", 0, KV_USE_SIGUSR_ENV );
-    this->all         = ! bool_arg( argc, argv, 0, "-X", 0 );
-    this->tcp_opts    = DEFAULT_TCP_LISTEN_OPTS;
-    this->udp_opts    = DEFAULT_UDP_LISTEN_OPTS;
+    if ( ! this->no_reuseport )
+      this->use_reuseport = bool_arg( argc, argv, 0, "-P", 0, KV_REUSEPORT_ENV );
+    if ( ! this->no_threads )
+      this->num_threads = int_arg(  argc, argv, 1, "-t", "1", KV_NUM_THREADS_ENV);
+    this->use_ipv4 = bool_arg( argc, argv, 0, "-4", 0, KV_IPV4_ONLY_ENV );
+    if ( ! this->no_map )
+      this->use_sigusr  = bool_arg( argc, argv, 0, "-s", 0, KV_USE_SIGUSR_ENV );
+    if ( ! this->no_default )
+      this->all = ! bool_arg( argc, argv, 0, "-X", 0 );
+
+    this->tcp_opts = DEFAULT_TCP_LISTEN_OPTS;
+    this->udp_opts = DEFAULT_UDP_LISTEN_OPTS;
     if ( this->num_threads > 1 ) /* each thread has a port */
       this->use_reuseport = true;
     if ( ! this->use_reuseport ) {
@@ -178,10 +199,12 @@ struct MainLoop {
       fprintf( stderr, "unable to init poll\n" );
       return false;
     }
-    if ( this->r.busy_poll )
-      this->poll.pubsub->idle_push( EV_BUSY_POLL );
-    if ( ! this->r.use_sigusr )
-      this->poll.pubsub->flags &= ~KV_DO_NOTIFY;
+    if ( this->poll.pubsub != NULL ) {
+      if ( this->r.busy_poll )
+        this->poll.pubsub->idle_push( EV_BUSY_POLL );
+      if ( ! this->r.use_sigusr )
+        this->poll.pubsub->flags &= ~KV_DO_NOTIFY;
+    }
     return true;
   }
   /* mainloop runner */

@@ -19,18 +19,18 @@ struct EvTimerQueue;       /* timerfd with heap queue of events */
 struct EvTimerEvent;       /* a timer event signal */
 struct EvKeyCtx;           /* a key operand, an expr may have multiple keys */
 
-enum EvState {
-  EV_READ_HI    = 0, /* listen port accept */
-  EV_CLOSE      = 1, /* if close set, do that before write/read */
-  EV_WRITE_POLL = 2, /* when in write hi and send blocked, EGAIN */
-  EV_WRITE_HI   = 3, /* when send buf full at send_highwater or read pressure */
-  EV_READ       = 4, /* use read to fill until no more data or recv_highwater */
-  EV_PROCESS    = 5, /* process read buffers */
-  EV_PREFETCH   = 6, /* process key prefetch */
-  EV_WRITE      = 7, /* write at low priority, suboptimal send of small buf */
-  EV_SHUTDOWN   = 8, /* showdown after writes */
-  EV_READ_LO    = 9, /* read at low prio, back pressure from full write buf */
-  EV_BUSY_POLL  = 10 /* busy poll, loop and keep checking for new data */
+enum EvState {       /* state bits: */
+  EV_READ_HI    = 0, /*   1, listen port accept */
+  EV_CLOSE      = 1, /*   2, if close set, do that before write/read */
+  EV_WRITE_POLL = 2, /*   4, when in write hi and send blocked, EGAIN */
+  EV_WRITE_HI   = 3, /*   8, when send buf full at send_highwater or rd press */
+  EV_READ       = 4, /*  10, use read to fill until recv_highwater */
+  EV_PROCESS    = 5, /*  20, process read buffers */
+  EV_PREFETCH   = 6, /*  40, process key prefetch */
+  EV_WRITE      = 7, /*  80, write at low priority, suboptimal send of sm buf */
+  EV_SHUTDOWN   = 8, /* 100, showdown after writes */
+  EV_READ_LO    = 9, /* 200, read at low prio, back pressure, full write buf */
+  EV_BUSY_POLL  = 10 /* 400, busy poll, loop and keep checking for new data */
 };
 
 enum EvSockOpts {
@@ -57,10 +57,12 @@ enum EvSockOpts {
 enum EvSockFlags {
   IN_NO_LIST     = 0, /* no list */
   IN_NO_QUEUE    = 0, /* no queue */
-  IN_ACTIVE_LIST = 1, /* in the active list */
-  IN_FREE_LIST   = 2, /* in a free list */
-  IN_EVENT_QUEUE = 4,
-  IN_WRITE_QUEUE = 8
+  IN_ACTIVE_LIST = 1, /* in the active list, attached to an fd */
+  IN_FREE_LIST   = 2, /* in a free list for reuse, not active socket */
+  IN_EVENT_QUEUE = 4, /* in event queue for dispatch of an event */
+  IN_WRITE_QUEUE = 8, /* in write queue, stuck in epoll for write */
+  IN_EPOLL_READ  = 16,/* in epoll set waiting for read (normal) */
+  IN_EPOLL_WRITE = 32 /* in epoll set waiting for write (if blocked) */
 };
 
 struct EvSocket : public PeerData /* fd and address of peer */EV_DBG_INHERIT {
@@ -73,14 +75,13 @@ struct EvSocket : public PeerData /* fd and address of peer */EV_DBG_INHERIT {
   uint64_t      bytes_recv, /* stat counters for bytes and msgs */
                 bytes_sent,
                 msgs_recv,
-                msgs_sent;
-  uint8_t       pad[ 8 ];   /* pad out to align 256 bytes */
+                msgs_sent,
+                poll_bytes_sent;
 
   EvSocket( EvPoll &p,  const uint8_t t )
     : poll( p ), prio_cnt( 0 ), state( 0 ),  sock_opts( 0 ), sock_type( t ),
       sock_flags( 0 ), bytes_recv( 0 ), bytes_sent( 0 ), msgs_recv( 0 ),
-      msgs_sent( 0 ) {}
-
+      msgs_sent( 0 ), poll_bytes_sent( -1 ) {}
   /* if socket mem is free */
   bool test_opts( EvSockOpts o ) const {
     return ( this->sock_opts & o ) != 0;
@@ -97,7 +98,6 @@ struct EvSocket : public PeerData /* fd and address of peer */EV_DBG_INHERIT {
     this->sock_flags &= ~( IN_ACTIVE_LIST | IN_FREE_LIST );
     this->sock_flags |= l;
   }
-
   /* if in event queue  */
   bool in_queue( EvSockFlags q ) const {
     return this->test_flags( q, IN_EVENT_QUEUE | IN_WRITE_QUEUE );
@@ -105,6 +105,13 @@ struct EvSocket : public PeerData /* fd and address of peer */EV_DBG_INHERIT {
   void set_queue( EvSockFlags q ) {
     this->sock_flags &= ~( IN_EVENT_QUEUE | IN_WRITE_QUEUE );
     this->sock_flags |= q;
+  }
+  void set_poll( EvSockFlags p ) {
+    this->sock_flags &= ~( IN_EPOLL_READ | IN_EPOLL_WRITE );
+    this->sock_flags |= p;
+  }
+  bool in_poll( EvSockFlags p ) const {
+    return this->test_flags( p, IN_EPOLL_READ | IN_EPOLL_WRITE );
   }
   static const char * state_string( EvState state ) noexcept;
 
@@ -227,8 +234,7 @@ struct EvPoll : public RoutePublish {
     }
   }
 
-  EvSocket          ** sock,            /* sock array indexed by fd */
-                    ** wr_poll;         /* write queue waiting for epoll */
+  EvSocket          ** sock;            /* sock array indexed by fd */
   struct epoll_event * ev;              /* event array used by epoll() */
   kv::HashTab        * map;             /* the data store */
   EvPrefetchQueue    * prefetch_queue;  /* ordering keys */
@@ -237,11 +243,13 @@ struct EvPoll : public RoutePublish {
   uint64_t             prio_tick,       /* priority queue ticker */
                        wr_timeout_ns,   /* timeout for writes in EV_WRITE_POLL */
                        so_keepalive_ns, /* keep alive ping timeout */
-                       next_id;         /* unique id for connection */
+                       next_id,         /* unique id for connection */
+                       now_ns,          /* updated by current_coarse_ns() */
+                       init_ns;         /* when map or poll was created */
   uint32_t             ctx_id,          /* this thread context */
                        dbx_id,          /* the db context */
                        fdcnt,           /* num fds in poll set */
-                       wr_count,        /* num fds in wr_poll[] */
+                       wr_count,        /* num fds with write set */
                        maxfd,           /* current maximum fd number */
                        nfds;            /* max epoll() fds, array sz this->ev */
   int                  efd,             /* epoll fd */
@@ -318,12 +326,12 @@ struct EvPoll : public RoutePublish {
   static const uint64_t DEFAULT_NS_TIMEOUT = (uint64_t) 16 * 1000 * 1000 * 1000;
 
   EvPoll()
-    : sock( 0 ), wr_poll( 0 ), ev( 0 ), map( 0 ), prefetch_queue( 0 ),
+    : sock( 0 ), ev( 0 ), map( 0 ), prefetch_queue( 0 ),
       pubsub( 0 ), timer_queue( 0 ), prio_tick( 0 ),
-      wr_timeout_ns( DEFAULT_NS_TIMEOUT ), so_keepalive_ns( DEFAULT_NS_TIMEOUT ),
-      next_id( 0 ), ctx_id( kv::MAX_CTX_ID ), dbx_id( kv::MAX_STAT_ID ),
-      fdcnt( 0 ), wr_count( 0 ), maxfd( 0 ), nfds( 0 ), efd( -1 ),
-      null_fd( -1 ), quit( 0 ), prefetch_pending( 0 ),
+      wr_timeout_ns( DEFAULT_NS_TIMEOUT ), so_keepalive_ns( DEFAULT_NS_TIMEOUT),
+      next_id( 0 ), now_ns( 0 ), init_ns( 0 ), ctx_id( kv::MAX_CTX_ID ),
+      dbx_id( kv::MAX_STAT_ID ), fdcnt( 0 ), wr_count( 0 ), maxfd( 0 ),
+      nfds( 0 ), efd( -1 ), null_fd( -1 ), quit( 0 ), prefetch_pending( 0 ),
       sub_route( *this ) /*, single_thread( false )*/ {
     ::memset( this->sock_type_str, 0, sizeof( this->sock_type_str ) );
   }
@@ -347,6 +355,8 @@ struct EvPoll : public RoutePublish {
   uint32_t del_route( const char *sub,  size_t sub_len,  uint32_t hash,
                       uint32_t fd ) noexcept;
 #endif
+  void add_write_poll( EvSocket *s ) noexcept;
+  void remove_write_poll( EvSocket *s ) noexcept;
   int wait( int ms ) noexcept;            /* call epoll() with ms timeout */
 
   void idle_close( EvSocket *s,  uint64_t ns ) noexcept;
@@ -369,7 +379,8 @@ struct EvPoll : public RoutePublish {
                       RoutePublishData *rpd ) noexcept; /* a couple of dest */
   /* publish to more than multi destinations, uses a heap to sort dests */
   bool publish_queue( EvPublish &pub,  uint32_t *rcount_total ) noexcept;
-  uint64_t current_coarse_ns( void ) const noexcept; /* current time from kv*/
+  uint64_t current_coarse_ns( void ) noexcept; /* current time from kv */
+  uint64_t create_ns( void ) const noexcept; /* create time from kv */
   int get_null_fd( void ) noexcept;         /* return dup /dev/null fd */
   int add_sock( EvSocket *s ) noexcept;     /* add to poll set */
   void remove_sock( EvSocket *s ) noexcept; /* remove from poll set */
