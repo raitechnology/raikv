@@ -84,6 +84,12 @@ struct RouteZip {
     PushRouteSpc() : size( INI_SPC ) {
       this->ptr = this->spc;
     }
+    void reset( void ) {
+      if ( this->ptr != this->spc )
+        ::free( this->ptr );
+      this->size = INI_SPC;
+      this->ptr = this->spc;
+    }
   };
   UIntHashTab  * zht;            /* code ref hash -> code buf offset */
   uint32_t     * code_buf,       /* list of code ref, which is array of code */
@@ -101,6 +107,8 @@ struct RouteZip {
                   /* this is used to merge routes of several matches together */
 
   RouteZip() noexcept;
+  void init( void ) noexcept;
+  void reset( void ) noexcept;
 
   /* zht[pos] refcounts code ref */
   void deref_codep( CodeRef *p ) {
@@ -219,6 +227,12 @@ struct RoutePublishData {   /* structure for publish queue heap */
   uint32_t     hash;        /* hash of prefix (is subject hash if prefix=64) */
   uint32_t   * routes;      /* routes for this hash */
 
+  void set( uint8_t pref,  uint32_t rcnt,  uint32_t h,  uint32_t *r ) {
+    this->prefix = pref;
+    this->rcount = rcnt;
+    this->hash   = h;
+    this->routes = r;
+  }
   static inline uint32_t precmp( uint32_t p ) {
     return ( ( ( p & 63 ) << 1 ) + 1 ) | ( p >> 6 );
   }

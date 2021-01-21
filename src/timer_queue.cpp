@@ -142,6 +142,7 @@ EvTimerQueue::process( void ) noexcept
   this->last  = this->epoch;
   this->epoch = current_monotonic_time_ns();
   this->real  = this->poll.current_coarse_ns();
+  this->delta = 0;
 
   while ( ! this->queue.is_empty() ) {
     EvTimerEvent &ev = this->queue.heap[ 0 ];

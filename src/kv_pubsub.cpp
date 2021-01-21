@@ -1663,7 +1663,6 @@ KvPubSub::route_msg( KvMsg &msg ) noexcept
 
     this->idle_push( EV_WRITE );
   }
-  uint64_t seqno = msg.get_seqno();
 /*  if ( seqno != this->last_seqno[ msg.src ] + 1 ) {
     printf( "missing seqno %lu -> %lu\n", this->last_seqno[ msg.src ],
             seqno );
@@ -1672,8 +1671,8 @@ KvPubSub::route_msg( KvMsg &msg ) noexcept
   if ( msg.msg_type == KV_MSG_PUBLISH ) {
     /* forward message from publisher to shm */
     KvSubMsg  & submsg = (KvSubMsg &) msg;
-    KvFragAsm * frag   = this->frag_asm[ submsg.src ];
-    if ( frag == NULL || seqno - frag->frag_count != frag->first_seqno ) {
+    if ( this->frag_asm[ submsg.src ] == NULL ) {
+    do_dispatch:;
       EvPublish pub( submsg.subject(), submsg.sublen,
                      submsg.reply(), submsg.replylen,
                      submsg.get_msg_data(), submsg.msg_size,
@@ -1681,9 +1680,10 @@ KvPubSub::route_msg( KvMsg &msg ) noexcept
                      submsg.msg_enc, submsg.code );
       this->poll.forward_msg( pub, NULL, submsg.get_prefix_cnt(),
                               submsg.prefix_array() );
+      return true;
     }
-    else if ( frag->msg_size >= submsg.msg_size ) {
-      ::memcpy( frag->buf, submsg.get_msg_data(), submsg.msg_size );
+    KvFragAsm * frag = KvFragAsm::merge( this->frag_asm[ submsg.src ], submsg );
+    if ( frag != NULL ) {
       EvPublish pub( submsg.subject(), submsg.sublen,
                      submsg.reply(), submsg.replylen,
                      frag->buf, frag->msg_size,
@@ -1691,36 +1691,14 @@ KvPubSub::route_msg( KvMsg &msg ) noexcept
                      submsg.msg_enc, submsg.code );
       this->poll.forward_msg( pub, NULL, submsg.get_prefix_cnt(),
                               submsg.prefix_array() );
+      return true;
     }
-    return true;
+    fprintf( stderr, "kv fragment dropped\n" );
+    goto do_dispatch;
   }
   switch ( msg.msg_type ) {
     case KV_MSG_FRAGMENT: {
-      KvSubMsg  & submsg = (KvSubMsg &) msg;
-      size_t      off  = submsg.get_frag_off(),
-                  size = off + submsg.msg_size;
-      KvFragAsm * frag = this->frag_asm[ submsg.src ];
-
-      if ( frag == NULL || size > frag->buf_size ) {
-        this->frag_asm[ submsg.src ] =
-          (KvFragAsm *) ::realloc( frag, sizeof( KvFragAsm ) + size );
-        bool is_first = ( frag == NULL );
-        frag = this->frag_asm[ submsg.src ];
-        frag->buf_size = size;
-        if ( is_first ) /* initialize with curr seqno */
-          goto is_first_seqno;
-      }
-      /* check if in sequence with a previous frag from src */
-      if ( seqno - frag->frag_count != frag->first_seqno ) {
-    is_first_seqno:;
-        frag->first_seqno = seqno;
-        frag->frag_count  = 1;
-        frag->msg_size    = size;
-      }
-      else {
-        frag->frag_count++;
-      }
-      ::memcpy( &frag->buf[ off ], submsg.get_msg_data(), submsg.msg_size );
+      KvFragAsm::merge( this->frag_asm[ msg.src ], (KvSubMsg &) msg );
       break;
     }
     case KV_MSG_SUB: /* update my routing table when sub/unsub occurs */

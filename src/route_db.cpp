@@ -41,6 +41,12 @@ make_space( uint32_t i,  uint32_t &size,  uint32_t *&ptr,
 
 RouteZip::RouteZip() noexcept
 {
+  this->init();
+}
+
+void
+RouteZip::init( void ) noexcept
+{
   this->zht            = UIntHashTab::resize( NULL );
   this->code_buf       = this->code_buf_spc; /* temp buffers */
   this->code_spc_ptr   = this->code_spc;
@@ -50,6 +56,22 @@ RouteZip::RouteZip() noexcept
   this->code_free      = 0;
   this->code_spc_size  = INI_SPC;
   this->route_spc_size = INI_SPC;
+}
+
+void
+RouteZip::reset( void ) noexcept
+{
+  delete this->zht;
+  if ( this->code_buf != this->code_buf_spc )
+    ::free( this->code_buf );
+  if ( this->code_spc_ptr != this->code_spc )
+    ::free( this->code_spc_ptr );
+  if ( this->route_spc_ptr != this->route_spc )
+    ::free( this->route_spc_ptr );
+  for ( size_t i = 0; i < sizeof( this->push_route_spc ) /
+                          sizeof( this->push_route_spc[ 0 ] ); i++ )
+    this->push_route_spc[ i ].reset();
+  this->init();
 }
 
 uint32_t *

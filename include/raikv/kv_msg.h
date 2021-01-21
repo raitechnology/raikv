@@ -141,6 +141,9 @@ struct KvSubMsg : public KvMsg {
   char * subject( void ) {
     return this->buf;
   }
+  const char * subj( void ) const {
+    return this->buf;
+  }
   char * reply( void ) {
     return &this->buf[ this->sublen + 1 ];
   }
@@ -194,7 +197,7 @@ struct KvSubMsg : public KvMsg {
 #pragma GCC diagnostic pop
 #endif
   }
-  void * get_msg_data( void ) {
+  void * get_msg_data( void ) const {
     uint32_t i;
     i = this->size - kv::align<uint32_t>( this->msg_size, sizeof( uint32_t ) );
     return &((char *) (void *) this)[ i ];
@@ -275,6 +278,17 @@ struct KvMsgList {
   }
 };
 
+struct KvFragAsm {
+  uint64_t first_seqno;
+  uint64_t frag_count;
+  uint64_t msg_size;
+  uint64_t buf_size;
+  uint8_t  buf[ 8 ];
+
+  static KvFragAsm *merge( KvFragAsm *&fragp,  const KvSubMsg &msg ) noexcept;
+  static void release( KvFragAsm *&frag ) noexcept;
+};
+
 struct KvSendQueue {
   kv::WorkAllocT< 65536 >  snd_wrk;    /* for pending sends to shm */
   kv::DLinkList<KvMsgList> sendq;      /* sendq is to the network */
@@ -323,7 +337,8 @@ struct KvSendQueue {
                          const uint8_t *pref,  const uint32_t *hash,
                          uint8_t pref_cnt,  const char *reply,
                          size_t replylen,  const void *msgdata,  size_t msgsz,
-                         uint8_t code,  uint8_t msg_enc ) noexcept;
+                         uint8_t code,  uint8_t msg_enc,
+                         const size_t max_msg_size = MAX_KV_MSG_SIZE ) noexcept;
   KvSubMsg * create_kvsubmsg( uint32_t h,  const char *sub,  size_t sublen,
                               char src_type,  KvMsgType mtype,  uint8_t code,
                               const char *rep,  size_t replylen ) noexcept;

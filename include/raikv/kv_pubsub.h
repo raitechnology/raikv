@@ -146,14 +146,6 @@ enum KvPubSubFlag {
   KV_READ_INBOX    = 4  /* set when reading inbox */
 };
 
-struct KvFragAsm {
-  uint64_t first_seqno;
-  uint64_t frag_count;
-  uint64_t msg_size;
-  uint64_t buf_size;
-  uint8_t  buf[ 8 ];
-};
-
 struct KvPubSub : public EvSocket, public KvSendQueue, public RouteNotify {
   static const uint8_t  EV_KV_PUBSUB = 9;
   static const uint16_t KV_NO_SIGUSR = 1;

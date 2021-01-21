@@ -15,7 +15,8 @@ KvSendQueue::create_kvpublish( uint32_t h,  const char *sub,  size_t sublen,
                                uint8_t pref_cnt,  const char *reply,
                                size_t replylen,  const void *msgdata,
                                size_t msgsz,  uint8_t code,
-                               uint8_t msg_enc ) noexcept
+                               uint8_t msg_enc,
+                               const size_t max_msg_size ) noexcept
 {
   size_t hsz = KvSubMsg::hdr_size( sublen, replylen, pref_cnt ),
          asz = kv::align<size_t>( msgsz, sizeof( uint32_t ) ),
@@ -23,16 +24,16 @@ KvSendQueue::create_kvpublish( uint32_t h,  const char *sub,  size_t sublen,
   KvSubMsg * msg;
   uint8_t i;
 
-  if ( hsz + asz > MAX_KV_MSG_SIZE ) {
-    if ( hsz >= MAX_KV_MSG_SIZE ) /* shouldn't be this big */
+  if ( hsz + asz > max_msg_size ) {
+    if ( hsz >= max_msg_size ) /* shouldn't be this big */
       return;
     const uint8_t * fragdata = &((const uint8_t *) msgdata)[ msgsz ];
-    asz = MAX_KV_MSG_SIZE - hsz;
+    asz = max_msg_size - hsz;
     fsz = KvSubMsg::frag_hdr_size( sublen, pref_cnt );
     off = msgsz;
     /* split off fragments under the msg size limit */
     for ( left = msgsz - asz; left > 0; left -= frag_msgsz ) {
-      static const size_t MAX_FRAG_SIZE = MAX_KV_MSG_SIZE - sizeof( uint64_t );
+      const size_t MAX_FRAG_SIZE = max_msg_size - sizeof( uint64_t );
       frag_msgsz = left;
       afrag = kv::align<size_t>( left, sizeof( uint32_t ) );
       if ( afrag + fsz > MAX_FRAG_SIZE ) {
@@ -198,6 +199,81 @@ KvMsg::print_sub( void ) noexcept
     printf( "ctx(%u) %s %s\n", this->src,
                                msg_type_string( (KvMsgType) this->msg_type ),
                                sub.subject() );
+  }
+}
+
+KvFragAsm *
+KvFragAsm::merge( KvFragAsm *&fragp,  const KvSubMsg &msg ) noexcept
+{
+  KvFragAsm *frag = fragp;
+  uint64_t seqno = msg.get_seqno();
+  if ( msg.msg_type == KV_MSG_FRAGMENT ) {
+    size_t   off   = msg.get_frag_off(),
+             size  = off + msg.msg_size;
+
+    if ( frag == NULL || frag->frag_count == 0 ) {
+    create_new_frag:;
+      frag = (KvFragAsm *) ::realloc( frag, sizeof( KvFragAsm ) + size );
+      frag->buf_size    = size;
+      frag->first_seqno = seqno;
+      frag->frag_count  = 1;
+      frag->msg_size    = size;
+    }
+    /* check if in sequence with a previous frag from src */
+    else {
+      if ( seqno - frag->frag_count == frag->first_seqno ) {
+        if ( size > frag->msg_size ) {
+          fprintf( stderr,
+            "bad fragment(%.*s), off %lu + %u > %lu\n",
+            (int) msg.sublen, msg.subj(), off, msg.msg_size,
+            frag->msg_size );
+          goto create_new_frag;
+        }
+        frag->frag_count++;
+      }
+      else {
+        fprintf( stderr,
+          "bad fragment(%.*s), seqno %lu - frag_count %lu != first %lu\n",
+          (int) msg.sublen, msg.subj(), seqno, frag->frag_count,
+          frag->first_seqno );
+        goto create_new_frag;
+      }
+    }
+    ::memcpy( &frag->buf[ off ], msg.get_msg_data(), msg.msg_size );
+    fragp = frag;
+    return NULL;
+  }
+  if ( frag == NULL || frag->msg_size < msg.msg_size ) {
+    fprintf( stderr,
+      "bad fragment(%.*s), frag->msg_size %lu < msg_size %u\n",
+      (int) msg.sublen, msg.subj(), frag == NULL ? 0 : frag->msg_size,
+      msg.msg_size );
+  }
+  else if ( seqno - frag->frag_count != frag->first_seqno ) {
+    fprintf( stderr,
+      "bad fragment(%.*s), seqno %lu - frag_count %lu != first %lu\n",
+      (int) msg.sublen, msg.subj(), seqno, frag->frag_count,
+      frag->first_seqno );
+  }
+  else {
+    ::memcpy( frag->buf, msg.get_msg_data(), msg.msg_size );
+    fragp = frag;
+    frag->frag_count = 0;
+    return frag;
+  }
+  if ( frag != NULL )
+    ::free( frag );
+  fragp = NULL;
+  return NULL;
+}
+
+void
+KvFragAsm::release( KvFragAsm *&fragp ) noexcept
+{
+  KvFragAsm *frag = fragp;
+  if ( frag != NULL ) {
+    fragp = NULL;
+    ::free( frag );
   }
 }
 

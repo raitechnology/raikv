@@ -569,7 +569,6 @@ EvPoll::dispatch( void ) noexcept
         break;
       case EV_SHUTDOWN:
         s->process_shutdown();
-        s->pop( EV_SHUTDOWN );
         break;
       case EV_CLOSE:
         s->popall();
@@ -750,34 +749,39 @@ RoutePublish::forward_msg( EvPublish &pub,  uint32_t *rcount_total,
   if ( rcount_total != NULL )
     *rcount_total = 0;
   if ( rcount > 0 ) {
-    rpd[ 0 ].prefix = 64;
-    rpd[ 0 ].hash   = pub.subj_hash;
-    rpd[ 0 ].rcount = rcount;
-    rpd[ 0 ].routes = routes;
-    n = 1;
+    rpd[ n++ ].set( 64, rcount, pub.subj_hash, routes );
   }
 
   BitIter64 bi( poll.sub_route.pat_mask );
   if ( bi.first() ) {
-    uint8_t j = 0;
-    do {
-      while ( j < pref_cnt ) {
-        if ( ph[ j++ ].pref == bi.i ) {
-          hash = ph[ j - 1 ].get_hash();
-          goto found_hash;
+    /* if didn't hash prefixes */
+    if ( pref_cnt == 0 ) {
+      do {
+      calc_hash:;
+        hash = kv_crc_c( pub.subject, bi.i, poll.sub_route.prefix_seed( bi.i ) );
+        rcount = poll.sub_route.push_get_route( bi.i, n, hash, routes );
+        if ( rcount > 0 )
+          rpd[ n++ ].set( bi.i, rcount, hash, routes );
+      } while ( bi.next() );
+    }
+    /* match precalculated prefixes */
+    else {
+      uint8_t j = 0;
+      do {
+        hash = 0;
+        while ( j < pref_cnt ) {
+          if ( ph[ j++ ].pref == bi.i ) {
+            hash = ph[ j - 1 ].get_hash();
+            rcount = poll.sub_route.push_get_route( bi.i, n, hash, routes );
+            if ( rcount > 0 )
+              rpd[ n++ ].set( bi.i, rcount, hash, routes );
+            break;
+          }
         }
-      }
-      hash = kv_crc_c( pub.subject, bi.i, poll.sub_route.prefix_seed( bi.i ) );
-    found_hash:;
-      rcount = poll.sub_route.push_get_route( bi.i, n, hash, routes );
-      if ( rcount > 0 ) {
-        rpd[ n ].hash   = hash;
-        rpd[ n ].prefix = bi.i;
-        rpd[ n ].rcount = rcount;
-        rpd[ n ].routes = routes;
-        n++;
-      }
-    } while ( bi.next() );
+        if ( hash == 0 ) /* no prefix found, must calculate */
+          goto calc_hash;
+      } while ( bi.next() );
+    }
   }
   /* likely cases <= 3 wilcard matches, most likely just 1 match */
   if ( n > 0 ) {
