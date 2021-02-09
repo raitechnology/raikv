@@ -425,6 +425,7 @@ struct RoutePublish {
                          EKF_LISTBLKD_NOT | EKF_ZSETBLKD_NOT |
                          EKF_STRMBLKD_NOT | EKF_MONITOR */
 
+  bool forward_msg( EvPublish &pub ) noexcept;
   bool forward_msg( EvPublish &pub,  uint32_t *rcount_total,  uint8_t pref_cnt,
                     KvPrefHash *ph ) noexcept;
   bool hash_to_sub( uint32_t r,  uint32_t h,  char *key,

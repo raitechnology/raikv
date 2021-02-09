@@ -129,6 +129,7 @@ EvPoll::wait( int ms ) noexcept
 {
   EvSocket *s;
   int n, m = 0;
+  EvState do_event;
   n = ::epoll_wait( this->efd, this->ev, this->nfds, ms );
   if ( n < 0 ) {
     if ( errno == EINTR )
@@ -138,26 +139,31 @@ EvPoll::wait( int ms ) noexcept
   }
   for ( int i = 0; i < n; i++ ) {
     s = this->sock[ this->ev[ i ].data.fd ];
-    if ( ( this->ev[ i ].events & ( EPOLLIN | EPOLLRDHUP | EPOLLERR ) ) != 0 ) {
-      if ( s->test( EV_WRITE_POLL ) ) { /* full output buffers, can't read */
-        /* is a EPOLLRDHUP or an EPOLLERR, close it */
-        this->remove_write_queue( s );
-        s->popall();
-        s->idle_push( EV_CLOSE ); /* maybe print err since bytes were unsent */
+
+    if ( s->test( EV_WRITE_POLL ) ) {
+      if ( ( this->ev[ i ].events & EPOLLOUT ) != 0 ) {
+        this->remove_write_poll( s ); /* move back to read poll and try write */
+        continue;
       }
-      else {
-        EvState ev = EV_READ;
-        if ( s->test_opts( OPT_READ_HI ) )
-          ev = EV_READ_HI;
-        /* add read event */
-        s->idle_push( ev );
-      }
+      this->remove_write_queue( s ); /* a EPOLLERR, can't write, close it */
+      do_event = EV_CLOSE;
     }
-    if ( ( this->ev[ i ].events & EPOLLOUT ) != 0 ) {
-      if ( s->test( EV_WRITE_POLL ) ) { /* if not closed above */
-        /* move back to read poll and try to write */
-        this->remove_write_poll( s );
-      }
+    else {
+      if ( ( this->ev[ i ].events & EPOLLIN ) != 0 )
+        do_event = EV_READ;
+      else if ( ( this->ev[ i ].events & EPOLLERR ) != 0 )
+        do_event = EV_CLOSE;
+      else
+        do_event = EV_READ; /* go through normal shutdown, flushing write */
+    }
+    if ( do_event == EV_READ ) {
+      if ( s->test_opts( OPT_READ_HI ) )
+        do_event = EV_READ_HI;
+      s->idle_push( do_event );
+    }
+    else {
+      s->popall();
+      s->idle_push( EV_CLOSE ); /* maybe print err if bytes unsent */
     }
   }
   /* check if write pollers are timing out */
@@ -735,6 +741,52 @@ EvPoll::publish_queue( EvPublish &pub,  uint32_t *rcount_total ) noexcept
 /* match subject against route db and forward msg to fds subscribed, route
  * db contains both exact matches and wildcard prefix matches */
 bool
+RoutePublish::forward_msg( EvPublish &pub ) noexcept
+{
+  EvPoll   & poll      = static_cast<EvPoll &>( *this );
+  uint32_t * routes    = NULL;
+  uint32_t   rcount    = poll.sub_route.get_sub_route( pub.subj_hash, routes ),
+             hash;
+  uint8_t    n         = 0;
+  RoutePublishData rpd[ RouteDB::SUB_RTE + 1 ];
+
+  if ( rcount > 0 )
+    rpd[ n++ ].set( RouteDB::SUB_RTE, rcount, pub.subj_hash, routes );
+
+  BitIter64 bi( poll.sub_route.pat_mask );
+  if ( bi.first() ) {
+    if ( bi.i == 0 ) {
+      hash   = poll.sub_route.prefix_seed( bi.i );
+      rcount = poll.sub_route.push_get_route( bi.i, n, hash, routes );
+    }
+    else {
+      hash = kv_crc_c( pub.subject, bi.i, poll.sub_route.prefix_seed( bi.i ) );
+      rcount = poll.sub_route.push_get_route( bi.i, n, hash, routes );
+    }
+    if ( rcount > 0 )
+      rpd[ n++ ].set( bi.i, rcount, hash, routes );
+    while ( bi.next() ) {
+      hash = kv_crc_c( pub.subject, bi.i, poll.sub_route.prefix_seed( bi.i ) );
+      rcount = poll.sub_route.push_get_route( bi.i, n, hash, routes );
+      if ( rcount > 0 )
+        rpd[ n++ ].set( bi.i, rcount, hash, routes );
+    } while ( bi.next() );
+  }
+  /* likely cases <= 3 wilcard matches, most likely <= 1 match */
+  if ( n == 0 )
+    return true;
+  if ( n == 1 )
+    return poll.publish_one( pub, NULL, rpd[ 0 ] );
+  if ( n == 2 )
+    return poll.publish_multi<2>( pub, NULL, rpd );
+
+  for ( uint8_t i = 0; i < n; i++ )
+    poll.pub_queue.push( &rpd[ i ] );
+  return poll.publish_queue( pub, NULL );
+}
+/* match subject against route db and forward msg to fds subscribed, route
+ * db contains both exact matches and wildcard prefix matches */
+bool
 RoutePublish::forward_msg( EvPublish &pub,  uint32_t *rcount_total,
                            uint8_t pref_cnt,  KvPrefHash *ph ) noexcept
 {
@@ -743,14 +795,12 @@ RoutePublish::forward_msg( EvPublish &pub,  uint32_t *rcount_total,
   uint32_t   rcount    = poll.sub_route.get_sub_route( pub.subj_hash, routes ),
              hash;
   uint8_t    n         = 0;
-  bool       flow_good = true;
   RoutePublishData rpd[ 65 ];
 
   if ( rcount_total != NULL )
     *rcount_total = 0;
-  if ( rcount > 0 ) {
+  if ( rcount > 0 )
     rpd[ n++ ].set( 64, rcount, pub.subj_hash, routes );
-  }
 
   BitIter64 bi( poll.sub_route.pat_mask );
   if ( bi.first() ) {
@@ -783,26 +833,16 @@ RoutePublish::forward_msg( EvPublish &pub,  uint32_t *rcount_total,
       } while ( bi.next() );
     }
   }
-  /* likely cases <= 3 wilcard matches, most likely just 1 match */
-  if ( n > 0 ) {
-    if ( n == 1 ) {
-      flow_good &= poll.publish_one( pub, rcount_total, rpd[ 0 ] );
-    }
-    else {
-      switch ( n ) {
-        case 2:
-          flow_good &= poll.publish_multi<2>( pub, rcount_total, rpd );
-          break;
-        default: {
-          for ( uint8_t i = 0; i < n; i++ )
-            poll.pub_queue.push( &rpd[ i ] );
-          flow_good &= poll.publish_queue( pub, rcount_total );
-          break;
-        }
-      }
-    }
-  }
-  return flow_good;
+  if ( n == 0 )
+    return true;
+  if ( n == 1 )
+    return poll.publish_one( pub, rcount_total, rpd[ 0 ] );
+  if ( n == 2 )
+    return poll.publish_multi<2>( pub, rcount_total, rpd );
+
+  for ( uint8_t i = 0; i < n; i++ )
+    poll.pub_queue.push( &rpd[ i ] );
+  return poll.publish_queue( pub, rcount_total );
 }
 /* convert a hash into a subject string, this may have collisions */
 bool
