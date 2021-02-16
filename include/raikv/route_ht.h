@@ -4,11 +4,12 @@
 namespace rai {
 namespace kv {
 
+/* DataTrail not used, is an example */
 static const size_t TRAIL_VALLEN = 2;
 struct DataTrail { /* trails data, string starts at value */
   uint32_t hash;   /* 32 bit hash value */
   uint16_t len;    /* max value size is 16 bits */
-  char     value[ TRAIL_VALLEN ];
+  char     value[ TRAIL_VALLEN ]; /* must be at leat 2 bytes for delete mark */
   bool equals( const void *s,  uint16_t l ) const {
     return l == this->len && ::memcmp( s, this->value, l ) == 0;
   }
@@ -21,12 +22,11 @@ template <class Data> /* Data has DataTrail members, with value[] trailing */
 struct RouteHT {
   void * operator new( size_t, void *ptr ) { return ptr; }
   void operator delete( void *ptr ) { ::free( ptr ); }
-
-  /* with avg 10 len strings: 32768/98264 size, 5992 entries use 98264 bytes */
-  static const size_t HT_SHIFT   = 13, /* 14 + 2 = 16 bits, the max offset */
-                      HT_SIZE    = 1 << HT_SHIFT,
+  /* with avg 40 len entries: 2048 entries use 98k : sizeof( RouteHT<Data> ) */
+  static const size_t HT_SHIFT   = 12,
+                      HT_SIZE    = 1 << HT_SHIFT, /* 4096 */
                       HT_83FULL  = HT_SIZE / 6 * 5,
-                      BLOCK_SIZE = 3 * HT_SIZE - 10; /* not quite 64k w/14 */
+                      BLOCK_SIZE = 2 * HT_SIZE + 1984; /* 80k, 40b at 50% */
 
   struct Entry {
     uint16_t half; /* lower half of hash32, off == 0 means entry is unused */
@@ -40,7 +40,7 @@ struct RouteHT {
   uint32_t min_hash_val,   /* min hash value stored */
            max_hash_val;   /* max hash value stored (inclusive) */
   Entry    entry[ HT_SIZE ];    /* ht index of data */
-  uint32_t block[ BLOCK_SIZE ]; /* data items, aligned on uint32_t */
+  uint64_t block[ BLOCK_SIZE ]; /* data items, aligned on uint64_t */
 
   RouteHT() {
     this->reset();
@@ -66,7 +66,7 @@ struct RouteHT {
     ::memcpy( this->entry, cp.entry, sizeof( this->entry ) );
     ::memcpy( &this->block[ BLOCK_SIZE - this->free_off ],
               &cp.block[ BLOCK_SIZE - this->free_off ],
-              sizeof( this->block[ 0 ] ) * this->free_off );
+              sizeof( this->block[ 0 ] ) * (size_t) this->free_off );
   }
   /* reorganize, compress space */
   void adjust( void ) {
@@ -82,16 +82,16 @@ struct RouteHT {
     }
   }
 
-  static size_t ht_size( void ) { return HT_SIZE; }
-  static size_t ht_shift( void ) { return HT_SHIFT; }
+  /*static size_t ht_size( void ) { return HT_SIZE; }
+  static size_t ht_shift( void ) { return HT_SHIFT; }*/
   /* number of int32 words needed for data + string length l */
-  static size_t intsize( uint16_t l ) {
-    return ( (size_t) l + sizeof( Data ) + sizeof( uint32_t ) -
-             ( TRAIL_VALLEN + 1 ) ) / sizeof( uint32_t );
+  static size_t intsize( uint16_t value_len ) {
+    return ( (size_t) value_len + ( sizeof( Data ) - TRAIL_VALLEN ) +
+             sizeof( uint64_t ) - 1 ) / sizeof( uint64_t );
   }
   /* if entry string length l fits into ht */
-  int fits( uint16_t l ) const {
-    size_t xoff = (size_t) this->free_off + intsize( l );
+  int fits( uint16_t value_len ) const {
+    size_t xoff = (size_t) this->free_off + intsize( value_len );
     if ( (size_t) ( this->count - this->rem_count ) < HT_83FULL ) {
       if ( xoff <= BLOCK_SIZE ) /* fits without adjusting */
         return 2;
@@ -104,7 +104,7 @@ struct RouteHT {
   /* need a marker to iterate over (non-removed) data elems */
   static inline void mark_removed( Data *d ) {
     uint16_t val = 0;
-    ::memcpy( d->value, &val, 2 );
+    ::memcpy( d->value, &val, 2 ); /* value must be a string based key */
   }
   static inline bool is_removed( const Data *d ) {
     uint16_t val;
@@ -114,8 +114,10 @@ struct RouteHT {
   /* put data at location in ht */
   Data *inplace( uint32_t h,  const void *s,  uint16_t l,  uint16_t i ) {
     Data * data;
-
-    this->free_off += intsize( l );
+    size_t next_off = (size_t) this->free_off + intsize( l );
+    if ( next_off > BLOCK_SIZE )
+      return NULL;
+    this->free_off = (uint16_t) next_off;
     this->count++;
     this->entry[ i ].off  = this->free_off;
     this->entry[ i ].half = (uint16_t) h;
@@ -160,7 +162,7 @@ struct RouteHT {
     new_data = (Data *) (void *) &this->block[ BLOCK_SIZE - new_off ];
     if ( dz > nz )
       dz = nz;
-    ::memmove( new_data, data, dz * sizeof( uint32_t ) );
+    ::memmove( new_data, data, dz * sizeof( this->block[ 0 ] ) );
     new_data->len = new_sz;
     this->entry[ i ].off = new_off;
     if ( mark )
@@ -292,7 +294,7 @@ struct RouteHT {
     this->entry[ i ].off  = this->free_off;
     this->entry[ i ].half = (uint16_t) data->hash;
     ::memcpy( &this->block[ BLOCK_SIZE - this->free_off ],
-              data, sz * sizeof( uint32_t ) );
+              data, sz * sizeof( this->block[ 0 ] ) );
   }
   /* fetch data at entry[ i ] */
   Data *deref( uint16_t i ) {
@@ -312,7 +314,7 @@ struct RouteHT {
                max_h = this->max_hash_val;
     int        cmp;
     Data     * data;
-    uint32_t * tmph = r.block;
+    uint32_t * tmph = (uint32_t *) (void *) r.block;
     uint16_t   off, cnt = 0;
     /* bsearch the median value */
     for (;;) {

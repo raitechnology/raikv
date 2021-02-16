@@ -164,12 +164,43 @@ double current_realtime_coarse_s( void ) noexcept; /* s + fraction (52b pr) */
  /* round 10001 to 10K, 10000123 to 10M */
 char *mem_to_string( int64_t m,  char *b,  int64_t k = 1000 ) noexcept;
 
-size_t uint64_to_string( uint64_t v,  char *buf,  size_t len ) noexcept;
-
-size_t int64_to_string( int64_t v,  char *buf,  size_t len ) noexcept;
-
 /* via Andrei Alexandrescu */
-inline size_t uint64_digits( uint64_t v ) {
+template <class UInt>
+UInt neg( UInt v ) {
+  static const int b = sizeof( v ) * 8 - 1; /* 31, 63 */
+  if ( (UInt) v == ( (UInt) 1 << b ) )
+    return ( (UInt) 1 << b );
+  return (UInt) -v;
+}
+inline uint64_t neg64( int64_t v ) {
+  return neg<uint64_t>( v );
+}
+inline uint32_t neg32( int32_t v ) {
+  return neg<uint32_t>( v );
+}
+template <class UInt>
+inline size_t uint_to_string( UInt v,  char *buf,  size_t len ) {
+  buf[ len ] = '\0';
+  for ( size_t pos = len; v >= 10; ) {
+    const UInt q = v / 10,
+               r = v % 10;
+    buf[ --pos ] = '0' + r;
+    v = q;
+  }
+  buf[ 0 ] = '0' + v;
+  return len;
+}
+template <class Int, class UInt>
+size_t int_to_string( Int v,  char *buf,  size_t len ) {
+  if ( v < 0 ) {
+    len--; *buf++ = '-';
+    v = -v;
+    return 1 + uint_to_string<UInt>( neg<UInt>( v ), buf, len - 1 );
+  }
+  return uint_to_string<UInt>( (UInt) v, buf, len );
+}
+template <class UInt>
+inline size_t uint_digits( UInt v ) {
   for ( size_t n = 1; ; n += 4 ) {
     if ( v < 10 )    return n;
     if ( v < 100 )   return n + 1;
@@ -178,23 +209,41 @@ inline size_t uint64_digits( uint64_t v ) {
     v /= 10000;
   }
 }
-
-inline uint64_t neg64( int64_t v ) {
-  if ( (uint64_t) v == ( (uint64_t) 1 << 63 ) )
-    return ( (uint64_t) 1 << 63 );
-  return (uint64_t) -v;
+inline size_t uint64_digits( uint64_t v ) {
+  return uint_digits<uint64_t>( v );
 }
-
+inline size_t uint32_digits( uint32_t v ) {
+  return uint_digits<uint32_t>( v );
+}
 inline size_t int64_digits( int64_t v ) {
   return v < 0 ? ( uint64_digits( neg64( v ) ) + 1 ) : uint64_digits( v );
 }
-
+inline size_t int32_digits( int32_t v ) {
+  return v < 0 ? ( uint32_digits( neg32( v ) ) + 1 ) : uint32_digits( v );
+}
+inline size_t uint64_to_string( uint64_t v,  char *buf,  size_t len ) {
+  return uint_to_string<uint64_t>( v, buf, len );
+}
+inline size_t uint32_to_string( uint32_t v,  char *buf,  size_t len ) {
+  return uint_to_string<uint32_t>( v, buf, len );
+}
+inline size_t int64_to_string( int64_t v,  char *buf,  size_t len ) {
+  return int_to_string<int64_t, uint64_t>( v, buf, len );
+}
+inline size_t int32_to_string( int32_t v,  char *buf,  size_t len ) {
+  return int_to_string<int32_t, uint32_t>( v, buf, len );
+}
 inline size_t uint64_to_string( uint64_t v,  char *buf ) {
   return uint64_to_string( v, buf, uint64_digits( v ) );
 }
-
 inline size_t int64_to_string( int64_t v,  char *buf ) {
   return int64_to_string( v, buf, int64_digits( v ) );
+}
+inline size_t uint32_to_string( uint32_t v,  char *buf ) {
+  return uint32_to_string( v, buf, uint32_digits( v ) );
+}
+inline size_t int32_to_string( int32_t v,  char *buf ) {
+  return int32_to_string( v, buf, int32_digits( v ) );
 }
 
 uint64_t string_to_uint64( const char *b,  size_t len ) noexcept;

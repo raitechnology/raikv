@@ -385,7 +385,7 @@ rai::kv::mem_to_string( int64_t m,  char *b,  int64_t k ) noexcept
   b[ i ] = '\0';
   return s; 
 }   
-
+#if 0
 size_t
 rai::kv::uint64_to_string( uint64_t v,  char *buf,  size_t len ) noexcept
 {
@@ -410,7 +410,7 @@ rai::kv::int64_to_string( int64_t v,  char *buf,  size_t len ) noexcept
   }
   return uint64_to_string( (uint64_t) v, buf, len );
 }
-
+#endif
 uint64_t
 rai::kv::string_to_uint64( const char *b,  size_t len ) noexcept
 {

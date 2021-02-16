@@ -229,18 +229,27 @@ test_wild_lnk   := -lraikv -lpcre2-8
 
 $(bind)/test_wild: $(test_wild_objs) $(test_wild_libs)
 
+test_uintht_objs = $(objd)/test_uintht.o
+test_uintht_deps = $(dependd)/test_uintht.d
+test_uintht_libs = $(libd)/libraikv.so
+test_uintht_lnk  = -lraikv
+
+$(bind)/test_uintht: $(test_uintht_objs) $(test_uintht_libs)
+
 all_exes    += $(bind)/kv_test $(bind)/hash_test $(bind)/ping \
                $(bind)/kv_cli $(bind)/mcs_test $(bind)/kv_server \
 	       $(bind)/load $(bind)/rela_test $(bind)/ctest \
 	       $(bind)/pq_test $(bind)/pubsub $(bind)/pipe_test \
 	       $(bind)/zipf_test $(bind)/test_rtht $(bind)/test_cr \
-	       $(bind)/test_delta $(bind)/test_routes $(bind)/test_wild
+	       $(bind)/test_delta $(bind)/test_routes $(bind)/test_wild \
+	       $(bind)/test_uintht
 all_depends += $(kv_test_deps) $(hash_test_deps) $(ping_deps) \
                $(kv_cli_deps) $(mcs_test_deps) $(kv_server_deps) \
 	       $(load_deps) $(rela_test_deps) $(ctest_deps) \
 	       $(pq_test_deps) $(pubsub_deps) $(pipe_test_deps) \
 	       $(zipf_test_dpes) $(test_rtht_deps) $(test_cr_deps) \
-	       $(test_delta_deps) $(test_routes_deps) $(test_wild_deps)
+	       $(test_delta_deps) $(test_routes_deps) $(test_wild_deps) \
+	       $(test_uintht_deps)
 
 all_dirs := $(bind) $(libd) $(objd) $(dependd)
 
