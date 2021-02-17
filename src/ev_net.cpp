@@ -759,13 +759,19 @@ RoutePublish::forward_msg( EvPublish &pub ) noexcept
       hash   = poll.sub_route.prefix_seed( bi.i );
       rcount = poll.sub_route.push_get_route( bi.i, n, hash, routes );
     }
-    else {
+    else if ( bi.i <= pub.subject_len ) {
       hash = kv_crc_c( pub.subject, bi.i, poll.sub_route.prefix_seed( bi.i ) );
       rcount = poll.sub_route.push_get_route( bi.i, n, hash, routes );
+    }
+    else {
+      hash = 0;
+      rcount = 0;
     }
     if ( rcount > 0 )
       rpd[ n++ ].set( bi.i, rcount, hash, routes );
     while ( bi.next() ) {
+      if ( bi.i > pub.subject_len )
+        break;
       hash = kv_crc_c( pub.subject, bi.i, poll.sub_route.prefix_seed( bi.i ) );
       rcount = poll.sub_route.push_get_route( bi.i, n, hash, routes );
       if ( rcount > 0 )
@@ -808,6 +814,8 @@ RoutePublish::forward_msg( EvPublish &pub,  uint32_t *rcount_total,
     if ( pref_cnt == 0 ) {
       do {
       calc_hash:;
+        if ( bi.i > pub.subject_len )
+          break;
         hash = kv_crc_c( pub.subject, bi.i, poll.sub_route.prefix_seed( bi.i ) );
         rcount = poll.sub_route.push_get_route( bi.i, n, hash, routes );
         if ( rcount > 0 )
