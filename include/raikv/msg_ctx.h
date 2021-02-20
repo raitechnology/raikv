@@ -165,6 +165,10 @@ struct MsgHdr {
     this->flags    = fl;
     this->unseal();
   }
+#if __GNUC__ >= 7
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wstringop-overflow"
+#endif
   /* copy the key material and return pointer to msg data */
   void *copy_key( KeyFragment &kb,  uint32_t hsz ) {
     const uint8_t * k = (uint8_t *) (void *) &kb,
@@ -175,6 +179,9 @@ struct MsgHdr {
     while ( p < h ) *p++ = '\0'; /* zero to start of data */
     return h;
   }
+#if __GNUC__ >= 7
+#pragma GCC diagnostic pop
+#endif
   /* no longer need the memory, mark freed */
   void release( void ) {
     this->seal2( 0, 0, 0 );
