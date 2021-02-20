@@ -221,7 +221,10 @@ struct HashEntry {
   uint16_t    flags;  /* KeyValueFlags, where is data, alignment */
   KeyFragment key;    /* key, or just the prefix of the key */
 
+#if __GNUC__ >= 7
+#pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wstringop-overflow"
+#endif
   void copy_key( KeyFragment &kb ) {
     uint8_t       * k = (uint8_t *) (void *) &kb;
     const uint8_t * e = (uint8_t *) (void *) &kb.u.buf[ kb.keylen ];
@@ -230,7 +233,9 @@ struct HashEntry {
       *p++ = *k++;
     } while ( k < e );
   }
+#if __GNUC__ >= 7
 #pragma GCC diagnostic pop
+#endif
   static uint32_t hdr_size_part( void ) { /* 24 */
     return sizeof( AtomUInt64 ) + /* hash */
            sizeof( uint64_t )   + /* hash2 */
