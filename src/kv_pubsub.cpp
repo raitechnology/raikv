@@ -742,6 +742,12 @@ KvPubSub::on_punsub( uint32_t h,  const char *pattern,  size_t patlen,
 }
 
 void
+KvPubSub::on_reassert( uint32_t /*fd*/,  RouteVec<RouteSub> & /*sub_db*/,
+                       RouteVec<RouteSub> & /*pat_db*/ ) noexcept
+{
+}
+
+void
 KvPubSub::process( void ) noexcept
 {
   if ( ( this->flags & KV_INITIAL_SCAN ) == 0 ) {

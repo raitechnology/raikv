@@ -1034,6 +1034,15 @@ RoutePublish::notify_punsub( uint32_t h,  const char *pattern,  size_t len,
     p->on_punsub( h, pattern, len, prefix, prefix_len, fd, rcnt, src_type );
   }
 }
+
+void
+RoutePublish::notify_reassert( uint32_t fd, RouteVec<RouteSub> &sub_db,
+                               RouteVec<RouteSub> &pat_db ) noexcept
+{
+  for ( RouteNotify *p = this->notify_list.hd; p != NULL; p = p->next ) {
+    p->on_reassert( fd, sub_db, pat_db );
+  }
+}
 /* defined for vtable to avoid pure virtuals */
 void RouteNotify::on_sub( uint32_t,  const char *,  size_t,  uint32_t,
                           uint32_t,  char,  const char *,  size_t ) noexcept {}
@@ -1043,6 +1052,8 @@ void RouteNotify::on_psub( uint32_t,  const char *,  size_t, const char *,
                            uint8_t,  uint32_t,  uint32_t, char ) noexcept {}
 void RouteNotify::on_punsub( uint32_t,  const char *,  size_t, const char *,
                              uint8_t, uint32_t,  uint32_t, char ) noexcept {}
+void RouteNotify::on_reassert( uint32_t, RouteVec<RouteSub> &,
+                               RouteVec<RouteSub> & ) noexcept {}
 /* shutdown and close all open socks */
 void
 EvPoll::process_quit( void ) noexcept

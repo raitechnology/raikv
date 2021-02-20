@@ -179,6 +179,32 @@ struct PatternCvt {
       return -1;
     return 0;
   }
+  /* prce wildcard constructed by one of the above to prefix */
+  int pcre_prefix( const char *pattern,  size_t patlen ) {
+    size_t k, j;
+    this->off = 0;
+    if ( patlen > 6 && ::memcmp( pattern, "(?s)\\A", 6 ) == 0 ) {
+      for ( k = 6; k < patlen; k++ ) {
+        if ( pattern[ k ] == '[' ||
+             pattern[ k ] == '.' )
+          break;
+        if ( pattern[ k ] == '\\' ) {
+          j = k + 1;
+          if ( j < patlen ) {
+            if ( pattern[ j ] == 'z' ) /* end anchor */
+              break;
+            this->char_out( pattern[ j ] );
+            k++;
+          }
+        }
+        else {
+          this->char_out( pattern[ k ] );
+        }
+      }
+    }
+    this->prefixlen = this->off;
+    return 0;
+  }
 };
 
 }

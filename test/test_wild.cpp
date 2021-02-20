@@ -10,20 +10,6 @@
 #include <raikv/pattern_cvt.h>
 
 
-#if 0
-uint64_t
-get_rdtsc( void )
-{
-   uint32_t lo, hi;
-  __asm__ __volatile__("rdtsc" : "=a" (lo), "=d" (hi));
-  return ( (uint64_t) hi << 32 ) | (uint64_t) lo;
-}
-
-void escape( void *p ) {
-  __asm__ __volatile__ ( "" : : "g"(p) : "memory" );
-}
-#endif
-
 using namespace rai;
 using namespace kv;
 
@@ -38,7 +24,7 @@ do_match( reg_kind t,  const char **pat,  size_t pc,
   for ( size_t i = 0; i < pc; i++ ) {
     pcre2_real_code_8       * re = NULL; /* pcre regex compiled */
     pcre2_real_match_data_8 * md = NULL; /* pcre match context  */
-    PatternCvt cvt;
+    PatternCvt cvt, cvt2;
     size_t     erroff;
     int        rc, rj = 0,
                error;
@@ -53,6 +39,7 @@ do_match( reg_kind t,  const char **pat,  size_t pc,
             cvt.prefixlen );
     if ( rc != 0 ) {
       printf( "convert failed\n" );
+      fail++;
       continue;
     }
     re = pcre2_compile( (uint8_t *) cvt.out, cvt.off, 0, &error, &erroff, 0 );
@@ -60,12 +47,14 @@ do_match( reg_kind t,  const char **pat,  size_t pc,
       rj = pcre2_jit_compile( re, PCRE2_JIT_COMPLETE );
     if ( re == NULL || rj != 0 ) {
       printf( "re failed\n" );
+      fail++;
       continue;
     }
     md = pcre2_match_data_create_from_pattern( re, NULL );
     if ( md == NULL ) {
       pcre2_code_free( re );
       printf( "md failed\n" );
+      fail++;
       continue;
     }
 
@@ -91,6 +80,19 @@ do_match( reg_kind t,  const char **pat,  size_t pc,
     }
     pcre2_match_data_free( md );
     pcre2_code_free( re );
+
+    rc = cvt2.pcre_prefix( cvt.out, cvt.off );
+    printf( "\"%.*s\" -> \"%.*s\" (%lu)\n", (int) cvt.off, cvt.out,
+            (int) cvt2.off, cvt2.out, cvt2.off );
+    if ( rc != 0 ) {
+      printf( "prefix failed\n" );
+      fail++;
+    }
+    else if ( cvt2.off != cvt.prefixlen ||
+              ::memcmp( cvt2.buf, pat[ i ], cvt2.off ) != 0 ) {
+      printf( "prefix not equal\n" );
+      fail++;
+    }
   }
   return fail;
 }

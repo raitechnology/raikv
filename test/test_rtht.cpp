@@ -8,19 +8,6 @@
 using namespace rai;
 using namespace kv;
 
-struct RouteData {
-  uint32_t hash;
-  /*uint32_t route[ 128 / 32 ];*/
-  uint16_t len;
-  char     value[ 2 ];
-  bool equals( const void *s,  uint16_t l ) const {
-    return l == this->len && ::memcmp( s, this->value, l ) == 0;
-  }
-  void copy( const void *s,  uint16_t l ) {
-    ::memcpy( this->value, s, l );
-  }
-};
-
 uint32_t
 djb( const char *s,  size_t len )
 {
@@ -35,7 +22,7 @@ djb( const char *s,  size_t len )
 int
 main( int, char ** )
 {
-  RouteVec<RouteData> vec;
+  RouteVec<RouteSub> vec;
   char        buf[ 8192 ];
   uint32_t    h;
   size_t      len, cnt =0;
@@ -44,9 +31,9 @@ main( int, char ** )
   FILE * fp = fopen( "/usr/share/dict/words", "r" );
 
   printf( "vec  size %ld\n", sizeof( vec ) );
-  printf( "rtht size %ld\n", sizeof( RouteHT<RouteData> ) );
-  printf( "ht   size %ld\n", RouteHT<RouteData>::HT_SIZE * 4 );
-  printf( "blck size %ld\n", RouteHT<RouteData>::BLOCK_SIZE * 8 );
+  printf( "rtht size %ld\n", sizeof( RouteHT<RouteSub> ) );
+  printf( "ht   size %ld\n", RouteHT<RouteSub>::HT_SIZE * 4 );
+  printf( "blck size %ld\n", RouteHT<RouteSub>::BLOCK_SIZE * 8 );
   for ( i = 0; ; i++ ) {
     fseek( fp, 0, SEEK_SET );
     cnt = 0;
@@ -56,11 +43,11 @@ main( int, char ** )
         buf[ --len ] = '\0';
       if ( len > 0 ) {
         h = djb( buf, len );
-        if ( vec.upsert( h, buf, len ) != NULL )
+        if ( vec.insert_unique( h, buf, len ) != NULL )
           cnt++;
       }
     }
-    printf( "upsert cnt %lu == pop %lu, alloc vec_count %u\n", cnt,
+    printf( "insert cnt %lu == pop %lu, alloc vec_count %u\n", cnt,
             vec.pop_count(), vec.vec_size );
     if ( i == 3 )
       break;
@@ -109,7 +96,7 @@ main( int, char ** )
     isum += 4 + i + 1;
     i++;
     RouteLoc loc;
-    RouteData *d = vec.find_by_hash( h, loc );
+    RouteSub *d = vec.find_by_hash( h, loc );
     sum = 0;
     while ( d != NULL ) {
       sum += d->len;

@@ -4,9 +4,8 @@
 namespace rai {
 namespace kv {
 
-/* DataTrail not used, is an example */
 static const size_t TRAIL_VALLEN = 2;
-struct DataTrail { /* trails data, string starts at value */
+struct RouteSub { /* trails data, string starts at value */
   uint32_t hash;   /* 32 bit hash value */
   uint16_t len;    /* max value size is 16 bits */
   char     value[ TRAIL_VALLEN ]; /* must be at leat 2 bytes for delete mark */
@@ -16,6 +15,12 @@ struct DataTrail { /* trails data, string starts at value */
   void copy( const void *s,  uint16_t l ) {
     ::memcpy( this->value, s, l );
   }
+};
+
+enum RouteFit {
+  DOES_NOT_FIT = 0,
+  FITS_ADJUST  = 1,
+  FITS_OK      = 2
 };
 
 template <class Data> /* Data has DataTrail members, with value[] trailing */
@@ -90,16 +95,16 @@ struct RouteHT {
              sizeof( uint64_t ) - 1 ) / sizeof( uint64_t );
   }
   /* if entry string length l fits into ht */
-  int fits( uint16_t value_len ) const {
+  RouteFit fits( uint16_t value_len ) const {
     size_t xoff = (size_t) this->free_off + intsize( value_len );
     if ( (size_t) ( this->count - this->rem_count ) < HT_83FULL ) {
       if ( xoff <= BLOCK_SIZE ) /* fits without adjusting */
-        return 2;
+        return FITS_OK;
       xoff -= (size_t) this->rem_size;
       if ( xoff <= BLOCK_SIZE ) /* only fits after adjusting */
-        return 1;
+        return FITS_ADJUST;
     }
-    return 0; /* does not fit */
+    return DOES_NOT_FIT; /* does not fit */
   }
   /* need a marker to iterate over (non-removed) data elems */
   static inline void mark_removed( Data *d ) {
@@ -170,11 +175,12 @@ struct RouteHT {
     return new_data;
   }
   /* insert data to ht, no dup check */
-  Data *insert( uint32_t h,  const void *s,  uint16_t l ) {
+  Data *insert( uint32_t h,  const void *s,  uint16_t l,  uint16_t &j ) {
     uint16_t i = (uint16_t) ( h % HT_SIZE );
 
     while ( this->entry[ i ].off != 0 )
       i = ( i + 1 ) % HT_SIZE;
+    j = i;
     return this->inplace( h, s, l, i );
   }
   /* find data and pos by hash */
@@ -434,44 +440,91 @@ struct RouteVec {
   uint32_t bsearch( uint32_t h ) const {
     uint32_t size = this->vec_size, k = 0, piv;
     for (;;) {
-      if ( size == 0 )
-        break;
-      piv = size / 2;
-      if ( h <= this->max_hash_val[ k + piv ] ) {
-        size = piv;
+      if ( size < 3 ) {
+        if ( size >= 1 && h > this->max_hash_val[ k ] ) {
+          k++;
+          if ( size == 2 && h > this->max_hash_val[ k ] )
+            k++;
+        }
+        return k;
       }
+      piv = size / 2;
+      if ( h <= this->max_hash_val[ k + piv ] )
+        size = piv;
       else {
         size -= piv + 1;
         k    += piv + 1;
       }
     }
-    return k;
   }
 
-  Data *insert( uint32_t h,  const void *s,  uint16_t l ) {
-    uint32_t i = 0;
+  Data *insert( uint32_t h,  const void *s,  uint16_t l,  RouteLoc &loc ) {
+    loc.init();
     if ( this->vec_size == 0 ) {
       if ( ! this->init_ht() )
         return NULL;
     }
     else {
       if ( this->vec_size > 1 )
-        i = this->bsearch( h );
-      switch ( this->vec[ i ]->fits( l ) ) {
-        case 0:
-          if ( ! this->split_ht( i ) )
+        loc.i = this->bsearch( h );
+      switch ( this->vec[ loc.i ]->fits( l ) ) {
+        case DOES_NOT_FIT:
+          if ( ! this->split_ht( loc.i ) )
             return NULL;
-          if ( h > this->max_hash_val[ i ] )
-            i++;
+          if ( h > this->max_hash_val[ loc.i ] )
+            loc.i++;
           break;
-        case 1:
-          this->vec[ i ]->adjust();
+        case FITS_ADJUST:
+          this->vec[ loc.i ]->adjust();
           break;
-        case 2:
+        case FITS_OK:
           break;
       }
     }
-    return this->vec[ i ]->insert( h, s, l );
+    loc.is_new = true;
+    return this->vec[ loc.i ]->insert( h, s, l, loc.j );
+  }
+
+  Data *insert( uint32_t h,  const void *s,  uint16_t l ) {
+    RouteLoc loc;
+    return this->insert( h, s, l, loc );
+  }
+
+  Data *insert_unique( uint32_t h,  const void *s,  uint16_t l,
+                       RouteLoc &loc ) {
+    Data *d;
+    loc.init();
+    if ( this->vec_size == 0 ) {
+      if ( ! this->init_ht() )
+        return NULL;
+      loc.is_new = true;
+      return this->vec[ loc.i ]->insert( h, s, l, loc.j );
+    }
+    if ( this->vec_size > 1 )
+      loc.i = this->bsearch( h );
+    d = this->vec[ loc.i ]->locate( h, s, l, loc.j );
+    if ( d != NULL )
+      return d;
+    loc.is_new = true;
+    switch ( this->vec[ loc.i ]->fits( l ) ) {
+      case DOES_NOT_FIT:
+        if ( ! this->split_ht( loc.i ) )
+          return NULL;
+        if ( h > this->max_hash_val[ loc.i ] )
+          loc.i++;
+        break;
+      case FITS_ADJUST:
+        this->vec[ loc.i ]->adjust();
+        break;
+      case FITS_OK:
+        return this->vec[ loc.i ]->inplace( h, s, l, loc.j );
+    }
+    return this->vec[ loc.i ]->insert( h, s, l, loc.j );
+  }
+
+  Data *insert_unique( uint32_t h,  const void *s,  uint16_t l ) {
+    RouteLoc loc;
+    return this->insert_unique( h, s, l, loc );
   }
 
   Data *upsert( uint32_t h,  const void *s,  uint16_t l,
@@ -488,16 +541,16 @@ struct RouteVec {
       return data;
     loc.is_new = true;
     switch ( this->vec[ loc.i ]->fits( l ) ) {
-      case 0: /* split vec[ i ] into two, then insert */
+      case DOES_NOT_FIT: /* split vec[ i ] into two, then insert */
         if ( ! this->split_ht( loc.i ) )
           return NULL;
         if ( h > this->max_hash_val[ loc.i ] )
           loc.i++;
         break;
-      case 1: /* adjust first, then insert */
+      case FITS_ADJUST: /* adjust first, then insert */
         this->vec[ loc.i ]->adjust();
         break;
-      case 2: /* put data at locate() position */
+      case FITS_OK: /* put data at locate() position */
         goto do_insert;
     }
     this->vec[ loc.i ]->locate( h, s, l, loc.j );
@@ -518,7 +571,7 @@ struct RouteVec {
       return data;
 
     switch ( this->vec[ loc.i ]->fits( new_len ) ) {
-      case 0: /* split vec[ i ] into two, then insert */
+      case DOES_NOT_FIT: /* split vec[ i ] into two, then insert */
         if ( ! this->split_ht( loc.i ) )
           return NULL;
         if ( h > this->max_hash_val[ loc.i ] )
@@ -659,6 +712,14 @@ struct RouteVec {
       if ( ++v < this->vec_size )
         off = this->vec[ v ]->free_off;
     }
+  }
+
+  Data *first( RouteLoc &loc ) {
+    return this->first( loc.i, loc.j );
+  }
+
+  Data *next( RouteLoc &loc ) {
+    return this->next( loc.i, loc.j );
   }
 };
 

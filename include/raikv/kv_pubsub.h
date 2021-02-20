@@ -7,7 +7,6 @@
 #include <raikv/stream_buf.h>
 #include <raikv/ev_net.h>
 #include <raikv/cube_route.h>
-#include <raikv/route_ht.h>
 #include <raikv/kv_msg.h>
 
 namespace rai {
@@ -258,6 +257,8 @@ struct KvPubSub : public EvSocket, public KvSendQueue, public RouteNotify {
                           const char *prefix,  uint8_t prefix_len,
                           uint32_t src_fd,  uint32_t rcnt,
                           char src_type ) noexcept;
+  virtual void on_reassert( uint32_t fd,  RouteVec<RouteSub> &sub_db,
+                            RouteVec<RouteSub> &pat_db ) noexcept;
   /*void forward_sub( uint32_t src_fd,  uint32_t rcnt,
                     KvSubMsg &submsg ) noexcept;*/
   void scan_ht( void ) noexcept;

@@ -7,6 +7,7 @@
 #include <raikv/util.h>
 #include <raikv/prio_queue.h>
 #include <raikv/dlinklist.h>
+#include <raikv/route_ht.h>
 
 struct sockaddr;
 
@@ -262,8 +263,8 @@ struct PeerMatchArgs {
   size_t       ip_len,   /* len of ip */
                type_len; /* len of type */
   bool         skipme;   /* true if don't match the client's peer */
-  PeerMatchArgs() : id( 0 ), ip( 0 ), type( 0 ), ip_len( 0 ), type_len( 0 ),
-                    skipme( false ) {}
+  PeerMatchArgs( const char *t = NULL,  size_t l = 0 )
+   : id( 0 ), ip( 0 ), type( t ), ip_len( 0 ), type_len( l ), skipme( false ) {}
   PeerMatchArgs &set_type( const char *t,  size_t l ) {
     this->type     = t;
     this->type_len = l;
@@ -409,6 +410,8 @@ struct RouteNotify {
                           const char *prefix,  uint8_t prefix_len,
                           uint32_t fd,  uint32_t rcnt,
                           char src_type ) noexcept;
+  virtual void on_reassert( uint32_t fd,  RouteVec<RouteSub> &sub_db,
+                            RouteVec<RouteSub> &pat_db ) noexcept;
 };
 
 struct KvPrefHash;
@@ -445,6 +448,8 @@ struct RoutePublish {
   void notify_punsub( uint32_t h,  const char *pattern,  size_t len,
                      const char *prefix,  uint8_t prefix_len,
                      uint32_t fd,  uint32_t rcnt,  char src_type ) noexcept;
+  void notify_reassert( uint32_t fd,  RouteVec<RouteSub> &sub_db,
+                        RouteVec<RouteSub> &pat_db ) noexcept;
   bool add_timer_seconds( int id,  uint32_t ival,  uint64_t timer_id,
                           uint64_t event_id ) noexcept;
   bool add_timer_millis( int id,  uint32_t ival,  uint64_t timer_id,
