@@ -12,13 +12,13 @@ enum TimerUnits {
   IVAL_MICROS = 2,
   IVAL_NANOS  = 3
 };
-
+/* a priority queue of these */
 struct EvTimerEvent {
-  int      id;          /* owner of event (fd) */
+  int32_t  id;          /* owner of event (fd), negative is a EvTimerCallback */
   uint32_t ival;        /* interval with lower 2 bits containing units */
   uint64_t timer_id,    /* if multiple timer events for each owner */
            next_expire, /* next expiration time */
-           event_id;
+           event_id;    /* timer_id + event_id identifies the timer to owner */
 
   static bool is_greater( EvTimerEvent e1,  EvTimerEvent e2 ) {
     return e1.next_expire > e2.next_expire; /* expires later */
@@ -28,28 +28,38 @@ struct EvTimerEvent {
            this->event_id == el.event_id;
   }
 };
+/* callbacks cannot disappear between epochs, fd based connections that can
+ * close between epochs should use fd based timers with unique timer ids */
+/*struct EvTimerCallback {
+  virtual bool timer_cb( uint64_t timer_id,  uint64_t event_id ) noexcept;
+};*/
 
 struct EvTimerQueue : public EvSocket {
   static const int64_t MAX_DELTA = 100 * 1000; /* 100 us */
 
   void * operator new( size_t, void *ptr ) { return ptr; }
   void operator delete( void *ptr ) { ::free( ptr ); }
-  kv::PrioQueue<EvTimerEvent, EvTimerEvent::is_greater> queue;
-  uint64_t last, epoch, delta, real;
+  kv::PrioQueue<EvTimerEvent, EvTimerEvent::is_greater> queue; /* q events */
+  uint64_t           last,  /* previous epoch */
+                     epoch, /* current epoch */
+                     delta, /* difference between event.next_expire and epoch */
+                     real;  /* wall clock time close to epoch */
+  EvTimerCallback ** cb;    /* callbacks when event.id < 0 */
+  size_t             cb_sz, /* extent of cb[] */
+                     cb_used; /* number of cb[] used */
 
   EvTimerQueue( EvPoll &p );
   static EvTimerQueue *create_timer_queue( EvPoll &p ) noexcept;
 
-  /* add timer that expires in ival seconds */
-  bool add_timer_seconds( int id,  uint32_t ival,  uint64_t timer_id,
-                          uint64_t event_id ) {
-    return this->add_timer_units( id, ival, IVAL_SECS, timer_id, event_id );
-  }
   /* add timer that expires in ival units */
-  bool add_timer_units( int id,  uint32_t ival,  TimerUnits u,
+  bool add_timer_units( int32_t id,  uint32_t ival,  TimerUnits u,
                         uint64_t timer_id,  uint64_t event_id ) noexcept;
+  /* add timer that expires in ival units */
+  bool add_timer_cb( EvTimerCallback &tcb,  uint32_t ival,  TimerUnits u,
+                     uint64_t timer_id,  uint64_t event_id ) noexcept;
   /* if timer_id exists remove and return true */
-  bool remove_timer( int id,  uint64_t timer_id,  uint64_t event_id ) noexcept;
+  bool remove_timer( int32_t id,  uint64_t timer_id,
+                     uint64_t event_id ) noexcept;
   void repost( void ) noexcept;
   bool set_timer( void ) noexcept;
 

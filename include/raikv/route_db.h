@@ -414,6 +414,12 @@ struct RouteNotify {
                             RouteVec<RouteSub> &pat_db ) noexcept;
 };
 
+/* callbacks cannot disappear between epochs, fd based connections that can
+ * close between epochs should use fd based timers with unique timer ids */
+struct EvTimerCallback {
+  virtual bool timer_cb( uint64_t timer_id,  uint64_t event_id ) noexcept;
+};
+
 struct KvPrefHash;
 struct RoutePublish {
   kv::DLinkList<RouteNotify> notify_list;
@@ -437,6 +443,7 @@ struct RoutePublish {
                               uint32_t fd ) noexcept;
   void update_keyspace_count( const char *sub,  size_t len,  int add,
                               uint32_t fd ) noexcept;
+  /* notify subscription start / stop to listeners */
   void notify_sub( uint32_t h,  const char *sub,  size_t len,
                    uint32_t fd,  uint32_t rcnt,  char src_type,
                    const char *rep = NULL,  size_t rlen = 0 ) noexcept;
@@ -450,13 +457,21 @@ struct RoutePublish {
                      uint32_t fd,  uint32_t rcnt,  char src_type ) noexcept;
   void notify_reassert( uint32_t fd,  RouteVec<RouteSub> &sub_db,
                         RouteVec<RouteSub> &pat_db ) noexcept;
-  bool add_timer_seconds( int id,  uint32_t ival,  uint64_t timer_id,
+  /* arm a timer by cb */
+  bool add_timer_seconds( EvTimerCallback &tcb,  uint32_t secs,  uint64_t timer_id,
                           uint64_t event_id ) noexcept;
-  bool add_timer_millis( int id,  uint32_t ival,  uint64_t timer_id,
+  bool add_timer_millis( EvTimerCallback &tcb,  uint32_t msecs,  uint64_t timer_id,
                          uint64_t event_id ) noexcept;
-  bool add_timer_micros( int id,  uint32_t ival,  uint64_t timer_id,
+  bool add_timer_micros( EvTimerCallback &tcb,  uint32_t usecs,  uint64_t timer_id,
                          uint64_t event_id ) noexcept;
-  bool remove_timer( int id,  uint64_t timer_id,  uint64_t event_id ) noexcept;
+  /* arm a timer by fd */
+  bool add_timer_seconds( int32_t id,  uint32_t secs,  uint64_t timer_id,
+                          uint64_t event_id ) noexcept;
+  bool add_timer_millis( int32_t id,  uint32_t msecs,  uint64_t timer_id,
+                         uint64_t event_id ) noexcept;
+  bool add_timer_micros( int32_t id,  uint32_t usecs,  uint64_t timer_id,
+                         uint64_t event_id ) noexcept;
+  bool remove_timer( int32_t id,  uint64_t timer_id,  uint64_t event_id ) noexcept;
 
   void add_route_notify( RouteNotify &x ) {
     if ( ! x.in_notify ) {

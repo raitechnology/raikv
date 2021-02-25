@@ -1354,35 +1354,63 @@ PeerMatchIter::next( void ) noexcept
   }
   return NULL;
 }
-/* start a timer event */
+/* start a timer event callback */
 bool
-RoutePublish::add_timer_seconds( int id,  uint32_t ival,  uint64_t timer_id,
+RoutePublish::add_timer_seconds( EvTimerCallback &tcb,  uint32_t secs,
+                                 uint64_t timer_id, uint64_t event_id ) noexcept
+{
+  EvPoll & poll = static_cast<EvPoll &>( *this );
+  return poll.timer_queue->add_timer_cb( tcb, secs, IVAL_SECS, timer_id,
+                                         event_id );
+}
+
+bool
+RoutePublish::add_timer_millis( EvTimerCallback &tcb,  uint32_t msecs,
+                                uint64_t timer_id,  uint64_t event_id ) noexcept
+{
+  EvPoll & poll = static_cast<EvPoll &>( *this );
+  return poll.timer_queue->add_timer_cb( tcb, msecs, IVAL_MILLIS, timer_id,
+                                         event_id );
+}
+
+bool
+RoutePublish::add_timer_micros( EvTimerCallback &tcb,  uint32_t usecs,
+                                uint64_t timer_id,  uint64_t event_id ) noexcept
+{
+  EvPoll & poll = static_cast<EvPoll &>( *this );
+  return poll.timer_queue->add_timer_cb( tcb, usecs, IVAL_MICROS, timer_id,
+                                         event_id );
+}
+/* start a timer event fd */
+bool
+RoutePublish::add_timer_seconds( int32_t id,  uint32_t secs,  uint64_t timer_id,
                                  uint64_t event_id ) noexcept
 {
   EvPoll & poll = static_cast<EvPoll &>( *this );
-  return poll.timer_queue->add_timer_seconds( id, ival, timer_id, event_id );
-}
-
-bool
-RoutePublish::add_timer_millis( int id,  uint32_t ival,  uint64_t timer_id,
-                                uint64_t event_id ) noexcept
-{
-  EvPoll & poll = static_cast<EvPoll &>( *this );
-  return poll.timer_queue->add_timer_units( id, ival, IVAL_MILLIS, timer_id,
+  return poll.timer_queue->add_timer_units( id, secs, IVAL_SECS, timer_id,
                                             event_id );
 }
 
 bool
-RoutePublish::add_timer_micros( int id,  uint32_t ival,  uint64_t timer_id,
+RoutePublish::add_timer_millis( int32_t id,  uint32_t msecs,  uint64_t timer_id,
                                 uint64_t event_id ) noexcept
 {
   EvPoll & poll = static_cast<EvPoll &>( *this );
-  return poll.timer_queue->add_timer_units( id, ival, IVAL_MICROS, timer_id,
+  return poll.timer_queue->add_timer_units( id, msecs, IVAL_MILLIS, timer_id,
                                             event_id );
 }
 
 bool
-RoutePublish::remove_timer( int id,  uint64_t timer_id,
+RoutePublish::add_timer_micros( int32_t id,  uint32_t usecs,  uint64_t timer_id,
+                                uint64_t event_id ) noexcept
+{
+  EvPoll & poll = static_cast<EvPoll &>( *this );
+  return poll.timer_queue->add_timer_units( id, usecs, IVAL_MICROS, timer_id,
+                                            event_id );
+}
+
+bool
+RoutePublish::remove_timer( int32_t id,  uint64_t timer_id,
                             uint64_t event_id ) noexcept
 {
   EvPoll & poll = static_cast<EvPoll &>( *this );

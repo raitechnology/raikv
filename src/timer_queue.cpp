@@ -14,9 +14,16 @@ using namespace kv;
 
 EvTimerQueue::EvTimerQueue( EvPoll &p )
             : EvSocket( p, p.register_type( "timer_queue" ) ),
-              last( 0 ), epoch( 0 ), delta( 0 ), real( 0 )
+              last( 0 ), epoch( 0 ), delta( 0 ), real( 0 ),
+              cb( 0 ), cb_sz( 0 ), cb_used( 0 )
 {
   this->sock_opts = OPT_READ_HI;
+}
+
+bool
+EvTimerCallback::timer_cb( uint64_t, uint64_t ) noexcept
+{
+  return false;
 }
 
 EvTimerQueue *
@@ -53,7 +60,7 @@ EvTimerQueue::create_timer_queue( EvPoll &p ) noexcept
 static const uint32_t to_ns[] = { 1000 * 1000 * 1000, 1000 * 1000, 1000, 1 };
 
 bool
-EvTimerQueue::add_timer_units( int id,  uint32_t ival,  TimerUnits u,
+EvTimerQueue::add_timer_units( int32_t id,  uint32_t ival,  TimerUnits u,
                                uint64_t timer_id,  uint64_t event_id ) noexcept
 {
   EvTimerEvent el;
@@ -63,14 +70,53 @@ EvTimerQueue::add_timer_units( int id,  uint32_t ival,  TimerUnits u,
   el.next_expire = current_monotonic_time_ns() +
                    ( (uint64_t) ival * (uint64_t) to_ns[ u ] );
   el.event_id    = event_id;
-  if ( ! this->queue.push( el ) )
+  if ( ( el.ival >> 2 ) != ival ) {
+    fprintf( stderr, "invalid timer range %u\n", ival );
     return false;
+  }
+  if ( ! this->queue.push( el ) ) {
+    fprintf( stderr, "timer queue alloc failed\n" );
+    return false;
+  }
   this->idle_push( EV_PROCESS );
   return true;
 }
 
 bool
-EvTimerQueue::remove_timer( int id,  uint64_t timer_id,
+EvTimerQueue::add_timer_cb( EvTimerCallback &tcb,  uint32_t ival,  TimerUnits u,
+                            uint64_t timer_id,  uint64_t event_id ) noexcept
+{
+  int32_t id = (int32_t) this->cb_used;
+  if ( this->cb_used < this->cb_sz ) {
+    if ( this->cb[ this->cb_used ] != NULL ) {
+      for ( id = 0; ; id++ ) {
+        if ( this->cb[ id ] == NULL )
+          break;
+      }
+    }
+  }
+  else {
+    size_t new_sz = ( this->cb_sz == 0 ? 8 : this->cb_sz * 2 );
+    if ( ( new_sz >> 31 ) != 0 ) /* int range */
+      return false;
+    void * p = ::realloc( this->cb, sizeof( this->cb[ 0 ] ) * new_sz );
+    if ( p == NULL )
+      return false;
+    this->cb = (EvTimerCallback **) p;
+    ::memset( &this->cb[ this->cb_sz ], 0,
+              sizeof( this->cb[ 0 ] ) * ( new_sz - this->cb_sz ) );
+    this->cb_sz = new_sz;
+  }
+  if ( this->add_timer_units( -(id+1), ival, u, timer_id, event_id ) ) {
+    this->cb[ id ] = &tcb;
+    this->cb_used++;
+    return true;
+  }
+  return false;
+}
+
+bool
+EvTimerQueue::remove_timer( int32_t id,  uint64_t timer_id,
                             uint64_t event_id ) noexcept
 {
   EvTimerEvent el;
@@ -86,6 +132,7 @@ void
 EvTimerQueue::repost( void ) noexcept
 {
   EvTimerEvent el = this->queue.pop();
+  /* this will skip intervals until expires > epoch */
   do {
     el.next_expire += (uint64_t) ( el.ival >> 2 ) *
                       (uint64_t) to_ns[ el.ival & 3 ];
@@ -97,7 +144,6 @@ void
 EvTimerQueue::read( void ) noexcept
 {
   uint8_t buf[ 1024 ];
-  /*size_t  total = 0;*/
   ssize_t n;
   for (;;) {
     n = ::read( this->fd, buf, sizeof( buf ) );
@@ -115,9 +161,7 @@ EvTimerQueue::read( void ) noexcept
       }
       break;
     }
-    /*total += n;*/
   }
-  /*return total > 0;*/
 }
 
 bool
@@ -139,6 +183,7 @@ EvTimerQueue::set_timer( void ) noexcept
 void
 EvTimerQueue::process( void ) noexcept
 {
+  bool rearm_timer;
   this->last  = this->epoch;
   this->epoch = current_monotonic_time_ns();
   this->real  = this->poll.current_coarse_ns();
@@ -147,7 +192,18 @@ EvTimerQueue::process( void ) noexcept
   while ( ! this->queue.is_empty() ) {
     EvTimerEvent &ev = this->queue.heap[ 0 ];
     if ( ev.next_expire <= this->epoch ) { /* timers are ready to fire */
-      if ( this->poll.timer_expire( ev ) )
+      if ( ev.id < 0 ) {
+        rearm_timer =
+          this->cb[ -(ev.id+1) ]->timer_cb( ev.timer_id, ev.event_id );
+        if ( ! rearm_timer ) {
+          this->cb[ -(ev.id+1) ] = NULL;
+          this->cb_used -= 1;
+        }
+      }
+      else {
+        rearm_timer = this->poll.timer_expire( ev );
+      }
+      if ( rearm_timer )
         this->repost();    /* next timer interval */
       else
         this->queue.pop(); /* remove timer */

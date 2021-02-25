@@ -209,6 +209,7 @@ struct MainLoop {
   }
   /* mainloop runner */
   void run( void ) {
+    int idle_cnt = 0;
     while ( this->r.thr_start < this->thr_num ) /* wait for my turn */
       usleep( 1 );
     if ( this->r.thr_error == 0 && this->poll_init() &&
@@ -221,7 +222,11 @@ struct MainLoop {
           break;
         }
         int state = this->poll.dispatch(); /* 0 if idle, 1, 2, 3 if busy */
-        this->poll.wait( state == EvPoll::DISPATCH_IDLE ? 100 : 0 );
+        if ( state == EvPoll::DISPATCH_IDLE )
+          idle_cnt++;
+        else
+          idle_cnt = 0;
+        this->poll.wait( idle_cnt > 255 ? 100 : 0 );
         if ( this->r.sighndl.signaled && ! poll.quit ) {
           if ( this->r.thr_exit >= this->thr_num ) /* wait for my turn */
             this->poll.quit++;
