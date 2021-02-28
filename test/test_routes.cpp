@@ -13,7 +13,7 @@ void print_routedb( RouteDB &rte )
   for ( size_t k = 0; k <= RouteDB::MAX_PRE; k++ ) {
     UIntHashTab * xht = rte.rt_hash[ k ];
     if ( xht->elem_count > 0 ) {
-      printf( "rt[%lu] %u/%u :\n", k, xht->elem_count, xht->tab_size() );
+      printf( "rt[%lu] %lu/%lu :\n", k, xht->elem_count, xht->tab_size() );
       for ( i = 0; i <= xht->tab_mask; i++ ) {
         if ( xht->is_used( i ) ) {
           CodeRef * p;
@@ -45,7 +45,7 @@ void print_routedb( RouteDB &rte )
           rte.code_end, rte.code_size, rte.code_free );
   printf( "code_spc_size %u, route_spc_size %u\n",
           rte.code_spc_size, rte.route_spc_size );
-  printf( "zht %u/%u\n", rte.zht->elem_count, rte.zht->tab_size() );
+  printf( "zht %lu/%lu\n", rte.zht->elem_count, rte.zht->tab_size() );
 }
 
 int

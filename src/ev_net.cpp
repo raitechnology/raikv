@@ -37,7 +37,7 @@ EvPoll::register_type( const char *s ) noexcept
     t++;
   }
   /* should be unique */
-  fprintf( stderr, "no types left %s\n", s );
+  fprintf( stderr, "No types left %s\n", s );
   exit( 1 );
   return 0;
 }
@@ -77,7 +77,7 @@ EvPoll::init_shm( EvShm &shm ) noexcept
   this->dbx_id = shm.dbx_id;
   if ( this->map != NULL ) {
     if ( (this->pubsub = KvPubSub::create( *this, 254 )) == NULL ) {
-      fprintf( stderr, "unable to open kv pub sub\n" );
+      fprintf( stderr, "Unable to open kv pub sub\n" );
       return -1;
     }
   }
@@ -88,13 +88,12 @@ void
 EvPoll::add_write_poll( EvSocket *s ) noexcept
 {
   struct epoll_event event;
-  s->poll_bytes_sent = s->bytes_sent;
   s->set_poll( IN_EPOLL_WRITE );
   ::memset( &event, 0, sizeof( struct epoll_event ) );
   event.data.fd = s->fd;
   event.events  = EPOLLOUT | EPOLLRDHUP/* | EPOLLET*/;
   if ( ::epoll_ctl( this->efd, EPOLL_CTL_MOD, s->fd, &event ) < 0 ) {
-    perror( "epoll_ctl pollout" );
+    s->set_sock_err( EV_ERR_WRITE_POLL, errno );
     s->set_poll( IN_EPOLL_READ );
     s->popall();
     s->idle_push( EV_CLOSE );
@@ -118,7 +117,7 @@ EvPoll::remove_write_poll( EvSocket *s ) noexcept
   event.data.fd = s->fd;
   event.events  = EPOLLIN | EPOLLRDHUP | EPOLLET;
   if ( ::epoll_ctl( this->efd, EPOLL_CTL_MOD, s->fd, &event ) < 0 ) {
-    perror( "epoll_ctl pollin" );
+    s->set_sock_err( EV_ERR_READ_POLL, errno );
     s->popall();
     s->idle_push( EV_CLOSE );
   }
@@ -215,7 +214,7 @@ EvPoll::add_sock( EvSocket *s ) noexcept
     tmp = (EvSocket **)
           ::realloc( this->sock, xfd * sizeof( this->sock[ 0 ] ) );
     if ( tmp == NULL ) {
-      perror( "realloc" );
+      s->set_sock_err( EV_ERR_ALLOC, errno );
       xfd /= 2;
       if ( xfd > (uint32_t) s->fd )
         goto try_again;
@@ -234,7 +233,7 @@ EvPoll::add_sock( EvSocket *s ) noexcept
     event.data.fd = s->fd;
     event.events  = EPOLLIN | EPOLLRDHUP | EPOLLET;
     if ( ::epoll_ctl( this->efd, EPOLL_CTL_ADD, s->fd, &event ) < 0 ) {
-      perror( "epoll_ctl" );
+      s->set_sock_err( EV_ERR_READ_POLL, errno );
       return -1;
     }
   }
@@ -251,10 +250,7 @@ EvPoll::add_sock( EvSocket *s ) noexcept
   s->start_ns   = ns;
   s->active_ns  = ns;
   s->id         = ++this->next_id;
-  s->bytes_recv = 0;
-  s->bytes_sent = 0;
-  s->msgs_recv  = 0;
-  s->msgs_sent  = 0;
+  s->init_stats();
   return 0;
 }
 /* remove a sock fd from epolling */
@@ -272,17 +268,15 @@ EvPoll::remove_sock( EvSocket *s ) noexcept
       event.data.fd = s->fd;
       event.events  = 0;
       if ( ::epoll_ctl( this->efd, EPOLL_CTL_DEL, s->fd, &event ) < 0 )
-        perror( "epoll_ctl" );
+        s->set_sock_err( EV_ERR_READ_POLL, errno );
     }
     this->sock[ s->fd ] = NULL;
     this->fdcnt--;
   }
   /* close if wants */
   if ( ! s->test_opts( OPT_NO_CLOSE ) && s->fd != this->null_fd ) {
-    if ( ::close( s->fd ) != 0 ) {
-      fprintf( stderr, "close: errno %d/%s, fd %d type %s\n",
-               errno, strerror( errno ), s->fd, s->type_string() );
-    }
+    if ( ::close( s->fd ) != 0 )
+      s->set_sock_err( EV_ERR_CLOSE, errno );
   }
   if ( s->in_list( IN_ACTIVE_LIST ) ) {
     s->client_stats( this->peer_stats );
@@ -297,20 +291,7 @@ EvPoll::remove_sock( EvSocket *s ) noexcept
 void
 EvPoll::idle_close( EvSocket *s,  uint64_t ns ) noexcept
 {
-  struct sockaddr_storage addr;
-  socklen_t addrlen = sizeof( addr );
-  char buf[ 128 ], svc[ 32 ];
-
-  if ( getpeername( s->fd, (struct sockaddr*) &addr, &addrlen ) == 0 &&
-       getnameinfo( (struct sockaddr*) &addr, addrlen, buf, sizeof( buf ),
-                  svc, sizeof( svc ), NI_NUMERICHOST | NI_NUMERICSERV ) == 0 ) {
-    fprintf( stderr, "write timeout: %.3f secs, force close fd %d addr %s:%s\n",
-             (double) ns / 1000000000.0, s->fd, buf, svc );
-  }
-  else {
-    fprintf( stderr, "write timeout: %.3f secs, force close fd %d\n",
-             (double) ns / 1000000000.0, s->fd );
-  }
+  s->set_sock_err( EV_ERR_WRITE_TIMEOUT, ns / 1000000000ULL );
   /* log closed fd */
   this->remove_write_queue( s );
   s->popall();
@@ -1452,7 +1433,9 @@ EvConnection::read( void ) noexcept
         if ( errno != EINTR ) {
           if ( errno != EAGAIN ) {
             if ( errno != ECONNRESET )
-              perror( "read" );
+              this->set_sock_err( EV_ERR_BAD_READ, errno );
+            else
+              this->set_sock_err( EV_ERR_READ_RESET, errno );
             this->popall();
             this->push( EV_CLOSE );
           }
@@ -1551,10 +1534,10 @@ EvConnection::write( void ) noexcept
     return;
   }
   if ( nbytes == 0 || ( nbytes < 0 && errno != EAGAIN && errno != EINTR ) ) {
-    if ( nbytes < 0 && errno != ECONNRESET && errno != EPIPE ) {
-      fprintf( stderr, "sendmsg: errno %d/%s, fd %d, state %d\n",
-               errno, strerror( errno ), this->fd, this->state );
-    }
+    if ( nbytes < 0 && errno != ECONNRESET && errno != EPIPE )
+      this->set_sock_err( EV_ERR_BAD_WRITE, errno );
+    else
+      this->set_sock_err( EV_ERR_WRITE_RESET, errno );
     this->popall();
     this->push( EV_CLOSE );
   }
@@ -1637,7 +1620,7 @@ EvUdp::discard_pkt( void ) noexcept
   hdr.msg_flags      = 0;
   nbytes = ::recvmsg( this->fd, &hdr, 0 );
   if ( nbytes > 0 )
-    fprintf( stderr, "discard %ld bytes\n", (long) nbytes );
+    fprintf( stderr, "Discard %ld bytes\n", (long) nbytes );
   return nbytes;
 }
 
@@ -1693,7 +1676,9 @@ EvUdp::read( void ) noexcept
   if ( ( nmsgs < 0 || nbytes < 0 ) && errno != EINTR ) {
     if ( errno != EAGAIN ) {
       if ( errno != ECONNRESET )
-        perror( "recvmmsg" );
+        this->set_sock_err( EV_ERR_BAD_READ, errno );
+      else
+        this->set_sock_err( EV_ERR_READ_RESET, errno );
       this->popall();
       this->push( EV_CLOSE );
     }
@@ -1738,10 +1723,11 @@ EvUdp::write( void ) noexcept
   }
 #endif
   if ( nmsgs < 0 && errno != EAGAIN && errno != EINTR ) {
-    if ( errno != ECONNRESET && errno != EPIPE ) {
-      fprintf( stderr, "sendmsg: errno %d/%s, fd %d, state %d\n",
-               errno, strerror( errno ), this->fd, this->state );
-    }
+    if ( errno != ECONNRESET && errno != EPIPE )
+      this->set_sock_err( EV_ERR_BAD_WRITE, errno );
+    else
+      this->set_sock_err( EV_ERR_WRITE_RESET, errno );
+    /* normal disconnect */
     this->popall();
     this->push( EV_CLOSE );
   }
@@ -1750,12 +1736,93 @@ EvUdp::write( void ) noexcept
 }
 /* if some alloc failed, kill the client */
 void
-EvConnection::close_alloc_error( void ) noexcept
+EvSocket::close_error( uint16_t serr,  uint16_t err ) noexcept
 {
-  fprintf( stderr, "Allocation failed! Closing connection\n" );
+  this->set_sock_err( serr, err );
   this->popall();
-  this->push( EV_CLOSE );
+  this->idle_push( EV_CLOSE );
 }
+
+void
+EvSocket::set_sock_err( uint16_t serr,  uint16_t err ) noexcept
+{
+  this->sock_err   = serr;
+  this->sock_errno = err;
+  if ( serr + err != 0 )
+    if ( ( this->sock_opts & OPT_VERBOSE ) != 0 )
+      this->print_sock_error();
+}
+
+const char *
+EvSocket::err_string( EvSockErr err ) noexcept
+{
+  switch ( err ) {
+    case EV_ERR_NONE:          return "ERR_NONE";
+    case EV_ERR_CLOSE:         return "ERR_CLOSE, fd failed to close";
+    case EV_ERR_WRITE_TIMEOUT: return "ERR_WRITE_TIMEOUT, no progress writing";
+    case EV_ERR_BAD_WRITE:     return "ERR_BAD_WRITE, write failed";
+    case EV_ERR_WRITE_RESET:   return "ERR_WRITE_RESET, write connection reset";
+    case EV_ERR_BAD_READ:      return "ERR_BAD_READ, read failed";
+    case EV_ERR_READ_RESET:    return "ERR_READ_RESET, read connection reset";
+    case EV_ERR_WRITE_POLL:    return "ERR_WRITE_POLL, poll failed to mod write";
+    case EV_ERR_READ_POLL:     return "ERR_READ_POLL, epoll failed to mod read";
+    case EV_ERR_ALLOC:         return "ERR_ALLOC, alloc sock data failed";
+    default:                   return NULL;
+  }
+}
+
+const char *
+EvSocket::sock_error_string( void ) noexcept
+{
+  return EvSocket::err_string( (EvSockErr) this->sock_err );
+}
+
+size_t
+EvSocket::print_sock_error( char *out,  size_t outlen ) noexcept
+{
+  const char *s = NULL,
+             *e = NULL;
+  char ebuf[ 16 ];
+  if ( this->sock_err != 0 ) {
+    s = this->sock_error_string();
+    if ( s == NULL ) {
+      ::snprintf( ebuf, sizeof( ebuf ), "ERR_%u", this->sock_err );
+      s = ebuf;
+    }
+  }
+  if ( this->sock_errno != 0 ) {
+    if ( this->sock_err != EV_ERR_WRITE_TIMEOUT )
+      e = ::strerror( this->sock_errno );
+  }
+  char   buf[ 1024 ],
+       * o    = buf;
+  size_t off  = 0,
+         olen = sizeof( buf );
+  if ( out != NULL ) {
+    o   = out;
+    olen = outlen;
+  }
+  off = ::snprintf( o, olen, "Sock" );
+  if ( s != NULL )
+    off += ::snprintf( &o[ off ], olen - off, " error=%u/%s",
+                       this->sock_err, s );
+  off += ::snprintf( &o[ off ], olen - off, " fd=%d state=%x name=%s peer=%s",
+                     this->fd, this->state, this->name, this->peer_address );
+  if ( e != NULL )
+    off += ::snprintf( &o[ off ], olen - off, "errno=%u/%s",
+                       this->sock_errno, e );
+  else if ( this->sock_err == EV_ERR_WRITE_TIMEOUT )
+    off += ::snprintf( &o[ off ], olen - off, "%u seconds",
+                       this->sock_errno );
+  if ( out == NULL )
+    ::fprintf( stderr, "%.*s\n", (int) off, buf );
+  return off;
+}
+
+void EvConnectionNotify::on_connect( EvConnection & ) noexcept {}
+void EvConnectionNotify::on_shutdown( EvConnection &,  const char *,
+                                      size_t ) noexcept {}
+
 /* when a sock is not dispatch()ed, it may need to be rearranged in the queue
  * for correct priority */
 void

@@ -4,7 +4,17 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+/* intel crc_c instruction */
 extern uint32_t kv_crc_c( const void *p, size_t sz, uint32_t seed );
+
+static inline uint32_t kv_djb( const char *s,  size_t len ) {
+  uint32_t key = 5381;
+  for ( ; len > 0; len -= 1 ) {
+    uint8_t c = (uint8_t) *s++;
+    key = (uint32_t) c ^ ( ( key << 5 ) + key );
+  }
+  return key;
+}
 
 typedef uint64_t (* kv_hash64_func_t )( const void *p, size_t sz,
                                         uint64_t seed );

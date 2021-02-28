@@ -44,14 +44,15 @@ enum EvSockOpts {
   OPT_READ_HI     = 128,/* set EV_READ_HI when read event occurs on poll */
   OPT_NO_POLL     = 256,/* do not add fd to poll */
   OPT_NO_CLOSE    = 512,/* do not close fd */
+  OPT_VERBOSE     = 1024,/* print errors stderr */
 
   /* opts inherited from listener, set in EvTcpListen::set_sock_opts()  */
   ALL_TCP_ACCEPT_OPTS = OPT_TCP_NODELAY | OPT_KEEPALIVE | OPT_LINGER,
 
-  DEFAULT_TCP_LISTEN_OPTS  = 128|64|32|16|8|4|2|1,
-  DEFAULT_TCP_CONNECT_OPTS = 64|32|16|8|4,
-  DEFAULT_UDP_LISTEN_OPTS  = 16|8|2|1,
-  DEFAULT_UDP_CONNECT_OPTS = 16|8
+  DEFAULT_TCP_LISTEN_OPTS  = 1024|128|64|32|16|8|4|2|1,
+  DEFAULT_TCP_CONNECT_OPTS = 1024|64|32|16|8|4,
+  DEFAULT_UDP_LISTEN_OPTS  = 1024|16|8|2|1,
+  DEFAULT_UDP_CONNECT_OPTS = 1024|16|8
 };
 
 enum EvSockFlags {
@@ -65,6 +66,20 @@ enum EvSockFlags {
   IN_EPOLL_WRITE = 32 /* in epoll set waiting for write (if blocked) */
 };
 
+enum EvSockErr {
+  EV_ERR_NONE          = 0,
+  EV_ERR_CLOSE         = 1, /* fd failed to close */
+  EV_ERR_WRITE_TIMEOUT = 2, /* no progress writing */
+  EV_ERR_BAD_WRITE     = 3, /* write failed  */
+  EV_ERR_WRITE_RESET   = 4, /* write connection reset */
+  EV_ERR_BAD_READ      = 5, /* read failed  */
+  EV_ERR_READ_RESET    = 6, /* read connection reset */
+  EV_ERR_WRITE_POLL    = 7, /* epoll failed to mod write */
+  EV_ERR_READ_POLL     = 8, /* epoll failed to mod read */
+  EV_ERR_ALLOC         = 9, /* alloc sock data */
+  EV_ERR_LAST          = 10 /* extend errors after LAST */
+};
+
 struct EvSocket : public PeerData /* fd and address of peer */EV_DBG_INHERIT {
   EvPoll      & poll;       /* the parent container */
   uint64_t      prio_cnt;   /* timeslice each socket for a slot to run */
@@ -72,16 +87,26 @@ struct EvSocket : public PeerData /* fd and address of peer */EV_DBG_INHERIT {
   uint16_t      sock_opts;  /* sock opt bits above */
   const uint8_t sock_type;  /* listen or connection */
   uint8_t       sock_flags; /* in active list or free list */
+  uint16_t      sock_err,   /* error condition */
+                sock_errno;
+  uint32_t      sock_pad;
   uint64_t      bytes_recv, /* stat counters for bytes and msgs */
                 bytes_sent,
                 msgs_recv,
-                msgs_sent,
-                poll_bytes_sent;
+                msgs_sent;
 
   EvSocket( EvPoll &p,  const uint8_t t )
     : poll( p ), prio_cnt( 0 ), state( 0 ),  sock_opts( 0 ), sock_type( t ),
-      sock_flags( 0 ), bytes_recv( 0 ), bytes_sent( 0 ), msgs_recv( 0 ),
-      msgs_sent( 0 ), poll_bytes_sent( -1 ) {}
+      sock_flags( 0 ) { this->init_stats(); }
+  void init_stats( void ) {
+    this->sock_err   = 0;
+    this->sock_errno = 0;
+    this->bytes_recv = 0;
+    this->bytes_sent = 0;
+    this->msgs_recv  = 0;
+    this->msgs_sent  = 0;
+  }
+  void set_sock_err( uint16_t serr,  uint16_t err ) noexcept;
   /* if socket mem is free */
   bool test_opts( EvSockOpts o ) const {
     return ( this->sock_opts & o ) != 0;
@@ -114,6 +139,8 @@ struct EvSocket : public PeerData /* fd and address of peer */EV_DBG_INHERIT {
     return this->test_flags( p, IN_EPOLL_READ | IN_EPOLL_WRITE );
   }
   static const char * state_string( EvState state ) noexcept;
+  /* err strings defined as EvSockErr */
+  static const char * err_string( EvSockErr err ) noexcept;
 
   /* priority queue states */
   EvState get_dispatch_state( void ) const {
@@ -133,7 +160,12 @@ struct EvSocket : public PeerData /* fd and address of peer */EV_DBG_INHERIT {
   void pushpop( int s, int t ) {
     this->state = ( this->state | ( 1U << s ) ) & ~( 1U << t ); }
   void idle_push( EvState s ) noexcept;
-
+  void close_error( uint16_t serr,  uint16_t err ) noexcept;
+  /* convert sock_err to string, or null if unknown code */
+  virtual const char *sock_error_string( void ) noexcept;
+  /* describe sock and error */
+  virtual size_t print_sock_error( char *out = NULL,
+                                   size_t outlen = 0 ) noexcept;
   /* The dispatch functions that Poll uses to process EvState state */
   /* the sock type name */
   virtual const char *type_string( void ) noexcept;
@@ -409,6 +441,15 @@ struct EvListen : public EvSocket {
   virtual void client_stats( PeerStats &ps ) noexcept;
 };
 
+struct EvConnection;
+struct EvConnectionNotify {
+  /* notifcation of ready, after authentication, etc */
+  virtual void on_connect( EvConnection &conn ) noexcept;
+  /* notification of connection close or loss */
+  virtual void on_shutdown( EvConnection &conn,  const char *err,
+                            size_t elen ) noexcept;
+};
+
 struct EvConnection : public EvSocket, public StreamBuf {
   static const size_t RCV_BUFSIZE = 16 * 1024;
   char   * recv;           /* initially recv_buf, but may realloc */
@@ -416,18 +457,19 @@ struct EvConnection : public EvSocket, public StreamBuf {
            len,            /* length of data in recv_buf */
            recv_size,      /* recv buf size */
            recv_highwater, /* recv_highwater: switch to low priority read */
-           send_highwater, /* send_highwater: switch to high priority write */
-           pad;
+           send_highwater; /* send_highwater: switch to high priority write */
+  EvConnectionNotify * notify;
   char     recv_buf[ RCV_BUFSIZE ] __attribute__((__aligned__( 64 )));
 
-  EvConnection( EvPoll &p, const uint8_t t ) : EvSocket( p, t ) {
+  EvConnection( EvPoll &p, const uint8_t t,
+                EvConnectionNotify *n = NULL ) : EvSocket( p, t ) {
     this->recv           = this->recv_buf;
     this->off            = 0;
     this->len            = 0;
     this->recv_size      = sizeof( this->recv_buf );
     this->recv_highwater = RCV_BUFSIZE - RCV_BUFSIZE / 32;
     this->send_highwater = StreamBuf::SND_BUFSIZE - StreamBuf::SND_BUFSIZE / 32;
-    this->pad            = 0xaa99bb88U;
+    this->notify         = n;
   }
   void release_buffers( void ) { /* release all buffs */
     this->clear_buffers();
@@ -473,7 +515,6 @@ struct EvConnection : public EvSocket, public StreamBuf {
     }
     return false;
   }
-  void close_alloc_error( void ) noexcept; /* if stream buf alloc failed */
   /* PeerData */
   virtual int client_list( char *buf,  size_t buflen ) noexcept;
   virtual bool match( PeerMatchArgs &ka ) noexcept;

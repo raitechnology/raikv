@@ -157,7 +157,7 @@ struct RouteDB : public RouteZip {
       return this->pre_seed[ 63 ];
     return this->pre_seed[ prefix_len ];
   }
-  bool first_hash( uint32_t &pos,  uint32_t &h,  uint32_t &v ) {
+  bool first_hash( size_t &pos,  uint32_t &h,  uint32_t &v ) {
     UIntHashTab * xht = this->rt_hash[ SUB_RTE ];
     if ( xht->first( pos ) ) {
       xht->get( pos, h, v );
@@ -165,7 +165,7 @@ struct RouteDB : public RouteZip {
     }
     return false;
   }
-  bool next_hash( uint32_t &pos,  uint32_t &h,  uint32_t &v ) {
+  bool next_hash( size_t &pos,  uint32_t &h,  uint32_t &v ) {
     UIntHashTab * xht = this->rt_hash[ SUB_RTE ];
     if ( xht->next( pos ) ) {
       xht->get( pos, h, v );
@@ -197,8 +197,9 @@ struct RouteDB : public RouteZip {
   uint32_t get_route( uint16_t prefix_len,  uint32_t hash,
                       uint32_t *&routes ) {
     UIntHashTab * xht = this->rt_hash[ prefix_len ];
-    uint32_t  pos, val;
-    CodeRef * p;
+    size_t        pos;
+    uint32_t      val;
+    CodeRef     * p;
     if ( xht->find( hash, pos, val ) )
       return this->decompress_routes( val, routes, p );
     return 0;
@@ -209,7 +210,8 @@ struct RouteDB : public RouteZip {
   uint32_t push_get_route( uint16_t prefix_len,  uint8_t n,  uint32_t hash,
                            uint32_t *&routes ) {
     UIntHashTab * xht = this->rt_hash[ prefix_len ];
-    uint32_t pos, val;
+    size_t        pos;
+    uint32_t      val;
     if ( xht->find( hash, pos, val ) )
       return this->push_decompress_routes( n, val, routes );
     return 0;

@@ -4,71 +4,74 @@
 namespace rai {
 namespace kv {
 
-template <class Int>
+template <class Int, class Value>
 struct IntHashTabT {
   struct Elem {
-    Int hash;
-    Int val;
+    Int   hash;
+    Value val;
   };
 
-  Int  elem_count,  /* num elems used */
-       tab_mask;    /* tab_size - 1 */
-  Elem tab[ 1 ];
+  size_t elem_count,  /* num elems used */
+         tab_mask;    /* tab_size - 1 */
+  Elem   tab[ 2 ];    /* [ 2 ] to make it aligned on size_t */
 
-  IntHashTabT( Int sz ) : tab_mask( sz - 1 ) {
+  IntHashTabT( size_t sz ) : tab_mask( sz - 1 ) {
     this->clear_all();
   }
+  static size_t align_byte( size_t bits ) {
+    return ( bits + 7 ) / 8;
+  }
   void clear_all( void ) {
-    Int sz = this->tab_mask + 1;
+    size_t sz = this->tab_mask + 1;
     uint8_t * u = (uint8_t *) (void *) &this->tab[ sz ];
-    ::memset( u, 0, ( sz + 7 ) / 8 );
+    ::memset( u, 0, align_byte( sz ) );
     this->elem_count = 0;
   }
   void * operator new( size_t, void *ptr ) { return ptr; }
   void operator delete( void *ptr ) { ::free( ptr ); }
-  Int tab_size( void ) const { return this->tab_mask + 1; }
+  size_t tab_size( void ) const { return this->tab_mask + 1; }
   bool is_empty( void ) const { return this->elem_count == 0; }
-  bool is_used( Int pos ) const {
+  bool is_used( size_t pos ) const {
     const uint8_t * u   = (uint8_t *) (void *) &this->tab[ this->tab_mask + 1 ];
-    const Int       off = pos / 8;
+    const size_t    off = pos / 8;
     const uint8_t   bit = ( 1U << ( pos % 8 ) );
     return ( u[ off ] & bit ) != 0;
   }
-  bool test_set( Int pos ) {
+  bool test_set( size_t pos ) {
     uint8_t     * u   = (uint8_t *) (void *) &this->tab[ this->tab_mask + 1 ];
-    const Int     off = pos / 8;
+    const size_t  off = pos / 8;
     const uint8_t bit = ( 1U << ( pos % 8 ) );
     bool b = ( u[ off ] & bit ) != 0;
     u[ off ] |= bit;
     return b;
   }
   /* set the hash at pos, which should be located using find() */
-  void set( Int h,  Int pos,  Int v ) {
+  void set( Int h,  size_t pos,  Value v ) {
     if ( ! this->test_set( pos ) )
       this->elem_count++;
     this->tab[ pos ].hash = h;
     this->tab[ pos ].val  = v;
   }
-  void get( Int pos,  Int &h,  Int &v ) const {
+  void get( size_t pos,  Int &h,  Value &v ) const {
     h = this->tab[ pos ].hash;
     v = this->tab[ pos ].val;
   }
-  void clear( Int pos ) {
+  void clear( size_t pos ) {
     uint8_t     * u = (uint8_t *) (void *) &this->tab[ this->tab_mask + 1 ];
-    const Int     off = pos / 8;
+    const size_t  off = pos / 8;
     const uint8_t bit = ( 1U << ( pos % 8 ) );
     u[ off ] &= ~bit;
     this->elem_count--;
   }
   /* room for {h,v} array + used bits */
-  static size_t alloc_size( Int sz ) {
-    return sizeof( IntHashTabT ) +
-           ( ( sz - 1 ) * sizeof( Elem ) ) +
-           ( ( sz + 7 ) / 8 * sizeof( uint8_t ) );
+  static size_t alloc_size( size_t sz ) {
+    return ( sizeof( IntHashTabT ) - ( 2 * sizeof( Elem ) ) ) +
+           ( sz * sizeof( Elem ) ) +
+           ( align_byte( sz ) * sizeof( uint8_t ) );
   }
   /* preferred is between load of 33% and 66% */
   size_t preferred_size( void ) const {
-    Int cnt = this->elem_count + this->elem_count / 2;
+    size_t cnt = this->elem_count + this->elem_count / 2;
     return cnt ? ( (size_t) 1 << ( 64 - __builtin_clzl( cnt ) ) ) : 1;
   }
   /* alloc, copy, delete, null argument is ok */
@@ -88,14 +91,14 @@ struct IntHashTabT {
   }
   /* copy from cpy into this, does not check for duplicate entries or resize */
   void copy( const IntHashTabT &cpy ) {
-    Int sz = cpy.tab_size(), cnt = cpy.elem_count;
+    size_t sz = cpy.tab_size(), cnt = cpy.elem_count;
     if ( cnt == 0 )
       return;
-    for ( Int i = 0; i < sz; i++ ) {
+    for ( size_t i = 0; i < sz; i++ ) {
       if ( cpy.is_used( i ) ) {
-        Int h   = cpy.tab[ i ].hash,
-            v   = cpy.tab[ i ].val,
-            pos = h & this->tab_mask;
+        Int   h    = cpy.tab[ i ].hash;
+        Value v    = cpy.tab[ i ].val;
+        size_t pos = h & this->tab_mask;
         for ( ; ; pos = ( pos + 1 ) & this->tab_mask ) {
           if ( ! this->is_used( pos ) ) {
             this->set( h, pos, v );
@@ -107,22 +110,22 @@ struct IntHashTabT {
       }
     }
   }
-  bool first( Int &pos ) const {
+  bool first( size_t &pos ) const {
     pos = 0;
     return this->scan( pos );
   }
-  bool next( Int &pos ) const {
+  bool next( size_t &pos ) const {
     pos++;
     return this->scan( pos );
   }
-  bool scan( Int &pos ) const {
+  bool scan( size_t &pos ) const {
     for ( ; pos < this->tab_size(); pos++ )
       if ( this->is_used( pos ) )
         return true;
     return false;
   }
   /* find hash, return it's position and the value if found */
-  bool find( Int h,  Int &pos,  Int &val ) const {
+  bool find( Int h,  size_t &pos,  Value &val ) const {
     for ( pos = h & this->tab_mask; ; pos = ( pos + 1 ) & this->tab_mask ) {
       if ( ! this->is_used( pos ) )
         return false;
@@ -133,8 +136,9 @@ struct IntHashTabT {
     }
   }
   /* udpate or insert hash */
-  void upsert( Int h,  Int val ) {
-    Int pos, val2;
+  void upsert( Int h,  Value val ) {
+    size_t pos;
+    Value  val2;
     this->find( h, pos, val2 );
     this->set( h, pos, val );
   }
@@ -144,14 +148,14 @@ struct IntHashTabT {
   }
   /* remove by reorganizing table, check the natural position of elems directly
    * following the removed elem, leaving no find() gaps in the table */
-  void remove( Int pos ) {
+  void remove( size_t pos ) {
     this->clear( pos );
     for (;;) {
       pos = ( pos + 1 ) & this->tab_mask;
       if ( ! this->is_used( pos ) )
         break;
-      Int h = this->tab[ pos ].hash,
-          j = h & this->tab_mask;
+      Int    h = this->tab[ pos ].hash;
+      size_t j = h & this->tab_mask;
       if ( pos != j ) {
         this->clear( pos );
         while ( this->is_used( j ) )
@@ -162,8 +166,7 @@ struct IntHashTabT {
   }
 };
 
-typedef IntHashTabT<uint32_t> UIntHashTab;
-typedef IntHashTabT<uint64_t> ULongHashTab;
+typedef IntHashTabT<uint32_t, uint32_t> UIntHashTab;
 
 }
 }

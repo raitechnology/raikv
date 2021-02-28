@@ -109,7 +109,8 @@ RouteZip::make_code_ref_space( uint32_t i,  uint32_t &off ) noexcept
 void
 RouteZip::gc_code_ref_space( void ) noexcept
 {
-  uint32_t i, j = 0, k, e, pos;
+  size_t    pos;
+  uint32_t  i, j = 0, k, e;
   CodeRef * p;
   /* remove from zht */
   for ( i = 0; i < this->code_end; i += e ) {
@@ -165,7 +166,8 @@ RouteZip::compress_routes( uint32_t *routes,  uint32_t rcnt ) noexcept
 {
   CodeRef  * p;
   uint32_t * code, ecnt;
-  uint32_t   h, pos, val, seed;
+  size_t     pos;
+  uint32_t   h, val, seed;
 
   if ( rcnt < 5 ) { /* most likely single value code, skips bsearch */
     h = DeltaCoder::encode( rcnt, routes, 0 );
@@ -204,7 +206,8 @@ uint32_t
 RouteZip::decompress_routes( uint32_t r,  uint32_t *&routes,
                              CodeRef *&p ) noexcept
 {
-  uint32_t rcnt, pos, val;
+  size_t   pos;
+  uint32_t rcnt, val;
 
   if ( DeltaCoder::is_not_encoded( r ) ) { /* if is a multi value code */
     if ( this->zht->find( r, pos, val ) ) {
@@ -231,7 +234,8 @@ RouteZip::push_decompress_routes( uint8_t n,  uint32_t r,
                                   uint32_t *&routes ) noexcept
 {
   CodeRef * p;
-  uint32_t  rcnt, pos, val;
+  size_t    pos;
+  uint32_t  rcnt, val;
 
   if ( DeltaCoder::is_not_encoded( r ) ) { /* if is a multi value code */
     if ( this->zht->find( r, pos, val ) ) {
@@ -257,7 +261,8 @@ RouteZip::decompress_one( uint32_t r ) noexcept
 {
   if ( DeltaCoder::is_not_encoded( r ) ) { /* if is a multi value code */
     CodeRef * p;
-    uint32_t  pos, val;
+    size_t    pos;
+    uint32_t  val;
     if ( this->zht->find( r, pos, val ) ) {
       p = (CodeRef *) (void *) &this->code_buf[ val ];
       r = p->code;
@@ -273,7 +278,8 @@ uint32_t
 RouteDB::get_route_count( uint16_t prefix_len,  uint32_t hash ) noexcept
 {
   UIntHashTab * xht = this->rt_hash[ prefix_len ];
-  uint32_t pos, val, off;
+  size_t        pos;
+  uint32_t      val, off;
   if ( ! xht->find( hash, pos, val ) )
     return 0;
   if ( DeltaCoder::is_not_encoded( val ) ) {
@@ -289,9 +295,10 @@ uint32_t
 RouteDB::add_route( uint16_t prefix_len,  uint32_t hash,  uint32_t r ) noexcept
 {
   UIntHashTab * xht = this->rt_hash[ prefix_len ];
-  uint32_t   pos, val, rcnt = 0, xcnt = 0;
-  uint32_t * routes, tmp_route;
-  CodeRef  * p = NULL;
+  size_t        pos;
+  uint32_t      val, rcnt = 0, xcnt = 0;
+  uint32_t    * routes, tmp_route;
+  CodeRef     * p = NULL;
   /* find and decompress routes */
   if ( xht->find( hash, pos, val ) ) {
     rcnt = this->decompress_routes( val, routes, p );
@@ -323,9 +330,10 @@ uint32_t
 RouteDB::del_route( uint16_t prefix_len,  uint32_t hash,  uint32_t r ) noexcept
 {
   UIntHashTab * xht = this->rt_hash[ prefix_len ];
-  uint32_t   pos, val, rcnt = 0, xcnt = 0;
-  uint32_t * routes;
-  CodeRef  * p = NULL;
+  size_t        pos;
+  uint32_t      val, rcnt = 0, xcnt = 0;
+  uint32_t    * routes;
+  CodeRef     * p = NULL;
   /* find and dcompress routes */
   if ( xht->find( hash, pos, val ) ) {
     rcnt = this->decompress_routes( val, routes, p );
@@ -384,7 +392,8 @@ RouteDB::is_member( uint16_t prefix_len,  uint32_t hash,
                     uint32_t x ) noexcept
 {
   UIntHashTab * xht = this->rt_hash[ prefix_len ];
-  uint32_t pos, r;
+  size_t        pos;
+  uint32_t      r;
 
   if ( ! xht->find( hash, pos, r ) )
     return false;

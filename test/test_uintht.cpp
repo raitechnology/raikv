@@ -9,21 +9,22 @@
 using namespace rai;
 using namespace kv;
 
-template <class Int, uint64_t iters>
+template <class Int, class Value, size_t iters>
 void
-do_test( void )
+do_test( const char *kind )
 {
-  IntHashTabT<Int> *ht = IntHashTabT<Int>::resize( NULL );
-  const char *s = ( sizeof( Int ) == 4 ? "uint32" : "uint64" );
-  Int i, rszcnt = 0, pos, v;
+  IntHashTabT<Int,Value> *ht = IntHashTabT<Int,Value>::resize( NULL );
+  size_t   pos, i, rszcnt = 0;
+  Value    v;
   uint64_t t;
 
-  printf( "\ninsert %lu elements (%s):\n", iters, s );
+  printf( "\nsizeof( 64 ): %lu\n", IntHashTabT<Int,Value>::alloc_size( 64 ) );
+  printf( "insert %lu elements (%s):\n", iters, kind );
   t = kv_current_monotonic_time_ns();
   for ( i = 0; i < iters; i++ ) {
-    ht->upsert( kv_crc_c( &i, sizeof( i ), 0 ), i );
+    ht->upsert( Int( kv_crc_c( &i, sizeof( i ), 0 ) ), Value( i ) );
     if ( ht->need_resize() ) {
-      ht = IntHashTabT<Int>::resize( ht );
+      ht = IntHashTabT<Int,Value>::resize( ht );
       rszcnt++;
     }
   }
@@ -32,10 +33,10 @@ do_test( void )
   printf( "count %lu\n", (uint64_t) ht->elem_count );
   printf( "resized %lu\n", (uint64_t) rszcnt );
 
-  printf( "\nfind all %lu elements (%s):\n", iters, s );
+  printf( "\nfind all %lu elements (%s):\n", iters, kind );
   t = kv_current_monotonic_time_ns();
   for ( i = 0; i < iters; i++ ) {
-    if ( ! ht->find( kv_crc_c( &i, sizeof( i ), 0 ), pos, v ) ) {
+    if ( ! ht->find( Int( kv_crc_c( &i, sizeof( i ), 0 ) ), pos, v ) ) {
       fprintf( stderr, "not found %lu\n", (uint64_t) i );
     }
     else if ( v != i ) {
@@ -46,10 +47,10 @@ do_test( void )
   printf( "ns per find %.2f\n",  (double) t / (double) iters );
   printf( "count %lu\n", (uint64_t) ht->elem_count );
 
-  printf( "\ndelete even elements (%s):\n", s );
+  printf( "\ndelete even elements (%s):\n", kind );
   t = kv_current_monotonic_time_ns();
   for ( i = 0; i < iters; i += 2 ) {
-    if ( ! ht->find( kv_crc_c( &i, sizeof( i ), 0 ), pos, v ) ) {
+    if ( ! ht->find( Int( kv_crc_c( &i, sizeof( i ), 0 ) ), pos, v ) ) {
       fprintf( stderr, "not found %lu\n", (uint64_t) i );
     }
     else {
@@ -63,14 +64,14 @@ do_test( void )
 
   t = kv_current_monotonic_time_ns();
   if ( ht->need_resize() )
-    ht = IntHashTabT<Int>::resize( ht );
+    ht = IntHashTabT<Int,Value>::resize( ht );
   t = kv_current_monotonic_time_ns() - t;
   printf( "resize %lu ns\n", t );
 
-  printf( "\ndelete odd elements (%s):\n", s );
+  printf( "\ndelete odd elements (%s):\n", kind );
   t = kv_current_monotonic_time_ns();
   for ( i = 1; i < iters; i += 2 ) {
-    if ( ! ht->find( kv_crc_c( &i, sizeof( i ), 0 ), pos, v ) ) {
+    if ( ! ht->find( Int( kv_crc_c( &i, sizeof( i ), 0 ) ), pos, v ) ) {
       fprintf( stderr, "not found %lu\n", (uint64_t) i );
     }
     else {
@@ -83,16 +84,41 @@ do_test( void )
 
   t = kv_current_monotonic_time_ns();
   if ( ht->need_resize() )
-    ht = IntHashTabT<Int>::resize( ht );
+    ht = IntHashTabT<Int,Value>::resize( ht );
   t = kv_current_monotonic_time_ns() - t;
   printf( "resize %lu ns\n", t );
 }
 
+struct Hash {
+  uint32_t hash[ 4 ];
+  Hash() {}
+  Hash( uint32_t h ) {
+    for ( size_t i = 0; i < 4; i++ )
+      this->hash[ i ] = h;
+  }
+  bool operator==( const Hash &h1 ) const {
+    for ( size_t i = 0; i < 4; i++ )
+      if ( this->hash[ i ] != h1.hash[ i ] )
+        return false;
+    return true;
+  }
+  Hash &operator=( const Hash &h1 ) {
+    for ( size_t i = 0; i < 4; i++ )
+      this->hash[ i ] = h1.hash[ i ];
+    return *this;
+  }
+  size_t operator&( size_t mod ) const {
+    return ( ( (size_t) this->hash[ 0 ] << 32 ) |
+               (size_t) this->hash[ 1 ] ) & mod;
+  }
+};
 int
 main( void )
 {
-  do_test<uint32_t, 100000>();
-  do_test<uint64_t, 100000>();
+  const char *t1 = "uint32_t*2", *t2 = "uint64_t*2", *t3 = "Hash*uint32_t";
+  do_test<uint32_t, uint32_t, 100000>( t1 );
+  do_test<uint64_t, uint64_t, 100000>( t2 );
+  do_test<Hash, uint32_t, 100000>( t3 );
 
   return 0;
 }
