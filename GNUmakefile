@@ -95,7 +95,7 @@ libraikv_objs  := $(addprefix $(objd)/, $(addsuffix .o, $(libraikv_files)))
 libraikv_dbjs  := $(addprefix $(objd)/, $(addsuffix .fpic.o, $(libraikv_files)))
 libraikv_deps  := $(addprefix $(dependd)/, $(addsuffix .d, $(libraikv_files))) \
                   $(addprefix $(dependd)/, $(addsuffix .fpic.d, $(libraikv_files)))
-libraikv_spec  := $(version)-$(build_num)
+libraikv_spec  := $(version)-$(build_num)_$(git_hash)
 libraikv_ver   := $(major_num).$(minor_num)
 
 $(libd)/libraikv.a: $(libraikv_objs)
