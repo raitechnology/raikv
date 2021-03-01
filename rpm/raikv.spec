@@ -13,6 +13,7 @@ BuildRequires:  gcc-c++
 BuildRequires:  chrpath
 BuildRequires:  systemd
 BuildRequires:  pcre2-devel
+BuildRequires:  git-core
 Requires:       pcre2
 Requires(pre): shadow-utils
 Requires(post): /sbin/ldconfig
