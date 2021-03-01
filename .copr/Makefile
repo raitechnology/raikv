@@ -8,12 +8,13 @@ git_hash    := $(shell git rev-parse --short=8 HEAD)
 major_num   := 1
 minor_num   := 10
 patch_num   := 0
-build_num   := 74
+build_num   := 75
 version     := $(major_num).$(minor_num).$(patch_num)
 ver_build   := $(version)-$(build_num)
 name_ver    := $(name)-$(ver_build)
 rpm_src_dir := rpmbuild/SOURCES/$(name)-$(version)
-srctree     := src include GNUmakefile .copr deb rpm test config README.md graph doc
+srctree     := config .copr deb doc .git GNUmakefile graph include LICENSE README.md rpm src test
+
 
 .PHONY: srpm
 srpm: $(outdir)/$(name)-$(version)-$(release).src.rpm
