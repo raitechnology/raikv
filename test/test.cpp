@@ -195,6 +195,7 @@ struct Test {
     t->datasize   = this->datasize;
     return t;
   }
+  void hash_stride( KeyBufAligned *kbar,  uint32_t stride,  uint64_t *hash );
 };
 
 void
@@ -307,6 +308,23 @@ Test::test_one( void ) noexcept
   }
 }
 
+void
+Test::hash_stride( KeyBufAligned *kbar,  uint32_t stride,  uint64_t *hash )
+{
+  uint32_t j;
+  /* this uses SIMD hashing, it looks like overlapping hashing and
+   * prefetching is better than SIMD in this test */
+  for ( j = 0; j + 4 <= stride; j += 4 )
+    this->hs.hash( kbar[ j ], kbar[ j + 1 ], kbar[ j + 2 ], kbar[ j + 3 ],
+                   &hash[ j * 2 ] );
+  if ( j + 2 <= stride ) {
+    this->hs.hash( kbar[ j ], kbar[ j + 1 ], &hash[ j * 2 ] );
+    j += 2;
+  }
+  if ( j < stride )
+    this->hs.hash( kbar[ j ], hash[ j * 2 ], hash[ j * 2 + 1 ] );
+}
+
 /* test latency of a key = integer between 0 -> total_count */
 void
 Test::test_int( void ) noexcept
@@ -318,7 +336,8 @@ Test::test_int( void ) noexcept
   uint64_t i, k, total, r;
   uint32_t j;
   uint64_t do_bits = 0, /* find to insert ratio */
-           next    = 0;
+           next    = 0/*,
+         * hash    = NULL*/;
   uint8_t  find_b  = (uint8_t) ( 256.0 * this->ratio_pct / 100.0 ),
            do_cnt  = 0,
            which   = ( this->use_find ? 1 : 0 ); /* which == 1 for find */
@@ -343,6 +362,7 @@ Test::test_int( void ) noexcept
     total = (uint64_t) ( 1000000.0 * this->num_secs ); /* estimate */
   else
     total = 10 * 1000000;
+  /*hash = (uint64_t *) ::malloc( sizeof( hash[ 0 ] ) * stride * 2 );*/
   while ( ! sighndl.signaled ) {
     /* reinitialze */
     kar  = KeyCtx::new_array( this->map, this->dbx_id, kar, stride );
@@ -387,8 +407,10 @@ Test::test_int( void ) noexcept
         for ( j = 0; j < stride; j++ )
           kbar[ j ].set( i + j );
       }
-      /* hash and prefetch */
+      /*this->hash_stride( &kbar[ 0 ], stride, hash );*/
       for ( j = 0; j < stride; j++ ) {
+        /*kar[ j ].set_key( kbar[ j ] );
+        kar[ j ].set_hash( hash[ j * 2 ], hash[ j * 2 + 1 ]  );*/
         kar[ j ].set_key_hash( kbar[ j ] );
         kar[ j ].prefetch( which );
         kar[ j ].set( evict_acquire );

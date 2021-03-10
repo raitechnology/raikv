@@ -25,6 +25,12 @@
  */
 
 uint32_t
+kv_hash_uint( uint32_t i )
+{
+  return _mm_crc32_u32( 0, i );
+}
+
+uint32_t
 kv_crc_c( const void *p,  size_t sz,  uint32_t seed )
 {
   const uint8_t * s =   (uint8_t *) p;
@@ -830,8 +836,8 @@ kv_hash_spooky128( const void *p, size_t sz, uint64_t *h1, uint64_t *h2 )
 /* based on falkhash (https://github.com/gamozolabs/falkhash)
  * 3 rounds of AES, similar to go internal:
  * https://github.com/golang/go/blob/master/src/runtime/asm_amd64.s#L886 */
-static void
-hash_aes128( const void *p, size_t sz, uint64_t *x1, uint64_t *x2 )
+void
+kv_hash_aes128( const void *p, size_t sz, uint64_t *x1, uint64_t *x2 )
 {
   __m128i data[ 8 ], hash, seed = _mm_set_epi64x( *x1 + sz, *x2 );
   size_t i = 0;
@@ -907,15 +913,10 @@ uint64_t
 kv_hash_aes64( const void *p, size_t sz, uint64_t seed )
 {
   uint64_t h1 = seed, h2 = seed;
-  hash_aes128( p, sz, &h1, &h2 );
+  kv_hash_aes128( p, sz, &h1, &h2 );
   return h1;
 }
 
-void
-kv_hash_aes128( const void *p, size_t sz, uint64_t *h1, uint64_t *h2 )
-{
-  hash_aes128( p, sz, h1, h2 );
-}
 #endif /* USE_KV_AES_HASH */
 
 #ifdef USE_KV_MEOW_HASH
@@ -924,127 +925,894 @@ kv_hash_aes128( const void *p, size_t sz, uint64_t *h1, uint64_t *h2 )
  * initial state and uses 2 AESDEC rounds instead of 1.
  */
 static inline __m128i
-Meow128_AESDEC_Memx2( __m128i R, const uint8_t *S )
+Meow_AESDECx2( __m128i R, __m128i S )
 {
-  R = _mm_aesdec_si128((R), _mm_loadu_si128((__m128i *)(S)));
-  R = _mm_aesdec_si128((R), _mm_loadu_si128((__m128i *)(S)));
+  R = _mm_aesdec_si128( R, S );
+  R = _mm_aesdec_si128( R, S );
   return R;
 }
 
 static inline __m128i
-Meow128_AESDECx2( __m128i R, __m128i S )
+Meow_AESDEC_Memx2( __m128i R, const uint8_t *S )
 {
-  R = _mm_aesdec_si128((R), (S));
-  R = _mm_aesdec_si128((R), (S));
-  return R;
+  __m128i Q = _mm_loadu_si128( (__m128i *) S );
+  return Meow_AESDECx2( R, Q );
 }
 
-static void
-hash_meow128( const void *p, size_t sz, uint64_t *x1, uint64_t *x2 )
+static const uint8_t MeowShiftAdjust[] __attribute__((__aligned__(64))) =
+{0,1,2,3,         4,5,6,7,
+ 8,9,10,11,       12,13,14,15,
+ 128,128,128,128, 128,128,128,128,
+ 128,128,128,128, 128,128,128,0};
+static const uint8_t MeowMaskLen[] __attribute__((__aligned__(64))) =
+{255,255,255,255, 255,255,255,255,
+ 255,255,255,255, 255,255,255,255,
+ 0,0,0,0,         0,0,0,0,
+ 0,0,0,0,         0,0,0,0};
+static const uint8_t MeowS0Init[] __attribute__((__aligned__(64))) =
+{ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9,10,11,12,13,14,15};
+static const uint8_t MeowS1Init[] __attribute__((__aligned__(64))) =
+{16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31};
+static const uint8_t MeowS2Init[] __attribute__((__aligned__(64))) =
+{32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47};
+static const uint8_t MeowS3Init[] __attribute__((__aligned__(64))) =
+{48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63};
+
+/* Load trailing bytes into xmm reg,
+ * the Len8 is size & 7,
+ * the Len128 is size & 0x30, which is ( 32 | 16 ) */
+static inline __m128i
+Meow_AESDECx2_Partial( __m128i R, const uint8_t *S, uint32_t Len8,
+                       uint32_t Len128 )
 {
-  static const uint8_t MeowShiftAdjust[] = {0,1,2,3,         4,5,6,7,
-                                            8,9,10,11,       12,13,14,15,
-                                            128,128,128,128, 128,128,128,128,
-                                            128,128,128,128, 128,128,128,0};
-  static const uint8_t MeowMaskLen[]     = {255,255,255,255, 255,255,255,255,
-                                            255,255,255,255, 255,255,255,255,
-                                            0,0,0,0,         0,0,0,0,
-                                            0,0,0,0,         0,0,0,0};
-  static const uint8_t MeowS0Init[]      = { 0, 1, 2, 3,  4, 5, 6, 7,
-                                             8, 9,10,11,  12,13,14,15};
-  static const uint8_t MeowS1Init[]      = {16,17,18,19,  20,21,22,23,
-                                            24,25,26,27,  28,29,30,31};
-  static const uint8_t MeowS2Init[]      = {32,33,34,35,  36,37,38,39,
-                                            40,41,42,43,  44,45,46,47};
-  static const uint8_t MeowS3Init[]      = {48,49,50,51,  52,53,54,55,
-                                            56,57,58,59,  60,61,62,63};
-  __m128i S0 = *(__m128i *) MeowS0Init;
-  __m128i S1 = *(__m128i *) MeowS1Init;
-  __m128i S2 = *(__m128i *) MeowS2Init;
-  __m128i S3 = *(__m128i *) MeowS3Init;
+  __m128i         Partial;
+  const uint8_t * Overhang = S + Len128;
+  uint32_t        Align    = ((size_t)(intptr_t) Overhang) & 15;
 
-  const uint8_t * Source = (const uint8_t *) p;
-  size_t          Len    = sz;
-  const uint32_t  Len8   = (uint32_t) Len & 15;
-  const uint32_t  Len128 = (uint32_t) Len & 48;
+  if ( Align != 0 ) { /* presumes page size is >= 4k */
+    uint32_t End = ((size_t)(intptr_t) Overhang) & (size_t) (4096 - 1);
 
-  __m128i Mixer = _mm_set_epi64x(*x2 + sz + 1, *x1 - sz);
-  S0 ^= Mixer;
-  S1 ^= Mixer;
-  S2 ^= Mixer;
-  S3 ^= Mixer;
+    if ( End <= (4096 - 16) || (End + Len8) > 4096 )
+      Align = 0;
 
-  while ( Len >= 64 ) {
-    S0 = Meow128_AESDEC_Memx2(S0, Source);
-    S1 = Meow128_AESDEC_Memx2(S1, Source + 16);
-    S2 = Meow128_AESDEC_Memx2(S2, Source + 32);
-    S3 = Meow128_AESDEC_Memx2(S3, Source + 48);
+    Partial = _mm_shuffle_epi8(
+      _mm_loadu_si128(
+        (__m128i *)( Overhang - Align ) ),
+          _mm_loadu_si128( (__m128i *) &MeowShiftAdjust[ Align ] ) );
 
-    Len    -= 64;
-    Source += 64;
+    Partial =
+      _mm_and_si128( Partial,
+        _mm_loadu_si128( (__m128i *) &MeowMaskLen[ 16 - Len8 ] ) );
   }
+  else {
+    Partial =
+      _mm_and_si128( *(__m128i *) Overhang,
+        _mm_loadu_si128( (__m128i *) &MeowMaskLen[ 16 - Len8 ] ) );
+  }
+  return Meow_AESDECx2( R, Partial );
+}
 
-  if ( Len8 ) {
-    __m128i         Partial;
-    const uint8_t * Overhang = Source + Len128;
-    uint32_t        Align    = ((size_t)(intptr_t) Overhang) & 15;
+#define Declare_Meow( S0, S1, S2, S3 ) \
+  __m128i S0 = *(__m128i *) MeowS0Init; \
+  __m128i S1 = *(__m128i *) MeowS1Init; \
+  __m128i S2 = *(__m128i *) MeowS2Init; \
+  __m128i S3 = *(__m128i *) MeowS3Init
 
-    if ( Align != 0 ) { /* presumes page size is >= 4k */
-      uint32_t End = ((size_t)(intptr_t) Overhang) & (size_t) (4096 - 1);
+#define Mix_Meow( S3, S2, S1, S0, Mixer ) do { \
+  S3 = _mm_aesdec_si128( S3, Mixer ); \
+  S2 = _mm_aesdec_si128( S2, Mixer ); \
+  S1 = _mm_aesdec_si128( S1, Mixer ); \
+  S0 = _mm_aesdec_si128( S0, Mixer ); \
+} while ( 0 )
 
-      if ( End <= (4096 - 16) || (End + Len8) > 4096 )
-        Align = 0;
+#define Mix_Meow1( S1, S0, Mixer ) do { \
+  S1 = _mm_aesdec_si128( S1, Mixer ); \
+  S0 = _mm_aesdec_si128( S0, Mixer ); \
+} while ( 0 )
 
-      Partial = _mm_shuffle_epi8(
-        _mm_loadu_si128(
-          (__m128i *)( Overhang - Align ) ),
-            _mm_loadu_si128( (__m128i *) &MeowShiftAdjust[ Align ] ) );
+#define Compress_Meow( S2, S3, S0, S1 ) do { \
+  S2 = _mm_aesdec_si128( S2, S3 ); \
+  S0 = _mm_aesdec_si128( S0, S1 ); \
+} while( 0 )
 
-      Partial =
-        _mm_and_si128( Partial,
-          _mm_loadu_si128( (__m128i *) &MeowMaskLen[ 16 - Len8 ] ) );
+#define Compress_Meow2( S2, S3, S0, S1, S4, M ) do { \
+  S2 = _mm_aesdec_si128( S2, S3 ); \
+  S0 = _mm_aesdec_si128( S0, S1 ); \
+  S4 = _mm_aesdec_si128( S4, M ); \
+} while( 0 )
+
+#define Xor_Meow( S0, S1, S2, S3, Mixer ) do { \
+  S0 ^= Mixer; S1 ^= Mixer; S2 ^= Mixer; S3 ^= Mixer; \
+} while( 0 )
+
+#define Meow_Loop64( S0, S1, S2, S3, p, sz ) do { \
+  const uint8_t * Source = (const uint8_t *) p; \
+  size_t          Len    = sz; \
+ \
+  do { \
+    S0 = Meow_AESDEC_Memx2( S0, Source ); \
+    S1 = Meow_AESDEC_Memx2( S1, Source + 16 ); \
+    S2 = Meow_AESDEC_Memx2( S2, Source + 32 ); \
+    S3 = Meow_AESDEC_Memx2( S3, Source + 48 ); \
+ \
+    Len    -= 64; \
+    Source += 64; \
+  } while ( Len > 0 ); \
+} while( 0 )
+
+#define Meow_Loop_Trail( S0, S1, S2, S3, Source, sz ) do { \
+  const uint32_t Len8   = (uint32_t) sz & 15; \
+  const uint32_t Len128 = (uint32_t) sz & 48; \
+  if ( Len8 ) \
+    S3 = Meow_AESDECx2_Partial( S3, Source, Len8, Len128 ); \
+  switch ( Len128 ) { \
+    case 48: S2 = Meow_AESDEC_Memx2( S2, Source + 32 ); /* FALLTHRU */ \
+    case 32: S1 = Meow_AESDEC_Memx2( S1, Source + 16 ); /* FALLTHRU */ \
+    case 16: S0 = Meow_AESDEC_Memx2( S0, Source ); break; \
+  } \
+} while( 0 )
+
+#define Meow_Loop( S0, S1, S2, S3, p, sz ) do { \
+  const uint8_t * Source = (const uint8_t *) p; \
+  size_t          Len    = sz; \
+ \
+  while ( Len >= 64 ) { \
+    S0 = Meow_AESDEC_Memx2( S0, Source ); \
+    S1 = Meow_AESDEC_Memx2( S1, Source + 16 ); \
+    S2 = Meow_AESDEC_Memx2( S2, Source + 32 ); \
+    S3 = Meow_AESDEC_Memx2( S3, Source + 48 ); \
+ \
+    Len    -= 64; \
+    Source += 64; \
+  } \
+  Meow_Loop_Trail( S0, S1, S2, S3, Source, sz ); \
+} while( 0 )
+
+#define Meow_Loop_2( S0, S1, S2, S3, S4, S5, S6, S7, p, p2, sz ) do {\
+  const uint8_t * Source  = (const uint8_t *) p; \
+  const uint8_t * Source2 = (const uint8_t *) p2; \
+  size_t          Len     = sz; \
+  const uint32_t  Len8    = (uint32_t) Len & 15; \
+  const uint32_t  Len128  = (uint32_t) Len & 48; \
+ \
+  while ( Len >= 64 ) { \
+    S0 = Meow_AESDEC_Memx2( S0, Source ); \
+    S1 = Meow_AESDEC_Memx2( S1, Source + 16 ); \
+    S2 = Meow_AESDEC_Memx2( S2, Source + 32 ); \
+    S3 = Meow_AESDEC_Memx2( S3, Source + 48 ); \
+    S4 = Meow_AESDEC_Memx2( S4, Source2 ); \
+    S5 = Meow_AESDEC_Memx2( S5, Source2 + 16 ); \
+    S6 = Meow_AESDEC_Memx2( S6, Source2 + 32 ); \
+    S7 = Meow_AESDEC_Memx2( S7, Source2 + 48 ); \
+ \
+    Len     -= 64; \
+    Source  += 64; \
+    Source2 += 64; \
+  } \
+  if ( Len8 ) { \
+    S3 = Meow_AESDECx2_Partial( S3, Source, Len8, Len128 ); \
+    S7 = Meow_AESDECx2_Partial( S7, Source2, Len8, Len128 ); \
+  } \
+  switch ( Len128 ) { \
+    case 48: S2 = Meow_AESDEC_Memx2( S2, Source + 32 ); /* FALLTHRU */ \
+             S6 = Meow_AESDEC_Memx2( S6, Source2 + 32 ); /* FALLTHRU */ \
+    case 32: S1 = Meow_AESDEC_Memx2( S1, Source + 16 ); /* FALLTHRU */ \
+             S5 = Meow_AESDEC_Memx2( S5, Source2 + 16 ); /* FALLTHRU */ \
+    case 16: S0 = Meow_AESDEC_Memx2( S0, Source ); \
+             S4 = Meow_AESDEC_Memx2( S4, Source2 ); break; \
+  } \
+} while( 0 )
+
+#define Meow_Loop_4( S0, S1, S2, S3, S4, S5, S6, S7, S8, S9, S10, S11, S12, S13, S14, S15, p, p2, p3, p4, sz ) do {\
+  const uint8_t * Source  = (const uint8_t *) p; \
+  const uint8_t * Source2 = (const uint8_t *) p2; \
+  const uint8_t * Source3 = (const uint8_t *) p3; \
+  const uint8_t * Source4 = (const uint8_t *) p4; \
+  size_t          Len     = sz; \
+  const uint32_t  Len8    = (uint32_t) Len & 15; \
+  const uint32_t  Len128  = (uint32_t) Len & 48; \
+ \
+  while ( Len >= 64 ) { \
+    S0 = Meow_AESDEC_Memx2( S0, Source ); \
+    S1 = Meow_AESDEC_Memx2( S1, Source + 16 ); \
+    S2 = Meow_AESDEC_Memx2( S2, Source + 32 ); \
+    S3 = Meow_AESDEC_Memx2( S3, Source + 48 ); \
+    S4 = Meow_AESDEC_Memx2( S4, Source2 ); \
+    S5 = Meow_AESDEC_Memx2( S5, Source2 + 16 ); \
+    S6 = Meow_AESDEC_Memx2( S6, Source2 + 32 ); \
+    S7 = Meow_AESDEC_Memx2( S7, Source2 + 48 ); \
+    S8 = Meow_AESDEC_Memx2( S8, Source3 ); \
+    S9 = Meow_AESDEC_Memx2( S9, Source3 + 16 ); \
+    S10 = Meow_AESDEC_Memx2( S10, Source3 + 32 ); \
+    S11 = Meow_AESDEC_Memx2( S11, Source3 + 48 ); \
+    S12 = Meow_AESDEC_Memx2( S12, Source4 ); \
+    S13 = Meow_AESDEC_Memx2( S13, Source4 + 16 ); \
+    S14 = Meow_AESDEC_Memx2( S14, Source4 + 32 ); \
+    S15 = Meow_AESDEC_Memx2( S15, Source4 + 48 ); \
+ \
+    Len     -= 64; \
+    Source  += 64; \
+    Source2 += 64; \
+    Source3 += 64; \
+    Source4 += 64; \
+  } \
+  if ( Len8 ) { \
+    S3 = Meow_AESDECx2_Partial( S3, Source, Len8, Len128 ); \
+    S7 = Meow_AESDECx2_Partial( S7, Source2, Len8, Len128 ); \
+    S11 = Meow_AESDECx2_Partial( S11, Source3, Len8, Len128 ); \
+    S15 = Meow_AESDECx2_Partial( S15, Source4, Len8, Len128 ); \
+  } \
+  switch ( Len128 ) { \
+    case 48: S2 = Meow_AESDEC_Memx2( S2, Source + 32 ); /* FALLTHRU */ \
+             S6 = Meow_AESDEC_Memx2( S6, Source2 + 32 ); /* FALLTHRU */ \
+             S10 = Meow_AESDEC_Memx2( S10, Source3 + 32 ); /* FALLTHRU */ \
+             S14 = Meow_AESDEC_Memx2( S14, Source4 + 32 ); /* FALLTHRU */ \
+    case 32: S1 = Meow_AESDEC_Memx2( S1, Source + 16 ); /* FALLTHRU */ \
+             S5 = Meow_AESDEC_Memx2( S5, Source2 + 16 ); /* FALLTHRU */ \
+             S9 = Meow_AESDEC_Memx2( S9, Source3 + 16 ); /* FALLTHRU */ \
+             S13 = Meow_AESDEC_Memx2( S13, Source4 + 16 ); /* FALLTHRU */ \
+    case 16: S0 = Meow_AESDEC_Memx2( S0, Source ); \
+             S4 = Meow_AESDEC_Memx2( S4, Source2 ); \
+             S8 = Meow_AESDEC_Memx2( S8, Source3 ); \
+             S12 = Meow_AESDEC_Memx2( S12, Source4 ); break; \
+  } \
+} while( 0 )
+
+#define Meow_Loop_8( S0, S1, S2, S3, S4, S5, S6, S7, S8, \
+                     S9, S10, S11, S12, S13, S14, S15, \
+                     S16, S17, S18, S19, S20, S21, S22, S23, \
+                     S24, S25, S26, S27, S28, S29, S30, S31, \
+                     p, p2, p3, p4, p5, p6, p7, p8, sz ) do {\
+  const uint8_t * Source  = (const uint8_t *) p; \
+  const uint8_t * Source2 = (const uint8_t *) p2; \
+  const uint8_t * Source3 = (const uint8_t *) p3; \
+  const uint8_t * Source4 = (const uint8_t *) p4; \
+  const uint8_t * Source5 = (const uint8_t *) p5; \
+  const uint8_t * Source6 = (const uint8_t *) p6; \
+  const uint8_t * Source7 = (const uint8_t *) p7; \
+  const uint8_t * Source8 = (const uint8_t *) p8; \
+  size_t          Len     = sz; \
+  const uint32_t  Len8    = (uint32_t) Len & 15; \
+  const uint32_t  Len128  = (uint32_t) Len & 48; \
+ \
+  while ( Len >= 64 ) { \
+    S0 = Meow_AESDEC_Memx2( S0, Source ); \
+    S1 = Meow_AESDEC_Memx2( S1, Source + 16 ); \
+    S2 = Meow_AESDEC_Memx2( S2, Source + 32 ); \
+    S3 = Meow_AESDEC_Memx2( S3, Source + 48 ); \
+    S4 = Meow_AESDEC_Memx2( S4, Source2 ); \
+    S5 = Meow_AESDEC_Memx2( S5, Source2 + 16 ); \
+    S6 = Meow_AESDEC_Memx2( S6, Source2 + 32 ); \
+    S7 = Meow_AESDEC_Memx2( S7, Source2 + 48 ); \
+    S8 = Meow_AESDEC_Memx2( S8, Source3 ); \
+    S9 = Meow_AESDEC_Memx2( S9, Source3 + 16 ); \
+    S10 = Meow_AESDEC_Memx2( S10, Source3 + 32 ); \
+    S11 = Meow_AESDEC_Memx2( S11, Source3 + 48 ); \
+    S12 = Meow_AESDEC_Memx2( S12, Source4 ); \
+    S13 = Meow_AESDEC_Memx2( S13, Source4 + 16 ); \
+    S14 = Meow_AESDEC_Memx2( S14, Source4 + 32 ); \
+    S15 = Meow_AESDEC_Memx2( S15, Source4 + 48 ); \
+    S16 = Meow_AESDEC_Memx2( S16, Source5 ); \
+    S17 = Meow_AESDEC_Memx2( S17, Source5 + 16 ); \
+    S18 = Meow_AESDEC_Memx2( S18, Source5 + 32 ); \
+    S19 = Meow_AESDEC_Memx2( S19, Source5 + 48 ); \
+    S20 = Meow_AESDEC_Memx2( S20, Source6 ); \
+    S21 = Meow_AESDEC_Memx2( S21, Source6 + 16 ); \
+    S22 = Meow_AESDEC_Memx2( S22, Source6 + 32 ); \
+    S23 = Meow_AESDEC_Memx2( S23, Source6 + 48 ); \
+    S24 = Meow_AESDEC_Memx2( S24, Source7 ); \
+    S25 = Meow_AESDEC_Memx2( S25, Source7 + 16 ); \
+    S26 = Meow_AESDEC_Memx2( S26, Source7 + 32 ); \
+    S27 = Meow_AESDEC_Memx2( S27, Source7 + 48 ); \
+    S28 = Meow_AESDEC_Memx2( S28, Source8 ); \
+    S29 = Meow_AESDEC_Memx2( S29, Source8 + 16 ); \
+    S30 = Meow_AESDEC_Memx2( S30, Source8 + 32 ); \
+    S31 = Meow_AESDEC_Memx2( S31, Source8 + 48 ); \
+\
+    Len     -= 64; \
+    Source  += 64; Source2 += 64; \
+    Source3 += 64; Source4 += 64; \
+    Source5 += 64; Source6 += 64; \
+    Source7 += 64; Source8 += 64; \
+  } \
+  if ( Len8 ) { \
+    S3 = Meow_AESDECx2_Partial( S3, Source, Len8, Len128 ); \
+    S7 = Meow_AESDECx2_Partial( S7, Source2, Len8, Len128 ); \
+    S11 = Meow_AESDECx2_Partial( S11, Source3, Len8, Len128 ); \
+    S15 = Meow_AESDECx2_Partial( S15, Source4, Len8, Len128 ); \
+    S19 = Meow_AESDECx2_Partial( S19, Source5, Len8, Len128 ); \
+    S23 = Meow_AESDECx2_Partial( S23, Source6, Len8, Len128 ); \
+    S27 = Meow_AESDECx2_Partial( S27, Source7, Len8, Len128 ); \
+    S31 = Meow_AESDECx2_Partial( S31, Source8, Len8, Len128 ); \
+  } \
+  switch ( Len128 ) { \
+    case 48: S2 = Meow_AESDEC_Memx2( S2, Source + 32 ); /* FALLTHRU */ \
+             S6 = Meow_AESDEC_Memx2( S6, Source2 + 32 ); /* FALLTHRU */ \
+             S10 = Meow_AESDEC_Memx2( S10, Source3 + 32 ); /* FALLTHRU */ \
+             S14 = Meow_AESDEC_Memx2( S14, Source4 + 32 ); /* FALLTHRU */ \
+             S18 = Meow_AESDEC_Memx2( S18, Source5 + 32 ); /* FALLTHRU */ \
+             S22 = Meow_AESDEC_Memx2( S22, Source6 + 32 ); /* FALLTHRU */ \
+             S26 = Meow_AESDEC_Memx2( S26, Source7 + 32 ); /* FALLTHRU */ \
+             S30 = Meow_AESDEC_Memx2( S30, Source8 + 32 ); /* FALLTHRU */ \
+    case 32: S1 = Meow_AESDEC_Memx2( S1, Source + 16 ); /* FALLTHRU */ \
+             S5 = Meow_AESDEC_Memx2( S5, Source2 + 16 ); /* FALLTHRU */ \
+             S9 = Meow_AESDEC_Memx2( S9, Source3 + 16 ); /* FALLTHRU */ \
+             S13 = Meow_AESDEC_Memx2( S13, Source4 + 16 ); /* FALLTHRU */ \
+             S17 = Meow_AESDEC_Memx2( S17, Source5 + 16 ); /* FALLTHRU */ \
+             S21 = Meow_AESDEC_Memx2( S21, Source6 + 16 ); /* FALLTHRU */ \
+             S25 = Meow_AESDEC_Memx2( S25, Source7 + 16 ); /* FALLTHRU */ \
+             S29 = Meow_AESDEC_Memx2( S29, Source8 + 16 ); /* FALLTHRU */ \
+    case 16: S0 = Meow_AESDEC_Memx2( S0, Source ); \
+             S4 = Meow_AESDEC_Memx2( S4, Source2 ); \
+             S8 = Meow_AESDEC_Memx2( S8, Source3 ); \
+             S12 = Meow_AESDEC_Memx2( S12, Source4 ); \
+             S16 = Meow_AESDEC_Memx2( S16, Source5 ); \
+             S20 = Meow_AESDEC_Memx2( S20, Source6 ); \
+             S24 = Meow_AESDEC_Memx2( S24, Source7 ); \
+             S28 = Meow_AESDEC_Memx2( S28, Source8 ); break; \
+  } \
+} while( 0 )
+
+void
+kv_hash_meow128( const void *p, size_t sz, uint64_t *x1, uint64_t *x2 )
+{
+  Declare_Meow( S0, S1, S2, S3 );
+
+  __m128i Mixer = _mm_set_epi64x( *x2 + sz + 1, *x1 - sz );
+
+  Xor_Meow( S0, S1, S2, S3, Mixer );
+  Meow_Loop( S0, S1, S2, S3, p, sz );
+  Mix_Meow( S3, S2, S1, S0, Mixer );
+
+  Compress_Meow2( S2, S3, S0, S1, S2, Mixer );
+  Compress_Meow( S0, S2, S0, Mixer );
+
+  *x1 = _mm_extract_epi64( S0, 0 );
+  *x2 = _mm_extract_epi64( S0, 1 );
+}
+
+void
+kv_hash_meow128_vec( const meow_vec_t *vec,  size_t vec_sz,
+                     uint64_t *x1, uint64_t *x2 )
+{
+  if ( vec_sz == 1 ) {
+    kv_hash_meow128( vec->p, vec->sz, x1, x2 );
+    return;
+  }
+  Declare_Meow( S0, S1, S2, S3 );
+
+  size_t i, total_sz = vec[ 0 ].sz + vec[ 1 ].sz;
+  for ( i = 2; i < vec_sz; i++ )
+    total_sz += vec[ i ].sz;
+
+  __m128i Mixer = _mm_set_epi64x( *x2 + total_sz + 1, *x1 - total_sz );
+
+  Xor_Meow( S0, S1, S2, S3, Mixer );
+  uint8_t block[ 64 ] __attribute__((__aligned__(64)));
+  size_t  off = 0;
+  for ( i = 0; i < vec_sz; i++ ) {
+    const uint8_t * src = (const uint8_t *) vec[ i ].p;
+    size_t          len = vec[ i ].sz;
+    if ( off > 0 ) {
+      size_t fill = 64 - off;
+      if ( fill > len )
+        fill = len;
+      memcpy( &block[ off ], src, fill );
+      off += fill;
+      len -= fill;
+      src += fill;
+      if ( off == 64 ) {
+        Meow_Loop64( S0, S1, S2, S3, block, 64 );
+        off = 0;
+      }
     }
-    else {
-      Partial =
-        _mm_and_si128( *(__m128i *) Overhang,
-          _mm_loadu_si128( (__m128i *) &MeowMaskLen[ 16 - Len8 ] ) );
+    if ( len > 0 ) {
+      off = len & (size_t) 63;
+      if ( len > off )
+        Meow_Loop64( S0, S1, S2, S3, src, len - off );
+      memcpy( block, &src[ len - off ], off );
     }
-    S3 = Meow128_AESDECx2(S3, Partial);
   }
-  switch ( Len128 ) {
-    case 48: S2 = Meow128_AESDEC_Memx2(S2, Source + 32); /* FALLTHRU */
-    case 32: S1 = Meow128_AESDEC_Memx2(S1, Source + 16); /* FALLTHRU */
-    case 16: S0 = Meow128_AESDEC_Memx2(S0, Source); break;
+  if ( off > 0 ) {
+    Meow_Loop( S0, S1, S2, S3, block, off );
   }
+  Mix_Meow( S3, S2, S1, S0, Mixer );
 
-  S3 = _mm_aesdec_si128(S3, Mixer);
-  S2 = _mm_aesdec_si128(S2, Mixer);
-  S1 = _mm_aesdec_si128(S1, Mixer);
-  S0 = _mm_aesdec_si128(S0, Mixer);
+  Compress_Meow2( S2, S3, S0, S1, S2, Mixer ); /* S2 <- S3, S0 <- S1, S2<-M */
+  Compress_Meow( S0, S2, S0, Mixer );    /* S0 <- S2, S0 <- Mixer */
 
-  S2 = _mm_aesdec_si128(S2, S3);
-  S0 = _mm_aesdec_si128(S0, S1);
-
-  S2 = _mm_aesdec_si128(S2, Mixer);
-
-  S0 = _mm_aesdec_si128(S0, S2);
-  S0 = _mm_aesdec_si128(S0, Mixer);
-
-  *x1 = _mm_extract_epi64(S0, 0);
-  *x2 = _mm_extract_epi64(S0, 1);
+  *x1 = _mm_extract_epi64( S0, 0 );
+  *x2 = _mm_extract_epi64( S0, 1 );
 }
 
 uint64_t
 kv_hash_meow64( const void *p, size_t sz, uint64_t seed )
 {
   uint64_t h1 = seed, h2 = seed;
-  hash_meow128( p, sz, &h1, &h2 );
+  kv_hash_meow128( p, sz, &h1, &h2 );
   return h1;
 }
 
-void
-kv_hash_meow128( const void *p, size_t sz, uint64_t *h1, uint64_t *h2 )
+static inline void
+Meow_Save_Ctx( meow_ctx_t *m, __m128i S0, __m128i S1, __m128i S2, __m128i S3 )
 {
-  hash_meow128( p, sz, h1, h2 );
+  *(__m128i *) &m->ctx[ 0 ] = S0;
+  *(__m128i *) &m->ctx[ 2 ] = S1;
+  *(__m128i *) &m->ctx[ 4 ] = S2;
+  *(__m128i *) &m->ctx[ 6 ] = S3;
 }
+
+#define Meow_Load_Ctx( m, S0, S1, S2, S3 ) \
+  __m128i S0 = *(__m128i *) &m->ctx[ 0 ]; \
+  __m128i S1 = *(__m128i *) &m->ctx[ 2 ]; \
+  __m128i S2 = *(__m128i *) &m->ctx[ 4 ]; \
+  __m128i S3 = *(__m128i *) &m->ctx[ 6 ]
+
+/* same as kv_hash_meow128, in update parts */
+void
+kv_meow128_init( meow_ctx_t *m,  meow_block_t *b, uint64_t k1,  uint64_t k2,
+                 size_t total_update_sz )
+{
+  Declare_Meow( S0, S1, S2, S3 );
+  __m128i Mixer = _mm_set_epi64x( k2 + total_update_sz + 1,
+                                  k1 - total_update_sz );
+  Xor_Meow( S0, S1, S2, S3, Mixer );
+  Meow_Save_Ctx( m, S0, S1, S2, S3 );
+  b->off = 0;
+  b->total_update_sz = total_update_sz;
+}
+
+void
+kv_meow128_update( meow_ctx_t *m,  meow_block_t *b, const void *p,  size_t sz )
+{
+  Meow_Load_Ctx( m, S0, S1, S2, S3 );
+
+  const uint8_t * src = (const uint8_t *) p;
+  size_t          len = sz;
+  if ( b->off > 0 ) {
+    size_t fill = 64 - b->off;
+    if ( fill > len )
+      fill = len;
+    memcpy( &b->block[ b->off ], src, fill );
+    b->off += fill;
+    len    -= fill;
+    src    += fill;
+    if ( b->off == 64 ) {
+      Meow_Loop64( S0, S1, S2, S3, b->block, 64 );
+      b->off = 0;
+    }
+  }
+  if ( len > 0 ) {
+    b->off = len & (size_t) 63;
+    if ( len > b->off )
+      Meow_Loop64( S0, S1, S2, S3, src, len - b->off );
+    memcpy( b->block, &src[ len - b->off ], b->off );
+  }
+
+  Meow_Save_Ctx( m, S0, S1, S2, S3 );
+}
+
+void
+kv_meow128_final( meow_ctx_t *m, meow_block_t *b, uint64_t *k1, uint64_t *k2 )
+{
+  Meow_Load_Ctx( m, S0, S1, S2, S3 );
+  if ( b->off > 0 ) {
+    Meow_Loop( S0, S1, S2, S3, b->block, b->off );
+  }
+  __m128i Mixer = _mm_set_epi64x( *k2 + b->total_update_sz + 1,
+                                  *k1 - b->total_update_sz );
+
+  Mix_Meow( S3, S2, S1, S0, Mixer );
+  Compress_Meow2( S2, S3, S0, S1, S2, Mixer ); /* S2 <- S3, S0 <- S1, S2<-M */
+  Compress_Meow( S0, S2, S0, Mixer );    /* S0 <- S2, S0 <- Mixer */
+
+  *k1 = _mm_extract_epi64( S0, 0 );
+  *k2 = _mm_extract_epi64( S0, 1 );
+}
+/* should be the same as kv_hash_meow128 */
+void
+kv_meow_test( const void *p, size_t sz, uint64_t *k1, uint64_t *k2 )
+{
+  meow_ctx_t m;
+  meow_block_t b;
+
+  kv_meow128_init( &m, &b, *k1, *k2, sz );
+  kv_meow128_update( &m, &b, p, sz );
+  kv_meow128_final( &m, &b, k1, k2 );
+}
+
+/* construct hmac:
+ *
+ * HMAC( K, m ) = H( H( K ^ OPAD ) + H( K ^ IPAD + m ) )
+ *
+ * hmac = meow_hash( H ^ OPAD + meow_hash( H ^ IPAD, m ) )
+ */
+static const uint64_t OPAD = _U64( 0x5c5c5c5c, 0x5c5c5c5c ),
+                      IPAD = _U64( 0x36363636, 0x36363636 );
+void
+kv_hmac_meow_init( meow_ctx_t *m, meow_block_t *b,  uint64_t k1,  uint64_t k2 )
+{
+  Declare_Meow( S0, S1, S2, S3 );
+  __m128i ipad = _mm_set_epi64x( k2 ^ IPAD, k1 ^ IPAD ); /* inner hash */
+
+  Mix_Meow( S3, S2, S1, S0, ipad );
+  Mix_Meow( S3, S2, S1, S0, ipad );
+
+  Meow_Save_Ctx( m, S0, S1, S2, S3 );
+  b->off = 0;
+  b->total_update_sz = 0;
+}
+
+void
+kv_hmac_meow_update( meow_ctx_t *m, meow_block_t *b, const void *p, size_t sz )
+{
+  kv_meow128_update( m, b, p, sz );
+  b->total_update_sz += sz;
+}
+
+void
+kv_hmac_meow_final( meow_ctx_t *m,  meow_block_t *b, uint64_t *k1,
+                    uint64_t *k2 )
+{
+  Meow_Load_Ctx( m, S0, S1, S2, S3 );
+  if ( b->off > 0 ) {
+    Meow_Loop( S0, S1, S2, S3, b->block, b->off );
+  }
+
+  __m128i Mixer = _mm_set_epi64x( b->total_update_sz + 1, -b->total_update_sz );
+
+  Compress_Meow2( S2, S3, S0, S1, S2, Mixer ); /* S2 <- S3, S0 <- S1, S2<-M */
+  Compress_Meow( S0, S2, S0, Mixer );    /* S0 <- S2, S0 <- Mixer */
+
+  __m128i ipad = S0;
+  S0 = *(__m128i *) MeowS0Init;
+  S1 = *(__m128i *) MeowS1Init;
+  S2 = *(__m128i *) MeowS2Init;
+  S3 = *(__m128i *) MeowS3Init;
+
+  Mix_Meow( S3, S2, S1, S0, ipad );
+  Mix_Meow( S3, S2, S1, S0, ipad );
+
+  __m128i opad = _mm_set_epi64x( *k2 ^ OPAD, *k1 ^ OPAD );
+
+  Mix_Meow( S3, S2, S1, S0, opad );
+  Mix_Meow( S3, S2, S1, S0, opad );
+  Mix_Meow( S3, S2, S1, S0, Mixer );
+
+  Compress_Meow2( S2, S3, S0, S1, S2, Mixer ); /* S2 <- S3, S0 <- S1, S2<-M */
+  Compress_Meow( S0, S2, S0, Mixer );    /* S0 <- S2, S0 <- Mixer */
+
+  *k1 = _mm_extract_epi64( S0, 0 );
+  *k2 = _mm_extract_epi64( S0, 1 );
+}
+
+void
+kv_hmac_meow( const void *p,  size_t sz,  uint64_t *k1,  uint64_t *k2 )
+{
+  meow_ctx_t m;
+  meow_block_t b;
+
+  kv_hmac_meow_init( &m, &b, *k1, *k2 );
+  kv_hmac_meow_update( &m, &b, p, sz );
+  kv_hmac_meow_final( &m, &b, k1, k2 );
+}
+
+void
+kv_hash_meow128_2_same_length( const void *p, const void *p2, size_t sz,
+                               uint64_t *x )
+{
+  Declare_Meow( S0, S1, S2, S3 );
+  Declare_Meow( S4, S5, S6, S7 );
+
+  __m128i Mixer = _mm_set_epi64x( x[ 1 ] + sz + 1, x[ 0 ] - sz );
+
+  Xor_Meow( S0, S1, S2, S3, Mixer );
+  Xor_Meow( S4, S5, S6, S7, Mixer );
+
+  Meow_Loop_2( S0, S1, S2, S3, S4, S5, S6, S7, p, p2, sz );
+
+  Mix_Meow( S3, S2, S1, S0, Mixer );
+  Mix_Meow( S7, S6, S5, S4, Mixer );
+
+  Compress_Meow2( S2, S3, S0, S1, S2, Mixer ); /* S2 <- S3, S0 <- S1, S2 <- M */
+  Compress_Meow2( S6, S7, S4, S5, S6, Mixer ); /* S6 <- S7, S4 <- S5, S6 <- M */
+  Compress_Meow( S0, S2, S0, Mixer );    /* S0 <- S2, S0 <- Mixer */
+  Compress_Meow( S4, S6, S4, Mixer );    /* S4 <- S6, S4 <- Mixer */
+
+  x[ 0 ] = _mm_extract_epi64( S0, 0 );
+  x[ 1 ] = _mm_extract_epi64( S0, 1 );
+  x[ 2 ] = _mm_extract_epi64( S4, 0 );
+  x[ 3 ] = _mm_extract_epi64( S4, 1 );
+}
+
+void
+kv_hash_meow128_2_diff_length( const void *p, size_t sz,
+                               const void *p2, size_t sz2, uint64_t *x )
+{
+  Declare_Meow( S0, S1, S2, S3 );
+  Declare_Meow( S4, S5, S6, S7 );
+
+  __m128i Mixer = _mm_set_epi64x( x[ 1 ] + sz + 1, x[ 0 ] - sz );
+  __m128i Mixer2 = _mm_set_epi64x( x[ 1 ] + sz2 + 1, x[ 0 ] - sz2 );
+
+  Xor_Meow( S0, S1, S2, S3, Mixer );
+  Xor_Meow( S4, S5, S6, S7, Mixer2 );
+
+  const uint8_t * Source  = (const uint8_t *) p;
+  const uint8_t * Source2 = (const uint8_t *) p2;
+  size_t          Len     = sz;
+  size_t          Len2    = sz2;
+
+  for (;;) {
+    if ( Len >= 64 ) {
+      S0 = Meow_AESDEC_Memx2( S0, Source );
+      S1 = Meow_AESDEC_Memx2( S1, Source + 16 );
+      S2 = Meow_AESDEC_Memx2( S2, Source + 32 );
+      S3 = Meow_AESDEC_Memx2( S3, Source + 48 );
+      Len     -= 64;
+      Source  += 64;
+    }
+    if ( Len2 >= 64 ) {
+      S4 = Meow_AESDEC_Memx2( S4, Source2 );
+      S5 = Meow_AESDEC_Memx2( S5, Source2 + 16 );
+      S6 = Meow_AESDEC_Memx2( S6, Source2 + 32 );
+      S7 = Meow_AESDEC_Memx2( S7, Source2 + 48 );
+      Len2    -= 64;
+      Source2 += 64;
+    }
+    else if ( Len < 64 )
+      break;
+  }
+  Meow_Loop_Trail( S0, S1, S2, S3, Source, sz );
+  Meow_Loop_Trail( S4, S5, S6, S7, Source2, sz2 );
+
+  Mix_Meow( S3, S2, S1, S0, Mixer );
+  Mix_Meow( S7, S6, S5, S4, Mixer2 );
+
+  Compress_Meow2( S2, S3, S0, S1, S2, Mixer ); /* S2 <- S3, S0 <- S1, S2 <- M */
+  Compress_Meow2( S6, S7, S4, S5, S6, Mixer2 ); /* S6 <- S7, S4 <- S5, S6 <- M */
+  Compress_Meow( S0, S2, S0, Mixer );    /* S0 <- S2, S0 <- Mixer */
+  Compress_Meow( S4, S6, S4, Mixer2 );    /* S4 <- S6, S4 <- Mixer */
+
+  x[ 0 ] = _mm_extract_epi64( S0, 0 );
+  x[ 1 ] = _mm_extract_epi64( S0, 1 );
+  x[ 2 ] = _mm_extract_epi64( S4, 0 );
+  x[ 3 ] = _mm_extract_epi64( S4, 1 );
+}
+
+void
+kv_hash_meow128_4_diff_length( const void *p, size_t sz,
+                               const void *p2, size_t sz2,
+                               const void *p3, size_t sz3,
+                               const void *p4, size_t sz4,
+                               uint64_t *x )
+{
+  Declare_Meow( S0, S1, S2, S3 );
+  Declare_Meow( S4, S5, S6, S7 );
+  Declare_Meow( S8, S9, S10, S11 );
+  Declare_Meow( S12, S13, S14, S15 );
+
+  __m128i Mixer  = _mm_set_epi64x( x[ 1 ] + sz + 1, x[ 0 ] - sz );
+  __m128i Mixer2 = _mm_set_epi64x( x[ 1 ] + sz2 + 1, x[ 0 ] - sz2 );
+  __m128i Mixer3 = _mm_set_epi64x( x[ 1 ] + sz3 + 1, x[ 0 ] - sz3 );
+  __m128i Mixer4 = _mm_set_epi64x( x[ 1 ] + sz4 + 1, x[ 0 ] - sz4 );
+
+  Xor_Meow( S0, S1, S2, S3, Mixer );
+  Xor_Meow( S4, S5, S6, S7, Mixer2 );
+  Xor_Meow( S8, S9, S10, S11, Mixer3 );
+  Xor_Meow( S12, S13, S14, S15, Mixer4 );
+
+  const uint8_t * Source  = (const uint8_t *) p,
+                * Source2 = (const uint8_t *) p2,
+                * Source3 = (const uint8_t *) p3,
+                * Source4 = (const uint8_t *) p4;
+  size_t          Len     = sz,
+                  Len2    = sz2,
+                  Len3    = sz3,
+                  Len4    = sz4;
+  int             active  = 0;
+  for (;;) {
+    if ( Len >= 64 ) {
+      S0 = Meow_AESDEC_Memx2( S0, Source );
+      S1 = Meow_AESDEC_Memx2( S1, Source + 16 );
+      S2 = Meow_AESDEC_Memx2( S2, Source + 32 );
+      S3 = Meow_AESDEC_Memx2( S3, Source + 48 );
+      Len     -= 64;
+      Source  += 64;
+      active   = 1;
+    }
+    if ( Len2 >= 64 ) {
+      S4 = Meow_AESDEC_Memx2( S4, Source2 );
+      S5 = Meow_AESDEC_Memx2( S5, Source2 + 16 );
+      S6 = Meow_AESDEC_Memx2( S6, Source2 + 32 );
+      S7 = Meow_AESDEC_Memx2( S7, Source2 + 48 );
+      Len2    -= 64;
+      Source2 += 64;
+      active   = 1;
+    }
+    if ( Len3 >= 64 ) {
+      S8 = Meow_AESDEC_Memx2( S8, Source3 );
+      S9 = Meow_AESDEC_Memx2( S9, Source3 + 16 );
+      S10 = Meow_AESDEC_Memx2( S10, Source3 + 32 );
+      S11 = Meow_AESDEC_Memx2( S11, Source3 + 48 );
+      Len3    -= 64;
+      Source3 += 64;
+      active   = 1;
+    }
+    if ( Len4 >= 64 ) {
+      S12 = Meow_AESDEC_Memx2( S12, Source4 );
+      S13 = Meow_AESDEC_Memx2( S13, Source4 + 16 );
+      S14 = Meow_AESDEC_Memx2( S14, Source4 + 32 );
+      S15 = Meow_AESDEC_Memx2( S15, Source4 + 48 );
+      Len4    -= 64;
+      Source4 += 64;
+    }
+    else if ( ! active )
+      break;
+    active = 0;
+  }
+  Meow_Loop_Trail( S0, S1, S2, S3, Source, sz );
+  Meow_Loop_Trail( S4, S5, S6, S7, Source2, sz2 );
+  Meow_Loop_Trail( S8, S9, S10, S11, Source3, sz3 );
+  Meow_Loop_Trail( S12, S13, S14, S15, Source4, sz4 );
+
+  Mix_Meow( S3, S2, S1, S0, Mixer );
+  Mix_Meow( S7, S6, S5, S4, Mixer2 );
+  Mix_Meow( S11, S10, S9, S8, Mixer3 );
+  Mix_Meow( S15, S14, S13, S12, Mixer4 );
+
+  Compress_Meow2( S2, S3, S0, S1, S2, Mixer );  /* S2 <- S3, S0 <- S1, S2 <- M*/
+  Compress_Meow2( S6, S7, S4, S5, S6, Mixer2 );  /* S6 <- S7, S4 <- S5, S6 <- M*/
+  Compress_Meow2( S10, S11, S8, S9, S10, Mixer3 ); /* S10 <- S11, S8 <- S9 */
+  Compress_Meow2( S14, S15, S12, S13, S14, Mixer4 );/* S14 <- S15, S12 <- S13 */
+  Compress_Meow( S0, S2, S0, Mixer );    /* S0 <- S2, S0 <- Mixer */
+  Compress_Meow( S4, S6, S4, Mixer2 );    /* S4 <- S6, S4 <- Mixer */
+  Compress_Meow( S8, S10, S8, Mixer3 );   /* S8 <- S10, S8 <- Mixer */
+  Compress_Meow( S12, S14, S12, Mixer4 ); /* S12 <- S14, S12 <- Mixer */
+
+  x[ 0 ] = _mm_extract_epi64( S0, 0 );
+  x[ 1 ] = _mm_extract_epi64( S0, 1 );
+  x[ 2 ] = _mm_extract_epi64( S4, 0 );
+  x[ 3 ] = _mm_extract_epi64( S4, 1 );
+  x[ 4 ] = _mm_extract_epi64( S8, 0 );
+  x[ 5 ] = _mm_extract_epi64( S8, 1 );
+  x[ 6 ] = _mm_extract_epi64( S12, 0 );
+  x[ 7 ] = _mm_extract_epi64( S12, 1 );
+}
+
+void
+kv_hash_meow128_4_same_length_a( const void **p, size_t sz, uint64_t *x )
+{
+  kv_hash_meow128_4_same_length( p[ 0 ], p[ 1 ], p[ 2 ], p[ 3 ], sz, x );
+}
+
+void
+kv_hash_meow128_4_same_length( const void *p, const void *p2,
+                               const void *p3, const void *p4, size_t sz,
+                               uint64_t *x )
+{
+  Declare_Meow( S0, S1, S2, S3 );
+  Declare_Meow( S4, S5, S6, S7 );
+  Declare_Meow( S8, S9, S10, S11 );
+  Declare_Meow( S12, S13, S14, S15 );
+
+  __m128i Mixer = _mm_set_epi64x( x[ 1 ] + sz + 1, x[ 0 ] - sz );
+
+  Xor_Meow( S0, S1, S2, S3, Mixer );
+  Xor_Meow( S4, S5, S6, S7, Mixer );
+  Xor_Meow( S8, S9, S10, S11, Mixer );
+  Xor_Meow( S12, S13, S14, S15, Mixer );
+
+  Meow_Loop_4( S0, S1, S2, S3, S4, S5, S6, S7,
+               S8, S9, S10, S11, S12, S13, S14, S15,
+               p, p2, p3, p4, sz );
+
+  Mix_Meow( S3, S2, S1, S0, Mixer );
+  Mix_Meow( S7, S6, S5, S4, Mixer );
+  Mix_Meow( S11, S10, S9, S8, Mixer );
+  Mix_Meow( S15, S14, S13, S12, Mixer );
+
+  Compress_Meow2( S2, S3, S0, S1, S2, Mixer );  /* S2 <- S3, S0 <- S1, S2 <- M*/
+  Compress_Meow2( S6, S7, S4, S5, S6, Mixer );  /* S6 <- S7, S4 <- S5, S6 <- M*/
+  Compress_Meow2( S10, S11, S8, S9, S10, Mixer ); /* S10 <- S11, S8 <- S9 */
+  Compress_Meow2( S14, S15, S12, S13, S14, Mixer );/* S14 <- S15, S12 <- S13 */
+  Compress_Meow( S0, S2, S0, Mixer );    /* S0 <- S2, S0 <- Mixer */
+  Compress_Meow( S4, S6, S4, Mixer );    /* S4 <- S6, S4 <- Mixer */
+  Compress_Meow( S8, S10, S8, Mixer );   /* S8 <- S10, S8 <- Mixer */
+  Compress_Meow( S12, S14, S12, Mixer ); /* S12 <- S14, S12 <- Mixer */
+
+  x[ 0 ] = _mm_extract_epi64( S0, 0 );
+  x[ 1 ] = _mm_extract_epi64( S0, 1 );
+  x[ 2 ] = _mm_extract_epi64( S4, 0 );
+  x[ 3 ] = _mm_extract_epi64( S4, 1 );
+  x[ 4 ] = _mm_extract_epi64( S8, 0 );
+  x[ 5 ] = _mm_extract_epi64( S8, 1 );
+  x[ 6 ] = _mm_extract_epi64( S12, 0 );
+  x[ 7 ] = _mm_extract_epi64( S12, 1 );
+}
+
+void
+kv_hash_meow128_8_same_length_a( const void **p, size_t sz, uint64_t *x )
+{
+  kv_hash_meow128_8_same_length( p[ 0 ], p[ 1 ], p[ 2 ], p[ 3 ],
+                                 p[ 4 ], p[ 5 ], p[ 6 ], p[ 7 ], sz, x );
+}
+
+void
+kv_hash_meow128_8_same_length( const void *p, const void *p2, const void *p3,
+                               const void *p4, const void *p5, const void *p6,
+                               const void *p7, const void *p8,
+                               size_t sz, uint64_t *x )
+{
+  Declare_Meow( S0, S1, S2, S3 );
+  Declare_Meow( S4, S5, S6, S7 );
+  Declare_Meow( S8, S9, S10, S11 );
+  Declare_Meow( S12, S13, S14, S15 );
+  Declare_Meow( S16, S17, S18, S19 );
+  Declare_Meow( S20, S21, S22, S23 );
+  Declare_Meow( S24, S25, S26, S27 );
+  Declare_Meow( S28, S29, S30, S31 );
+
+  __m128i Mixer = _mm_set_epi64x( x[ 1 ] + sz + 1, x[ 0 ] - sz );
+
+  Xor_Meow( S0, S1, S2, S3, Mixer );
+  Xor_Meow( S4, S5, S6, S7, Mixer );
+  Xor_Meow( S8, S9, S10, S11, Mixer );
+  Xor_Meow( S12, S13, S14, S15, Mixer );
+  Xor_Meow( S16, S17, S18, S19, Mixer );
+  Xor_Meow( S20, S21, S22, S23, Mixer );
+  Xor_Meow( S24, S25, S26, S27, Mixer );
+  Xor_Meow( S28, S29, S30, S31, Mixer );
+
+  Meow_Loop_8( S0, S1, S2, S3, S4, S5, S6, S7,
+               S8, S9, S10, S11, S12, S13, S14, S15,
+               S16, S17, S18, S19, S20, S21, S22, S23,
+               S24, S25, S26, S27, S28, S29, S30, S31,
+               p, p2, p3, p4, p5, p6, p7, p8, sz );
+
+  Mix_Meow( S3, S2, S1, S0, Mixer );
+  Mix_Meow( S7, S6, S5, S4, Mixer );
+  Mix_Meow( S11, S10, S9, S8, Mixer );
+  Mix_Meow( S15, S14, S13, S12, Mixer );
+  Mix_Meow( S19, S18, S17, S16, Mixer );
+  Mix_Meow( S23, S22, S21, S20, Mixer );
+  Mix_Meow( S27, S26, S25, S24, Mixer );
+  Mix_Meow( S31, S30, S29, S28, Mixer );
+
+  Compress_Meow2( S2, S3, S0, S1, S2, Mixer );  /* S2 <- S3, S0 <- S1, S2 <- M*/
+  Compress_Meow2( S6, S7, S4, S5, S6, Mixer );  /* S6 <- S7, S4 <- S5, S6 <- M*/
+  Compress_Meow2( S10, S11, S8, S9, S10, Mixer ); /* S10 <- S11, S8 <- S9 */
+  Compress_Meow2( S14, S15, S12, S13, S14, Mixer );/* S14 <- S15, S12 <- S13 */
+  Compress_Meow2( S18, S19, S16, S17, S18, Mixer );
+  Compress_Meow2( S22, S23, S20, S21, S22, Mixer );
+  Compress_Meow2( S26, S27, S24, S25, S26, Mixer );
+  Compress_Meow2( S30, S31, S28, S29, S30, Mixer );
+  Compress_Meow( S0, S2, S0, Mixer );    /* S0 <- S2, S0 <- Mixer */
+  Compress_Meow( S4, S6, S4, Mixer );    /* S4 <- S6, S4 <- Mixer */
+  Compress_Meow( S8, S10, S8, Mixer );   /* S8 <- S10, S8 <- Mixer */
+  Compress_Meow( S12, S14, S12, Mixer ); /* S12 <- S14, S12 <- Mixer */
+  Compress_Meow( S16, S18, S16, Mixer );
+  Compress_Meow( S20, S22, S20, Mixer );
+  Compress_Meow( S24, S26, S24, Mixer );
+  Compress_Meow( S28, S30, S28, Mixer );
+
+  x[ 0 ] = _mm_extract_epi64( S0, 0 );
+  x[ 1 ] = _mm_extract_epi64( S0, 1 );
+  x[ 2 ] = _mm_extract_epi64( S4, 0 );
+  x[ 3 ] = _mm_extract_epi64( S4, 1 );
+  x[ 4 ] = _mm_extract_epi64( S8, 0 );
+  x[ 5 ] = _mm_extract_epi64( S8, 1 );
+  x[ 6 ] = _mm_extract_epi64( S12, 0 );
+  x[ 7 ] = _mm_extract_epi64( S12, 1 );
+  x[ 8 ] = _mm_extract_epi64( S16, 0 );
+  x[ 9 ] = _mm_extract_epi64( S16, 1 );
+  x[10 ] = _mm_extract_epi64( S20, 0 );
+  x[11 ] = _mm_extract_epi64( S20, 1 );
+  x[12 ] = _mm_extract_epi64( S24, 0 );
+  x[13 ] = _mm_extract_epi64( S24, 1 );
+  x[14 ] = _mm_extract_epi64( S28, 0 );
+  x[15 ] = _mm_extract_epi64( S28, 1 );
+}
+
 #endif /* USE_KV_MEOW_HASH */
+

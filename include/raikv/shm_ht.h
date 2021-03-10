@@ -339,6 +339,15 @@ struct HashSeed {
     h1 = this->hash1; h2 = this->hash2;
     kb.hash( h1, h2 );
   }
+  void hash( KeyFragment &kb,  KeyFragment &kb2, uint64_t *h ) const {
+    h[ 0 ] = this->hash1; h[ 1 ] = this->hash2;
+    KeyFragment::hash2( kb, kb2, h );
+  }
+  void hash( KeyFragment &kb,  KeyFragment &kb2, KeyFragment &kb3,
+             KeyFragment &kb4,  uint64_t *h ) const {
+    h[ 0 ] = this->hash1; h[ 1 ] = this->hash2;
+    KeyFragment::hash4( kb, kb2, kb3, kb4, h );
+  }
 };
 
 struct DBHdr {

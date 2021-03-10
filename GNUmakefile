@@ -114,8 +114,8 @@ $(bind)/kv_test: $(kv_test_objs) $(kv_test_libs)
 
 hash_test_objs = $(objd)/hash_test.o
 hash_test_deps = $(dependd)/hash_test.d
-hash_test_libs = $(libd)/libraikv.so
-hash_test_lnk  = -lraikv
+hash_test_libs = $(libd)/libraikv.a
+hash_test_lnk  = $(hash_test_libs)
 
 $(bind)/hash_test: $(hash_test_objs) $(hash_test_libs)
 

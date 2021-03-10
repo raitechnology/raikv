@@ -80,9 +80,34 @@ struct KeyFragment : public kv_key_frag_s {
   void hash( uint64_t &seed,  uint64_t &seed2 /*,
              kv_hash128_func_t func = KV_DEFAULT_HASH*/ ) {
     /*func*/
-    KV_DEFAULT_HASH( this->u.buf, this->keylen, &seed, &seed2 );
+    kv_hash_meow128( this->u.buf, this->keylen, &seed, &seed2 );
     if ( (seed &= ~ZOMBIE64) <= DROPPED_HASH) /* clear tombstone */
       seed = DROPPED_HASH + 1; /* zero & one are reserved for empty, dropped */
+  }
+  static inline void hash2( KeyFragment &kb,  KeyFragment &kb2,
+                            uint64_t *seed ) {
+    kv_hash_meow128_2_diff_length( kb.u.buf, kb.keylen,
+                                   kb2.u.buf, kb2.keylen, seed );
+    if ( (seed[ 0 ] &= ~ZOMBIE64) <= DROPPED_HASH)
+      seed[ 0 ] = DROPPED_HASH + 1;
+    if ( (seed[ 2 ] &= ~ZOMBIE64) <= DROPPED_HASH)
+      seed[ 2 ] = DROPPED_HASH + 1;
+  }
+  static inline void hash4( KeyFragment &kb,  KeyFragment &kb2,
+                            KeyFragment &kb3,  KeyFragment &kb4,
+                            uint64_t *seed ) {
+    kv_hash_meow128_4_diff_length( kb.u.buf, kb.keylen,
+                                   kb2.u.buf, kb2.keylen,
+                                   kb3.u.buf, kb3.keylen,
+                                   kb4.u.buf, kb4.keylen, seed );
+    if ( (seed[ 0 ] &= ~ZOMBIE64) <= DROPPED_HASH)
+      seed[ 0 ] = DROPPED_HASH + 1;
+    if ( (seed[ 2 ] &= ~ZOMBIE64) <= DROPPED_HASH)
+      seed[ 2 ] = DROPPED_HASH + 1;
+    if ( (seed[ 4 ] &= ~ZOMBIE64) <= DROPPED_HASH)
+      seed[ 4 ] = DROPPED_HASH + 1;
+    if ( (seed[ 6 ] &= ~ZOMBIE64) <= DROPPED_HASH)
+      seed[ 6 ] = DROPPED_HASH + 1;
   }
 };
 

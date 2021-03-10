@@ -247,8 +247,10 @@ inline size_t int32_to_string( int32_t v,  char *buf ) {
 }
 
 uint64_t string_to_uint64( const char *b,  size_t len ) noexcept;
-
 int64_t string_to_int64( const char *b,  size_t len ) noexcept;
+
+size_t bin_to_base64( const void *inp,  size_t in_len,  void *outp ) noexcept;
+size_t base64_to_bin( const void *inp,  size_t in_len,  void *outp ) noexcept;
 
 } /* namespace kv */
 } /* namespace rai */

@@ -462,3 +462,143 @@ rai::kv::string_to_int64( const char *b,  size_t len ) noexcept
   return x;
 }
 
+static const uint8_t AZ = 'Z' - 'A' + 1;
+
+static inline uint8_t b64( uint8_t b ) {
+  /* ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/ */
+  if ( b < AZ )
+    return 'A' + b;
+  if ( b < AZ * 2 )
+    return 'a' + ( b - AZ );
+  if ( b < AZ * 2 + 10 )
+    return '0' + ( b - AZ*2 );
+  if ( b == AZ * 2 + 10 )
+    return '+';
+  return '/';
+}
+
+static inline uint8_t c64( uint8_t b ) {
+  /* ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/ */
+  static const uint8_t AZ = 'Z' - 'A' + 1;
+  if ( b >= 'a' )
+    return b - 'a' + AZ;
+  if ( b >= 'A' )
+    return b - 'A';
+  if ( b >= '0')
+    return b - '0' + AZ * 2;
+  if ( b == '+' )
+    return 62;
+  return 63;
+}
+
+size_t
+rai::kv::bin_to_base64( const void *inp,  size_t in_len,  void *outp ) noexcept
+{
+  uint64_t val;
+  size_t   out_len = 0;
+  const uint8_t * in = (const uint8_t *) inp;
+  uint8_t * out = (uint8_t *) outp;
+  while ( in_len >= 6 ) {
+    val = ( (uint64_t) in[ 0 ] << 40 ) |
+          ( (uint64_t) in[ 1 ] << 32 ) |
+          ( (uint64_t) in[ 2 ] << 24 ) |
+          ( (uint64_t) in[ 3 ] << 16 ) |
+          ( (uint64_t) in[ 4 ] << 8 ) |
+            (uint64_t) in[ 5 ]; 
+    out[ out_len + 0 ] = b64( ( val >> 42 ) & 63U );
+    out[ out_len + 1 ] = b64( ( val >> 36 ) & 63U );
+    out[ out_len + 2 ] = b64( ( val >> 30 ) & 63U );
+    out[ out_len + 3 ] = b64( ( val >> 24 ) & 63U );
+    out[ out_len + 4 ] = b64( ( val >> 18 ) & 63U );
+    out[ out_len + 5 ] = b64( ( val >> 12 ) & 63U );
+    out[ out_len + 6 ] = b64( ( val >> 6 ) & 63U );
+    out[ out_len + 7 ] = b64( val & 63U );
+    in_len -= 6; in = &in[ 6 ];
+    out_len += 8;
+  }
+  if ( in_len >= 3 ) {
+    val = ( (uint64_t) in[ 0 ] << 16 ) |
+          ( (uint64_t) in[ 1 ] << 8 ) |
+            (uint64_t) in[ 2 ]; 
+    out[ out_len + 0 ] = b64( ( val >> 18 ) & 63U );
+    out[ out_len + 1 ] = b64( ( val >> 12 ) & 63U );
+    out[ out_len + 2 ] = b64( ( val >> 6 ) & 63U );
+    out[ out_len + 3 ] = b64( val & 63U );
+    in_len -= 3; in = &in[ 3 ];
+    out_len += 4;
+  }
+  if ( in_len > 0 ) {
+    val = ( (uint64_t) in[ 0 ] << 16 );
+    if ( in_len > 1 )
+      val |= ( (uint64_t) in[ 1 ] << 8 );
+    out[ out_len++ ] = b64( ( val >> 18 ) & 63U );
+    out[ out_len++ ] = b64( ( val >> 12 ) & 63U );
+    if ( in_len > 1 )
+      out[ out_len++ ] = b64( ( val >> 6 ) & 63U );
+    if ( in_len == 1 )
+      out[ out_len++ ] = '=';
+    out[ out_len++ ] = '=';
+  }
+  return out_len;
+}
+
+size_t
+rai::kv::base64_to_bin( const void *inp,  size_t in_len,  void *outp ) noexcept
+{
+  uint64_t val;
+  size_t   out_len = 0;
+  const uint8_t * in = (const uint8_t *) inp;
+  uint8_t * out = (uint8_t *) outp;
+  size_t out_len_calc;
+  while ( in_len > 0 && in[ in_len - 1 ] == '=' )
+    in_len--;
+  out_len_calc = in_len * 3 / 4;
+  while ( in_len >= 8 ) {
+    val = ( (uint64_t) c64( in[ 0 ] ) << 42 ) |
+          ( (uint64_t) c64( in[ 1 ] ) << 36 ) |
+          ( (uint64_t) c64( in[ 2 ] ) << 30 ) |
+          ( (uint64_t) c64( in[ 3 ] ) << 24 ) |
+          ( (uint64_t) c64( in[ 4 ] ) << 18 ) |
+          ( (uint64_t) c64( in[ 5 ] ) << 12 ) |
+          ( (uint64_t) c64( in[ 6 ] ) << 6 ) |
+          ( (uint64_t) c64( in[ 7 ] ) );
+    out[ out_len ]     = ( val >> 40 ) & 0xffU;
+    out[ out_len + 1 ] = ( val >> 32 ) & 0xffU;
+    out[ out_len + 2 ] = ( val >> 24 ) & 0xffU;
+    out[ out_len + 3 ] = ( val >> 16 ) & 0xffU;
+    out[ out_len + 4 ] = ( val >> 8 ) & 0xffU;
+    out[ out_len + 5 ] = val & 0xffU;
+    in_len -= 8; in = &in[ 8 ];
+    out_len += 6;
+  }
+  if ( in_len >= 4 ) {
+    val = ( (uint64_t) c64( in[ 0 ] ) << 18 ) |
+          ( (uint64_t) c64( in[ 1 ] ) << 12 ) |
+          ( (uint64_t) c64( in[ 2 ] ) << 6 ) |
+          ( (uint64_t) c64( in[ 3 ] ) );
+    out[ out_len ]     = ( val >> 16 ) & 0xffU;
+    out[ out_len + 1 ] = ( val >> 8 ) & 0xffU;
+    out[ out_len + 2 ] = val & 0xffU;
+    in_len -= 4; in = &in[ 4 ];
+    out_len += 3;
+  }
+  if ( in_len > 0 ) {
+    val = ( (uint64_t) c64( in[ 0 ] ) << 18 );
+    if ( in_len > 1 ) {
+      val |= ( (uint64_t) c64( in[ 1 ] ) << 12 );
+      if ( in_len > 2 )
+        val |= ( (uint64_t) c64( in[ 2 ] ) << 6 );
+    }
+    if ( out_len < out_len_calc ) {
+      out[ out_len++ ] = ( val >> 16 ) & 0xff;
+      if ( out_len < out_len_calc ) {
+        out[ out_len++ ] = ( val >> 8 ) & 0xffU;
+        if ( out_len < out_len_calc )
+          out[ out_len++ ] = val & 0xffU;
+      }
+    }
+  }
+  return out_len;
+}
+
+
