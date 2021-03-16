@@ -201,13 +201,11 @@ Programs should be in this group:
 $ sudo usermod -a -G raikv username
 ```
 
-to use the memory created by `kv_server`, or a change should be made to
-run with the argument `-o ugo+rw` or with the appropriate owner permissions.
-These are set in the `/lib/systemd/system/raikv.service` file.
-
-The sysv shared memory can map using 1G or 2M page size.  The alternative is to
-mount a ram file system with hugepages and use the mmap facility, or the posix
-facility in the case of /dev/shm.
+The group raikv allows other processes to use the memory created by
+`kv_server`.  If owner permissions are needed instread of group permissions, a
+change should be made to run with the argument `-o ugo+rw` or with the
+appropriate owner permissions.  These are set in the
+`/lib/systemd/system/raikv.service` file.
 
 ```console
 $ sudo systemctl start raikv
@@ -220,7 +218,22 @@ key        shmid      owner      perms      bytes      nattch     status
 
 The key above in the "Shared Memory Segment" is a hash of the name of the KV
 map.  Multiple maps may exist, they are attached by name, in this case the
-name is "sysv:raikv.shm".
+name is "sysv:raikv.shm" and the key in the first column is a hash of that.
+
+The shared memory can map using 1G or 2M page sizes.  The alternative is to
+mount a ram file system with hugepages and use the mmap facility, or the posix
+facility in the case of /dev/shm.  Sometimes the Linux kernel ignores the page
+size advisory of the system call for shared memory mapping.  The memory page
+size can be examined by looking at `/proc/pid/smaps`.  In this case, the memory
+was acquired by the System V facility:
+
+```console
+$ cat /proc/`pidof kv_server`/smaps | grep -A 3 SYSV
+7ff680000000-7ff700000000 rw-s 00000000 00:0f 2424889                    /SYSV9a6d37aa (deleted)
+Size:            2097152 kB
+KernelPageSize:  1048576 kB
+MMUPageSize:     1048576 kB
+```
 
 Or, just run `kv_server` directly.  The `kv_server` program isn't necessary
 after shm segment is created.  It logs statistics, updates the time for

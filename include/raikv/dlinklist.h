@@ -67,6 +67,58 @@ struct DLinkList {
   }
 };
 
+template <class LIST>
+struct SLinkList {
+  LIST * hd, * tl;
+
+  SLinkList() : hd( 0 ), tl( 0 ) {}
+  void init( void ) {
+    this->hd = this->tl = NULL;
+  }
+  bool is_empty( void ) const {
+    return this->hd == NULL;
+  }
+  void push_hd( LIST *p ) {
+    if ( this->hd == NULL )
+      this->tl = p;
+    p->next = this->hd;
+    this->hd = p;
+  }
+  void push_tl( LIST *p ) {
+    if ( this->tl == NULL )
+      this->hd = p;
+    else
+      this->tl->next = p;
+    p->next = NULL;
+    this->tl = p;
+  }
+  LIST *pop_hd( void ) {
+    LIST *p = this->hd;
+    if ( (this->hd = (LIST *) p->next) == NULL )
+      this->tl = NULL;
+    else
+      p->next = NULL;
+    return p;
+  }
+  LIST *unlink( LIST *p ) {
+    LIST * x = this->hd;
+    if ( p != x ) {
+      for (;;) {
+        if ( p == (LIST *) x->next ) {
+          x->next = p->next;
+          if ( p == this->tl )
+            this->tl = x;
+          else
+            p->next = NULL;
+          return p;
+        }
+        x = x->next;
+      }
+    }
+    return this->pop_hd();
+  }
+};
+
 }
 }
 #endif
