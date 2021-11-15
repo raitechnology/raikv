@@ -117,7 +117,11 @@ main( int argc, char *argv[] )
 #else
                "murmur";
 #endif
-  const uint64_t TEST_COUNT = 10000000;
+  bool crc_hash   = false,
+       crcx2_hash = false,
+       crcx4_hash = false,
+       crcar_hash = false;
+  const uint64_t TEST_COUNT = 10000000; /* multiple of 64 */
 
   if ( argc == 1 ) {
 cmd_error:;
@@ -143,8 +147,12 @@ cmd_error:;
              "spooky "
 #endif
 #if defined( USE_KV_MURMUR_HASH )
-             "murmur"
+             "murmur "
 #endif
+             "crc"
+             "crcx2"
+             "crcx4"
+             "crcar"
              ") (keylen)\n",
              argv[ 0 ] );
     return 1;
@@ -159,6 +167,23 @@ cmd_error:;
   printf( "content=%s\n", fill->name );
   if ( argc > 2 )
     name = argv[ 2 ];
+  if ( ::strcmp( name, "crc" ) == 0 ) {
+    func = NULL;
+    crc_hash = true;
+  }
+  else if ( ::strcmp( name, "crcx2" ) == 0 ) {
+    func = NULL;
+    crcx2_hash = true;
+  }
+  else if ( ::strcmp( name, "crcx4" ) == 0 ) {
+    func = NULL;
+    crcx4_hash = true;
+  }
+  else if ( ::strcmp( name, "crcar" ) == 0 ) {
+    func = NULL;
+    crcar_hash = true;
+  }
+  else
 #if defined( USE_KV_CITY_HASH )
   if ( ::strcmp( name, "citymur" ) == 0 )
     func = kv_hash_citymur128;
@@ -209,9 +234,10 @@ cmd_error:;
 #endif
 #if defined( USE_KV_MEOW_HASH )
   if ( func == NULL &&
-       ! meow_x2 && ! meow_x2_diff && ! meow_x4 && ! meow_x4_diff && ! meow_x8 )
+       ! meow_x2 && ! meow_x2_diff && ! meow_x4 && ! meow_x4_diff &&
+       ! meow_x8 && ! crc_hash && ! crcx2_hash && ! crcx4_hash && ! crcar_hash )
 #else
-  if ( func == NULL )
+  if ( func == NULL && ! crc_hash && ! crcx2_hash && ! crcx4_hash && ! crcar_hash )
 #endif
   {
     fprintf( stderr, "hash %s not available\n", name );
@@ -229,16 +255,34 @@ cmd_error:;
                           "YW55IGNhcm5hbCBwbGVhc3U=",
                           "YW55IGNhcm5hbCBwbGVhcw==" };
 
-  char buf[ 128 ];
+  const char *eq_str[]  = { "ABCDEFG", "QUJDREVGRw==",
+                            "ABCDEFGH", "QUJDREVGR0g=" };
+  const char *eq_str2[] = { "ABCDEFG", "QUJDREVGRw",
+                            "ABCDEFGH", "QUJDREVGR0g" };
+  char buf[ 256 ];
   size_t bsz;
 
-  bsz = bin_to_base64( "ABCDEFG", 7, buf );
-  if ( bsz != 12 || memcmp( buf, "QUJDREVGRw==", 12 ) != 0 )
-    printf( "not eq\n" );
+  for ( i = 0; i < 4; i += 2 ) {
+    const char * in = eq_str[ i ], * out = eq_str[ i + 1 ];
+    size_t in_sz = strlen( in ), out_sz = strlen( out );
+    bsz = bin_to_base64( in, in_sz, buf );
+    if ( bsz != out_sz || memcmp( buf, out, out_sz ) != 0 )
+      printf( "not eq %s %s (%.*s)\n", in, out, (int) bsz, buf );
+    bsz = base64_to_bin( out, out_sz, buf );
+    if ( bsz != in_sz || memcmp( buf, in, in_sz ) != 0 )
+      printf( "not eq %s %s\n", out, in );
+  }
 
-  bsz = bin_to_base64( "ABCDEFGH", 8, buf );
-  if ( bsz != 12 || memcmp( buf, "QUJDREVGR0g=", 12 ) != 0 )
-    printf( "not eq\n" );
+  for ( i = 0; i < 4; i += 2 ) {
+    const char * in = eq_str2[ i ], * out = eq_str2[ i + 1 ];
+    size_t in_sz = strlen( in ), out_sz = strlen( out );
+    bsz = bin_to_base64( in, in_sz, buf, false );
+    if ( bsz != out_sz || memcmp( buf, out, out_sz ) != 0 )
+      printf( "not eq2 %s %s (%.*s)\n", in, out, (int) bsz, buf );
+    bsz = base64_to_bin( out, out_sz, buf );
+    if ( bsz != in_sz || memcmp( buf, in, in_sz ) != 0 )
+      printf( "not eq2 %s %s\n", out, in );
+  }
 
   for ( i = 0; i < 5; i++ ) {
     bsz = base64_to_bin( exout[ i ], ::strlen( exout[ i ] ), buf );
@@ -251,6 +295,24 @@ cmd_error:;
       printf( "len not right\n" );
     if ( ::memcmp( buf, exout[ i ], bsz ) != 0 )
       printf( "not eq\n" );
+  }
+  static uint8_t pat[ 4 ] = { 0x55, 0xaa, 0xff, 0x88 };
+  for ( size_t p = 0; p < 4; p++ ) {
+    char tmp[ 128 ];
+    char tmp2[ 256 ];
+    for ( i = 0; i < 128; i++ )
+      tmp[ i ] = (char) pat[ p ];
+    for ( i = 0; i < 128; i++ ) {
+      ::memset( tmp2, 0, sizeof( tmp2 ) );
+      size_t j = bin_to_base64( tmp, i, buf, true );
+             k = base64_to_bin( buf, j, tmp2 );
+      if ( i > KV_BASE64_BIN_SIZE( j ) ||
+           i != k || ::memcmp( tmp, tmp2, i ) != 0 ) {
+        printf( "%lu (%lu geq %lu) -> %lu -> %lu (%lu %lu eq %d)\n",
+                i, i, KV_BASE64_BIN_SIZE( j ), j,
+                k, i, k, ::memcmp( tmp, tmp2, i ) == 0 );
+      }
+    }
   }
 #if defined( USE_KV_MEOW_HASH )
   const char *ar[] = {
@@ -392,8 +454,114 @@ cmd_error:;
       fill->nextKey( kb[ i ], keylen );
       k += kb[ i ].kb.keylen;
     }
+    if ( crc_hash ) {
+      t1 = current_monotonic_time_s();
+      j = 0;
+      for ( i = 0; i < TEST_COUNT; i++ ) {
+        kv_crc_c( kb[ j ].kb.u.buf, kb[ j ].kb.keylen, 0 );
+        j = ( j + 1 ) & ( keycount - 1 );
+      }
+      t2 = current_monotonic_time_s();
+      t2 -= t1;
+
+      ::memset( cov, 0, ht_size * sizeof( cov[ 0 ] ) );
+      for ( j = 0; j < keycount; j++ ) {
+        uint32_t h1 = 0;
+        h1 = kv_crc_c( kb[ j ].kb.u.buf, kb[ j ].kb.keylen, 0 );
+        cov[ h1 % ht_size ]++;
+      }
+    }
+    else if ( crcx2_hash ) {
+      t1 = current_monotonic_time_s();
+      j = 0;
+      for ( i = 0; i < TEST_COUNT; i += 2 ) {
+        uint32_t h[ 2 ];
+        h[ 0 ] = 0; h[ 1 ] = 0;
+        kv_crc_c_2_diff( kb[ j ].kb.u.buf, kb[ j ].kb.keylen, &h[ 0 ],
+                         kb[ j+1 ].kb.u.buf, kb[ j+1 ].kb.keylen, &h[ 1 ] );
+        j = ( j + 2 ) & ( keycount - 1 );
+      }
+      t2 = current_monotonic_time_s();
+      t2 -= t1;
+
+      ::memset( cov, 0, ht_size * sizeof( cov[ 0 ] ) );
+      for ( j = 0; j < keycount; j += 2 ) {
+        uint32_t h[ 2 ];
+        h[ 0 ] = 0; h[ 1 ] = 0;
+        kv_crc_c_2_diff( kb[ j ].kb.u.buf, kb[ j ].kb.keylen, &h[ 0 ],
+                         kb[ j+1 ].kb.u.buf, kb[ j+1 ].kb.keylen, &h[ 1 ] );
+        cov[ h[ 0 ] % ht_size ]++;
+        cov[ h[ 1 ] % ht_size ]++;
+      }
+    }
+    else if ( crcx4_hash ) {
+      t1 = current_monotonic_time_s();
+      j = 0;
+      for ( i = 0; i < TEST_COUNT; i += 4 ) {
+        uint32_t h[ 4 ];
+        h[ 0 ] = 0; h[ 1 ] = 0; h[ 2 ] = 0; h[ 3 ] = 0;
+        kv_crc_c_4_diff( kb[ j ].kb.u.buf, kb[ j ].kb.keylen, &h[ 0 ],
+                         kb[ j+1 ].kb.u.buf, kb[ j+1 ].kb.keylen, &h[ 1 ],
+                         kb[ j+2 ].kb.u.buf, kb[ j+2 ].kb.keylen, &h[ 2 ],
+                         kb[ j+3 ].kb.u.buf, kb[ j+3 ].kb.keylen, &h[ 3 ] );
+        j = ( j + 4 ) & ( keycount - 1 );
+      }
+      t2 = current_monotonic_time_s();
+      t2 -= t1;
+
+      ::memset( cov, 0, ht_size * sizeof( cov[ 0 ] ) );
+      for ( j = 0; j < keycount; j += 4 ) {
+        uint32_t h[ 4 ];
+        h[ 0 ] = 0; h[ 1 ] = 0; h[ 2 ] = 0; h[ 3 ] = 0;
+        kv_crc_c_4_diff( kb[ j ].kb.u.buf, kb[ j ].kb.keylen, &h[ 0 ],
+                         kb[ j+1 ].kb.u.buf, kb[ j+1 ].kb.keylen, &h[ 1 ],
+                         kb[ j+2 ].kb.u.buf, kb[ j+2 ].kb.keylen, &h[ 2 ],
+                         kb[ j+3 ].kb.u.buf, kb[ j+3 ].kb.keylen, &h[ 3 ] );
+        cov[ h[ 0 ] % ht_size ]++;
+        cov[ h[ 1 ] % ht_size ]++;
+        cov[ h[ 2 ] % ht_size ]++;
+        cov[ h[ 3 ] % ht_size ]++;
+      }
+    }
+    else if ( crcar_hash ) {
+      t1 = current_monotonic_time_s();
+      j = 0;
+      for ( i = 0; i < TEST_COUNT; i += 16 ) {
+        uint32_t h[ 16 ];
+        const void *p[ 16 ];
+        size_t kl[ 16 ];
+
+        for ( size_t k = 0; k < 16; k++ ) {
+          h[ k ]  = 0;
+          p[ k ]  = kb[ j + k ].kb.u.buf;
+          kl[ k ] = kb[ j + k ].kb.keylen;
+        }
+        kv_crc_c_array( p, kl, h, 16 );
+        j = ( j + 16 ) & ( keycount - 1 );
+      }
+      t2 = current_monotonic_time_s();
+      t2 -= t1;
+
+      ::memset( cov, 0, ht_size * sizeof( cov[ 0 ] ) );
+      for ( j = 0; j < keycount; j += 16 ) {
+        uint32_t h[ 16 ];
+        const void *p[ 16 ];
+        size_t kl[ 16 ];
+
+        for ( size_t k = 0; k < 16; k++ ) {
+          h[ k ]  = 0;
+          p[ k ]  = kb[ j + k ].kb.u.buf;
+          kl[ k ] = kb[ j + k ].kb.keylen;
+        }
+        kv_crc_c_array( p, kl, h, 16 );
+
+        for ( size_t l = 0; l < 16; l++ ) {
+          cov[ h[ l ] % ht_size ]++;
+        }
+      }
+    }
 #if defined( USE_KV_MEOW_HASH )
-    if ( meow_x2 ) {
+    else if ( meow_x2 ) {
       t1 = current_monotonic_time_s();
       j = 0;
       for ( i = 0; i < TEST_COUNT; i += 2 ) {
@@ -402,7 +570,7 @@ cmd_error:;
         kv_hash_meow128_2_same_length( kb[ j ].kb.u.buf,
                                        kb[ j+1 ].kb.u.buf,
                                        kb[ j ].kb.keylen, h );
-        j = ( j + 2 ) % keycount;
+        j = ( j + 2 ) & ( keycount - 1 );
       }
       t2 = current_monotonic_time_s();
       t2 -= t1;
@@ -428,7 +596,7 @@ cmd_error:;
                                        kb[ j ].kb.keylen,
                                        kb[ j+1 ].kb.u.buf,
                                        kb[ j+1 ].kb.keylen, h );
-        j = ( j + 2 ) % keycount;
+        j = ( j + 2 ) & ( keycount - 1 );
       }
       t2 = current_monotonic_time_s();
       t2 -= t1;
@@ -456,7 +624,7 @@ cmd_error:;
                                        kb[ j+2 ].kb.u.buf,
                                        kb[ j+3 ].kb.u.buf,
                                        kb[ j ].kb.keylen, h );
-        j = ( j + 4 ) % keycount;
+        j = ( j + 4 ) & ( keycount - 1 );
       }
       t2 = current_monotonic_time_s();
       t2 -= t1;
@@ -490,7 +658,7 @@ cmd_error:;
                                        kb[ j+2 ].kb.keylen,
                                        kb[ j+3 ].kb.u.buf,
                                        kb[ j+3 ].kb.keylen, h );
-        j = ( j + 4 ) % keycount;
+        j = ( j + 4 ) & ( keycount - 1 );
       }
       t2 = current_monotonic_time_s();
       t2 -= t1;
@@ -528,7 +696,7 @@ cmd_error:;
                                        kb[ j+6 ].kb.u.buf,
                                        kb[ j+7 ].kb.u.buf,
                                        kb[ j ].kb.keylen, h );
-        j = ( j + 8 ) % keycount;
+        j = ( j + 8 ) & ( keycount - 1 );
       }
       t2 = current_monotonic_time_s();
       t2 -= t1;
@@ -563,7 +731,7 @@ cmd_error:;
       for ( i = 0; i < TEST_COUNT; i++ ) {
         uint64_t h1 = 0, h2 = 0;
         func( kb[ j ].kb.u.buf, kb[ j ].kb.keylen, &h1, &h2 );
-        j = ( j + 1 ) % keycount;
+        j = ( j + 1 ) & ( keycount - 1 );
       }
       t2 = current_monotonic_time_s();
       t2 -= t1;

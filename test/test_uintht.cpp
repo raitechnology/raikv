@@ -14,79 +14,174 @@ void
 do_test( const char *kind )
 {
   IntHashTabT<Int,Value> *ht = IntHashTabT<Int,Value>::resize( NULL );
-  size_t   pos, i, rszcnt = 0;
+  size_t   pos, i;
   Value    v;
-  uint64_t t;
+  uint64_t t, ins_time, find_time, even_time, odd_time;
 
-  printf( "\nsizeof( 64 ): %lu\n", IntHashTabT<Int,Value>::alloc_size( 64 ) );
-  printf( "insert %lu elements (%s):\n", iters, kind );
   t = kv_current_monotonic_time_ns();
   for ( i = 0; i < iters; i++ ) {
-    ht->upsert( Int( kv_crc_c( &i, sizeof( i ), 0 ) ), Value( i ) );
-    if ( ht->need_resize() ) {
-      ht = IntHashTabT<Int,Value>::resize( ht );
-      rszcnt++;
-    }
+    ht->upsert( Int( kv_hash_uint( i ) ), Value( i ) );
+    IntHashTabT<Int,Value>::check_resize( ht );
   }
-  t = kv_current_monotonic_time_ns() - t;
-  printf( "ns per ins %.2f\n",  (double) t / (double) iters );
-  printf( "count %lu\n", (uint64_t) ht->elem_count );
-  printf( "resized %lu\n", (uint64_t) rszcnt );
+  ins_time = kv_current_monotonic_time_ns() - t;
 
-  printf( "\nfind all %lu elements (%s):\n", iters, kind );
   t = kv_current_monotonic_time_ns();
   for ( i = 0; i < iters; i++ ) {
-    if ( ! ht->find( Int( kv_crc_c( &i, sizeof( i ), 0 ) ), pos, v ) ) {
+    if ( ! ht->find( Int( kv_hash_uint( i ) ), pos, v ) ) {
       fprintf( stderr, "not found %lu\n", (uint64_t) i );
     }
     else if ( v != i ) {
       fprintf( stderr, "collision %lu != %lu\n", (uint64_t) v, (uint64_t) i );
     }
   }
-  t = kv_current_monotonic_time_ns() - t;
-  printf( "ns per find %.2f\n",  (double) t / (double) iters );
-  printf( "count %lu\n", (uint64_t) ht->elem_count );
+  find_time = kv_current_monotonic_time_ns() - t;
 
-  printf( "\ndelete even elements (%s):\n", kind );
   t = kv_current_monotonic_time_ns();
   for ( i = 0; i < iters; i += 2 ) {
-    if ( ! ht->find( Int( kv_crc_c( &i, sizeof( i ), 0 ) ), pos, v ) ) {
+    if ( ! ht->find( Int( kv_hash_uint( i ) ), pos, v ) ) {
       fprintf( stderr, "not found %lu\n", (uint64_t) i );
     }
     else {
       ht->remove( pos );
+      IntHashTabT<Int,Value>::check_resize( ht );
     }
   }
-  t = kv_current_monotonic_time_ns() - t;
-  printf( "ns per del %.2f\n",  (double) t / (double) ( iters / 2 ));
-  printf( "resized %lu\n", (uint64_t) rszcnt );
-  printf( "count %lu\n", (uint64_t) ht->elem_count );
+  even_time = kv_current_monotonic_time_ns() - t;
 
-  t = kv_current_monotonic_time_ns();
-  if ( ht->need_resize() )
-    ht = IntHashTabT<Int,Value>::resize( ht );
-  t = kv_current_monotonic_time_ns() - t;
-  printf( "resize %lu ns\n", t );
-
-  printf( "\ndelete odd elements (%s):\n", kind );
   t = kv_current_monotonic_time_ns();
   for ( i = 1; i < iters; i += 2 ) {
-    if ( ! ht->find( Int( kv_crc_c( &i, sizeof( i ), 0 ) ), pos, v ) ) {
+    if ( ! ht->find( Int( kv_hash_uint( i ) ), pos, v ) ) {
       fprintf( stderr, "not found %lu\n", (uint64_t) i );
     }
     else {
       ht->remove( pos );
+      IntHashTabT<Int,Value>::check_resize( ht );
     }
   }
-  t = kv_current_monotonic_time_ns() - t;
-  printf( "ns per del %.2f\n",  (double) t / (double) ( iters / 2 ));
-  printf( "count %lu\n", (uint64_t) ht->elem_count );
+  odd_time = kv_current_monotonic_time_ns() - t;
+
+  printf( "%s ", kind );
+  printf( "cnt %lu/%lu, ns per ins: %.2f, find %.2f, even %.2f, odd %.2f\n",
+           iters, ht->elem_count,
+           (double) ins_time / (double) iters,
+           (double) find_time / (double) iters,
+           (double) even_time / (double) iters / 2,
+           (double) odd_time / (double) iters / 2 );
+  delete ht;
+}
+
+template <class Int, class Value, size_t iters>
+void
+do_test2( const char *kind )
+{
+  IntHashTabX<Int,Value> ht;
+  size_t   pos, i;
+  Value    v;
+  uint64_t t, ins_time, find_time, even_time, odd_time;
 
   t = kv_current_monotonic_time_ns();
-  if ( ht->need_resize() )
-    ht = IntHashTabT<Int,Value>::resize( ht );
-  t = kv_current_monotonic_time_ns() - t;
-  printf( "resize %lu ns\n", t );
+  for ( i = 0; i < iters; i++ ) {
+    ht.upsert( Int( kv_hash_uint( i ) ), Value( i ) );
+  }
+  ins_time = kv_current_monotonic_time_ns() - t;
+
+  t = kv_current_monotonic_time_ns();
+  for ( i = 0; i < iters; i++ ) {
+    if ( ! ht.find( Int( kv_hash_uint( i ) ), pos, v ) ) {
+      fprintf( stderr, "not found %lu\n", (uint64_t) i );
+    }
+    else if ( v != i ) {
+      fprintf( stderr, "collision %lu != %lu\n", (uint64_t) v, (uint64_t) i );
+    }
+  }
+  find_time = kv_current_monotonic_time_ns() - t;
+
+  t = kv_current_monotonic_time_ns();
+  for ( i = 0; i < iters; i += 2 ) {
+    if ( ! ht.find( Int( kv_hash_uint( i ) ), pos ) ) {
+      fprintf( stderr, "not found %lu\n", (uint64_t) i );
+    }
+    else {
+      ht.remove( pos );
+    }
+  }
+  even_time = kv_current_monotonic_time_ns() - t;
+
+  t = kv_current_monotonic_time_ns();
+  for ( i = 1; i < iters; i += 2 ) {
+    if ( ! ht.find( Int( kv_hash_uint( i ) ), pos ) ) {
+      fprintf( stderr, "not found %lu\n", (uint64_t) i );
+    }
+    else {
+      ht.remove( pos );
+    }
+  }
+  odd_time = kv_current_monotonic_time_ns() - t;
+
+  printf( "%s ", kind );
+  printf( "cnt %lu/%lu, ns per ins: %.2f, find %.2f, even %.2f, odd %.2f\n",
+           iters, ht.elem_count,
+           (double) ins_time / (double) iters,
+           (double) find_time / (double) iters,
+           (double) even_time / (double) iters / 2,
+           (double) odd_time / (double) iters / 2 );
+}
+
+template <class Int, size_t iters>
+void
+do_test3( const char *kind )
+{
+  IntHashTabU<Int> *ht = IntHashTabU<Int>::resize( NULL );
+  size_t   pos, i;
+  uint64_t t, ins_time, find_time, even_time, odd_time;
+
+  t = kv_current_monotonic_time_ns();
+  for ( i = 0; i < iters; i++ ) {
+    ht->upsert( Int( kv_hash_uint( i ) ) );
+    IntHashTabU<Int>::check_resize( ht );
+  }
+  ins_time = kv_current_monotonic_time_ns() - t;
+
+  t = kv_current_monotonic_time_ns();
+  for ( i = 0; i < iters; i++ ) {
+    if ( ! ht->find( Int( kv_hash_uint( i ) ), pos ) ) {
+      fprintf( stderr, "not found %lu\n", (uint64_t) i );
+    }
+  }
+  find_time = kv_current_monotonic_time_ns() - t;
+
+  t = kv_current_monotonic_time_ns();
+  for ( i = 0; i < iters; i += 2 ) {
+    if ( ! ht->find( Int( kv_hash_uint( i ) ), pos ) ) {
+      fprintf( stderr, "not found %lu\n", (uint64_t) i );
+    }
+    else {
+      ht->remove( pos );
+      IntHashTabU<Int>::check_resize( ht );
+    }
+  }
+  even_time = kv_current_monotonic_time_ns() - t;
+
+  t = kv_current_monotonic_time_ns();
+  for ( i = 1; i < iters; i += 2 ) {
+    if ( ! ht->find( Int( kv_hash_uint( i ) ), pos ) ) {
+      fprintf( stderr, "not found %lu\n", (uint64_t) i );
+    }
+    else {
+      ht->remove( pos );
+      IntHashTabU<Int>::check_resize( ht );
+    }
+  }
+  odd_time = kv_current_monotonic_time_ns() - t;
+
+  printf( "%s ", kind );
+  printf( "cnt %lu/%lu, ns per ins: %.2f, find %.2f, even %.2f, odd %.2f\n",
+           iters, ht->elem_count,
+           (double) ins_time / (double) iters,
+           (double) find_time / (double) iters,
+           (double) even_time / (double) iters / 2,
+           (double) odd_time / (double) iters / 2 );
+  delete ht;
 }
 
 struct Hash {
@@ -116,9 +211,23 @@ int
 main( void )
 {
   const char *t1 = "uint32_t*2", *t2 = "uint64_t*2", *t3 = "Hash*uint32_t";
-  do_test<uint32_t, uint32_t, 100000>( t1 );
-  do_test<uint64_t, uint64_t, 100000>( t2 );
-  do_test<Hash, uint32_t, 100000>( t3 );
+
+  for ( int i = 0; i < 5; i++ ) {
+    printf( "\ndo_test\n" );
+    do_test<uint32_t, uint32_t, 50000>( t1 );
+    do_test<uint64_t, uint64_t, 50000>( t2 );
+    do_test<Hash, uint32_t, 50000>( t3 );
+
+    printf( "\ndo_test2\n" );
+    do_test2<uint32_t, uint32_t, 50000>( t1 );
+    do_test2<uint64_t, uint64_t, 50000>( t2 );
+    do_test2<Hash, uint32_t, 50000>( t3 );
+
+    printf( "\ndo_test3\n" );
+    do_test3<uint32_t, 50000>( t1 );
+    do_test3<uint64_t, 50000>( t2 );
+    do_test3<Hash, 50000>( t3 );
+  }
 
   return 0;
 }

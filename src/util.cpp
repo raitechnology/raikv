@@ -60,7 +60,7 @@ rai::kv::rand::fill_urandom_bytes( void *buf,  uint16_t sz ) noexcept
       if ( nbytes <= 0 ) {
         int fd = ::open( "/dev/urandom", O_RDONLY );
         if ( fd >= 0 ) {
-          nbytes = ::read( fd, ubuf, sizeof( buf ) );
+          nbytes = ::read( fd, ubuf, sizeof( ubuf ) );
           ::close( fd );
         }
         if ( nbytes <= 0 ) {
@@ -108,6 +108,15 @@ rai::kv::rand::xorshift1024star::next( void ) noexcept
   s1 ^= s1 << 31; // a
   this->state[ this->p ] = s1 ^ s0 ^ (s1 >> 11) ^ (s0 >> 30); // b,c
   return this->state[ this->p ] * _U64( 0x9e3779b9, 0x7f4a7c13 );
+}
+
+void
+rai::kv::rand::xoroshiro128plus::static_init( uint64_t x,  uint64_t y ) noexcept
+{
+  this->state[ 0 ] = _U64( 0x9e3779b9, 0x7f4a7c13 );
+  this->state[ 1 ] = _U64( 0x2b916c87, 0x261fe609 );
+  this->state[ 0 ] ^= x;
+  this->state[ 1 ] ^= y;
 }
 
 bool
@@ -170,6 +179,14 @@ rai::kv::current_monotonic_time_ns( void ) noexcept
   timespec ts;
   clock_gettime( CLOCK_MONOTONIC, &ts );
   return ts.tv_sec * (uint64_t) 1000000000 + ts.tv_nsec;
+}
+
+uint64_t
+rai::kv::current_monotonic_time_us( void ) noexcept
+{
+  timespec ts;
+  clock_gettime( CLOCK_MONOTONIC, &ts );
+  return ts.tv_sec * (uint64_t) 1000000 + ts.tv_nsec;
 }
 
 double
@@ -278,6 +295,9 @@ double kv_current_realtime_coarse_s( void ) {
 }
 uint64_t kv_current_monotonic_time_ns( void ) {
   return rai::kv::current_monotonic_time_ns();
+}
+uint64_t kv_current_monotonic_time_us( void ) {
+  return rai::kv::current_monotonic_time_us();
 }
 double kv_current_monotonic_time_s( void ) {
   return rai::kv::current_monotonic_time_s();
@@ -411,6 +431,30 @@ rai::kv::int64_to_string( int64_t v,  char *buf,  size_t len ) noexcept
   return uint64_to_string( (uint64_t) v, buf, len );
 }
 #endif
+static inline uint64_t
+hex_value( int c )
+{
+  if ( c >= '0' && c <= '9' )
+    return (uint64_t) ( c - '0' );
+  if ( c >= 'a' && c <= 'f' )
+    return (uint64_t) ( c - 'a' + 10 );
+  if ( c >= 'A' && c <= 'F' )
+    return (uint64_t) ( c - 'A' + 10 );
+  return 0;
+}
+
+static uint64_t
+hex_string_to_uint64( const char *b,  size_t len ) noexcept
+{
+  uint64_t n = 0, pow16 = 1;
+  for (;;) {
+    n += pow16 * hex_value( b[ --len ] );
+    if ( len == 0 )
+      return n;
+    pow16 *= 16;
+  }
+}
+
 uint64_t
 rai::kv::string_to_uint64( const char *b,  size_t len ) noexcept
 {
@@ -424,6 +468,8 @@ rai::kv::string_to_uint64( const char *b,  size_t len ) noexcept
   size_t i, j;
   uint64_t n = 0;
   i = j = 0;
+  if ( len > 2 && b[ 0 ] == '0' && ( b[ 1 ] == 'x' || b[ 1 ] == 'X' ) )
+    return hex_string_to_uint64( &b[ 2 ], len - 2 );
   if ( len < max_pow10 )
     i = max_pow10 - len;
   else
@@ -492,12 +538,15 @@ static inline uint8_t c64( uint8_t b ) {
 }
 
 size_t
-rai::kv::bin_to_base64( const void *inp,  size_t in_len,  void *outp ) noexcept
+rai::kv::bin_to_base64( const void *inp,  size_t in_len,  void *outp,
+                        bool eq_padding ) noexcept
 {
-  uint64_t val;
-  size_t   out_len = 0;
-  const uint8_t * in = (const uint8_t *) inp;
-  uint8_t * out = (uint8_t *) outp;
+  uint64_t        val;
+  size_t          out_len      = 0;
+  const uint8_t * in           = (const uint8_t *) inp;
+  uint8_t       * out          = (uint8_t *) outp;
+  size_t          out_len_calc = KV_BASE64_SIZE( in_len );
+
   while ( in_len >= 6 ) {
     val = ( (uint64_t) in[ 0 ] << 40 ) |
           ( (uint64_t) in[ 1 ] << 32 ) |
@@ -532,12 +581,19 @@ rai::kv::bin_to_base64( const void *inp,  size_t in_len,  void *outp ) noexcept
     if ( in_len > 1 )
       val |= ( (uint64_t) in[ 1 ] << 8 );
     out[ out_len++ ] = b64( ( val >> 18 ) & 63U );
-    out[ out_len++ ] = b64( ( val >> 12 ) & 63U );
-    if ( in_len > 1 )
-      out[ out_len++ ] = b64( ( val >> 6 ) & 63U );
-    if ( in_len == 1 )
-      out[ out_len++ ] = '=';
-    out[ out_len++ ] = '=';
+    if ( out_len < out_len_calc ) {
+      out[ out_len++ ] = b64( ( val >> 12 ) & 63U );
+      if ( out_len < out_len_calc )
+        out[ out_len++ ] = b64( ( val >> 6 ) & 63U );
+    }
+    if ( eq_padding ) {
+      size_t out_len_calc_eq = KV_ALIGN( out_len_calc, 4 );
+      if ( out_len < out_len_calc_eq ) {
+        out[ out_len++ ] = '=';
+        if ( out_len < out_len_calc_eq )
+          out[ out_len++ ] = '=';
+      }
+    }
   }
   return out_len;
 }
@@ -545,14 +601,15 @@ rai::kv::bin_to_base64( const void *inp,  size_t in_len,  void *outp ) noexcept
 size_t
 rai::kv::base64_to_bin( const void *inp,  size_t in_len,  void *outp ) noexcept
 {
-  uint64_t val;
-  size_t   out_len = 0;
-  const uint8_t * in = (const uint8_t *) inp;
-  uint8_t * out = (uint8_t *) outp;
-  size_t out_len_calc;
+  uint64_t        val;
+  size_t          out_len = 0;
+  const uint8_t * in      = (const uint8_t *) inp;
+  uint8_t       * out     = (uint8_t *) outp;
+  size_t          out_len_calc;
+
   while ( in_len > 0 && in[ in_len - 1 ] == '=' )
     in_len--;
-  out_len_calc = in_len * 3 / 4;
+  out_len_calc = KV_BASE64_BIN_SIZE( in_len );
   while ( in_len >= 8 ) {
     val = ( (uint64_t) c64( in[ 0 ] ) << 42 ) |
           ( (uint64_t) c64( in[ 1 ] ) << 36 ) |

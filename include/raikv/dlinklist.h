@@ -34,6 +34,19 @@ struct DLinkList {
     this->tl = p;
     p->next = NULL;
   }
+  void push_tl( DLinkList<LIST> &l ) {
+    if ( this->tl == NULL ) {
+      this->hd = l.hd;
+      this->tl = l.tl;
+    }
+    else if ( l.hd != NULL ) {
+      this->tl->next = l.hd;
+      l.hd->back = this->tl;
+      this->tl = l.tl;
+    }
+    l.hd = NULL;
+    l.tl = NULL;
+  }
   void pop( LIST *p ) {
     if ( p->back == NULL )
       this->hd = (LIST *) p->next;
@@ -44,6 +57,18 @@ struct DLinkList {
     else
       p->next->back = p->back;
     p->next = p->back = NULL;
+  }
+  void insert_before( LIST *x,  LIST *piv ) {
+    if ( piv == this->hd )
+      this->push_hd( x );
+    else if ( piv == NULL )
+      this->push_tl( x );
+    else {
+      x->next = piv;
+      piv->back->next = x;
+      x->back = piv->back;
+      piv->back = x;
+    }
   }
   LIST *pop_hd( void ) {
     LIST *p = this->hd;
@@ -64,6 +89,30 @@ struct DLinkList {
       p->back = NULL;
     }
     return p;
+  }
+  LIST *unlink( LIST *p,  LIST *piv = NULL ) {
+    if ( p == NULL || this->hd == NULL )
+      return NULL;
+    for (;;) {
+      if ( piv == NULL || p == this->hd ) {
+        if ( p == this->hd ) {
+          if ( (this->hd = p->next) == NULL ) {
+            this->tl = NULL;
+            return p;
+          }
+        }
+      }
+      if ( piv != NULL && piv->next == p ) {
+        piv->next = p->next;
+        if ( p == this->tl )
+          this->tl = piv;
+        return p;
+      }
+      for ( piv = this->hd; piv->next != p; ) {
+        if ( (piv = piv->next) == NULL )
+          return NULL;
+      }
+    }
   }
 };
 
@@ -116,6 +165,86 @@ struct SLinkList {
       }
     }
     return this->pop_hd();
+  }
+  template<int cmp( const LIST &x, const LIST &y )>
+  void sort( void ) {
+    if ( this->hd == NULL || this->hd->next == NULL )
+      return;
+    SLinkList<LIST> l, m;
+    int max = 5;
+    for (;;) {
+      l.hd = l.tl = this->hd;
+      this->hd = this->hd->next;
+      LIST ** last = &this->hd, * next;
+      int count = 0;
+      for ( LIST *el = this->hd; el != NULL; el = next ) {
+        next = el->next;
+        if ( cmp( *el, *l.tl ) >= 0 ) { /* case where items are sorted */
+          *last = next;
+          l.tl->next = el;
+          l.tl = el;
+          count = 0;
+        }
+        else if ( cmp( *el, *l.hd ) <= 0 ) { /* items are rev-sorted */
+          *last = next;
+          el->next = l.hd;
+          l.hd = el;
+          count = 0;
+        }
+        else {
+          /* if items are randomized, endpoints are near the bounds */
+          if ( ++count == max )
+            break;
+          last = &el->next;
+        }
+      }
+      l.tl->next = NULL;
+      m.merge_sorted<cmp>( l );
+      if ( this->hd == NULL ) {
+        this->hd = m.hd;
+        this->tl = m.tl;
+        return;
+      }
+      max++; /* incr max search for bounds when the list is longer */
+    }
+  }
+  template<int cmp( const LIST &x, const LIST &y )>
+  void merge_sorted( SLinkList<LIST> &l ) {
+    LIST * sorted = NULL, * last = NULL, * el;
+    for (;;) {
+      if ( this->hd == NULL ) {
+        if ( last != NULL ) {
+          last->next = l.hd;
+          this->hd = sorted;
+        }
+        else
+          this->hd = l.hd;
+        this->tl = l.tl;
+        l.hd = l.tl = NULL;
+        return;
+      }
+      if ( l.hd == NULL ) {
+        if ( last != NULL ) {
+          last->next = this->hd;
+          this->hd = sorted;
+        }
+        l.tl = NULL;
+        return;
+      }
+      if ( cmp( *this->hd, *l.hd ) <= 0 ) {
+        el = this->hd;
+        this->hd = el->next;
+      }
+      else {
+        el = l.hd;
+        l.hd = el->next;
+      }
+      if ( last != NULL )
+        last->next = el;
+      else
+        sorted = el;
+      last = el;
+    }
   }
 };
 

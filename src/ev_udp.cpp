@@ -40,10 +40,9 @@ EvUdp::listen( const char *ip,  int port,  int opts,  const char *k ) noexcept
       break;
   }   
   status = ::getaddrinfo( ip, svc, &hints, &ai );
-  if ( status != 0 ) {
-    perror( "getaddrinfo" );
-    return -1;
-  }
+  if ( status != 0 )
+    return this->set_sock_err( EV_ERR_GETADDRINFO, errno );
+
   sock = -1;
   /* try inet6 first, since it can listen to both ip stacks */
   for ( int fam = AF_INET6; ; fam = AF_INET ) {
@@ -57,17 +56,20 @@ EvUdp::listen( const char *ip,  int port,  int opts,  const char *k ) noexcept
           if ( fam == AF_INET6 && ( opts & OPT_AF_INET ) != 0 ) {
             if ( ::setsockopt( sock, IPPROTO_IPV6, IPV6_V6ONLY, &off,
                                sizeof( off ) ) != 0 )
-              perror( "warning: IPV6_V6ONLY" );
+              if ( ( opts & OPT_VERBOSE ) != 0 )
+                perror( "warning: IPV6_V6ONLY" );
           }
           if ( ( opts & OPT_REUSEADDR ) != 0 ) {
             if ( ::setsockopt( sock, SOL_SOCKET, SO_REUSEADDR, &on,
                                sizeof( on ) ) != 0 )
-              perror( "warning: SO_REUSEADDR" );
+              if ( ( opts & OPT_VERBOSE ) != 0 )
+                perror( "warning: SO_REUSEADDR" );
           }
           if ( ( opts & OPT_REUSEPORT ) != 0 ) {
             if ( ::setsockopt( sock, SOL_SOCKET, SO_REUSEPORT, &on,
                                sizeof( on ) ) != 0 )
-              perror( "warning: SO_REUSEPORT" );
+              if ( ( opts & OPT_VERBOSE ) != 0 )
+                perror( "warning: SO_REUSEPORT" );
           }
           status = ::bind( sock, p->ai_addr, p->ai_addrlen );
           if ( status == 0 )
@@ -82,12 +84,11 @@ EvUdp::listen( const char *ip,  int port,  int opts,  const char *k ) noexcept
   }
 break_loop:;
   if ( status != 0 ) {
-    perror( "error: bind" );
+    status = this->set_sock_err( EV_ERR_BIND, errno );
     goto fail;
   }
   if ( sock == -1 ) {
-    fprintf( stderr, "error: failed to create a socket\n" );
-    status = -1;
+    status = this->set_sock_err( EV_ERR_SOCKET, errno );
     goto fail;
   }
   this->PeerData::init_peer( sock, p->ai_addr, k );
@@ -131,10 +132,9 @@ EvUdp::connect( const char *ip,  int port,  int opts ) noexcept
       break;
   }
   status = ::getaddrinfo( ip, svc, &hints, &ai );
-  if ( status != 0 ) {
-    perror( "getaddrinfo" );
-    return -1;
-  }
+  if ( status != 0 )
+    return this->set_sock_err( EV_ERR_GETADDRINFO, errno );
+
   sock = -1;
   /* try inet6 first, since it can listen to both ip stacks */
   for ( int fam = AF_INET6; ; fam = AF_INET ) {
@@ -148,8 +148,10 @@ EvUdp::connect( const char *ip,  int port,  int opts ) noexcept
           if ( fam == AF_INET6 && ( opts & OPT_AF_INET ) != 0 ) {
             if ( ::setsockopt( sock, IPPROTO_IPV6, IPV6_V6ONLY, &off,
                                sizeof( off ) ) != 0 )
-              perror( "warning: IPV6_V6ONLY" );
+              if ( ( opts & OPT_VERBOSE ) != 0 )
+                perror( "warning: IPV6_V6ONLY" );
           }
+          this->PeerData::set_addr( p->ai_addr );
           status = ::connect( sock, p->ai_addr, p->ai_addrlen );
           if ( status == 0 )
             goto break_loop;
@@ -163,16 +165,15 @@ EvUdp::connect( const char *ip,  int port,  int opts ) noexcept
   }
 break_loop:;
   if ( status != 0 ) {
-    perror( "error: connect" );
+    status = this->set_sock_err( EV_ERR_CONNECT, errno );
     goto fail;
   }
   if ( sock == -1 ) {
-    fprintf( stderr, "error: failed to create a socket\n" );
-    status = -1;
+    status = this->set_sock_err( EV_ERR_SOCKET, errno );
     goto fail;
   }
-  this->PeerData::init_peer( sock, p->ai_addr, "udp_client" );
   ::fcntl( sock, F_SETFL, O_NONBLOCK | ::fcntl( sock, F_GETFL ) );
+  this->PeerData::init_peer( sock, NULL, "udp_client" );
   if ( (status = this->poll.add_sock( this )) < 0 ) {
     this->fd = -1;
 fail:;

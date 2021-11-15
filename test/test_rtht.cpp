@@ -43,7 +43,7 @@ main( int, char ** )
         buf[ --len ] = '\0';
       if ( len > 0 ) {
         h = djb( buf, len );
-        if ( vec.insert_unique( h, buf, len ) != NULL )
+        if ( vec.upsert( h, buf, len ) != NULL )
           cnt++;
       }
     }

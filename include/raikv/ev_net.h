@@ -45,6 +45,7 @@ enum EvSockOpts {
   OPT_NO_POLL     = 256,/* do not add fd to poll */
   OPT_NO_CLOSE    = 512,/* do not close fd */
   OPT_VERBOSE     = 1024,/* print errors stderr */
+  OPT_CONNECT_NB  = 2048, /* non-block connect */
 
   /* opts inherited from listener, set in EvTcpListen::set_sock_opts()  */
   ALL_TCP_ACCEPT_OPTS = OPT_TCP_NODELAY | OPT_KEEPALIVE | OPT_LINGER,
@@ -77,7 +78,12 @@ enum EvSockErr {
   EV_ERR_WRITE_POLL    = 7, /* epoll failed to mod write */
   EV_ERR_READ_POLL     = 8, /* epoll failed to mod read */
   EV_ERR_ALLOC         = 9, /* alloc sock data */
-  EV_ERR_LAST          = 10 /* extend errors after LAST */
+  EV_ERR_GETADDRINFO   = 10, /* resolver failed */
+  EV_ERR_BIND          = 11, /* bind failed */
+  EV_ERR_CONNECT       = 12, /* connect failed */
+  EV_ERR_BAD_FD        = 13, /* fd is not valid */
+  EV_ERR_SOCKET        = 14, /* failed to create socket */
+  EV_ERR_LAST          = 15 /* extend errors after LAST */
 };
 
 struct EvSocket : public PeerData /* fd and address of peer */EV_DBG_INHERIT {
@@ -106,7 +112,7 @@ struct EvSocket : public PeerData /* fd and address of peer */EV_DBG_INHERIT {
     this->msgs_recv  = 0;
     this->msgs_sent  = 0;
   }
-  void set_sock_err( uint16_t serr,  uint16_t err ) noexcept;
+  int set_sock_err( uint16_t serr,  uint16_t err ) noexcept;
   /* if socket mem is free */
   bool test_opts( EvSockOpts o ) const {
     return ( this->sock_opts & o ) != 0;
@@ -216,19 +222,7 @@ struct EvSocket : public PeerData /* fd and address of peer */EV_DBG_INHERIT {
   static_assert( sizeof( EvSocket ) % 256 == 0, "socket size" );
 #endif
 
-static inline void *aligned_malloc( size_t sz ) {
-#ifdef _ISOC11_SOURCE
-  return ::aligned_alloc( sizeof( kv::BufAlign64 ), sz ); /* >= RH7 */
-#else
-  return ::memalign( sizeof( kv::BufAlign64 ), sz ); /* RH5, RH6.. */
-#endif
-}
-
-/* route_db.h has RoutePublish which contains the function for publishing -
- *   bool publish( pub, rcount, pref_cnt, ph )
- *   publishers may not need to see EvPoll, only RoutePublish, that is why it
- *   is a sepearate structure */
-struct EvPoll : public RoutePublish {
+struct EvPoll {
   static bool is_event_greater( EvSocket *s1,  EvSocket *s2 ) {
     int x1 = __builtin_ffs( s1->state ),
         x2 = __builtin_ffs( s2->state );
@@ -271,7 +265,7 @@ struct EvPoll : public RoutePublish {
   kv::HashTab        * map;             /* the data store */
   EvPrefetchQueue    * prefetch_queue;  /* ordering keys */
   KvPubSub           * pubsub;          /* cross process pubsub */
-  EvTimerQueue       * timer_queue;     /* timer events */
+  TimerQueue           timer;           /* timer events */
   uint64_t             prio_tick,       /* priority queue ticker */
                        wr_timeout_ns,   /* timeout for writes in EV_WRITE_POLL */
                        so_keepalive_ns, /* keep alive ping timeout */
@@ -302,6 +296,21 @@ struct EvPoll : public RoutePublish {
   kv::DLinkList<EvSocket> free_list[ 256 ];     /* socks for accept */
   const char            * sock_type_str[ 256 ]; /* name of sock_type */
 
+  void * operator new( size_t, void *ptr ) { return ptr; }
+  void operator delete( void *ptr ) { ::free( ptr ); }
+  /* 16 seconds */
+  static const uint64_t DEFAULT_NS_TIMEOUT = (uint64_t) 16 * 1000 * 1000 * 1000;
+
+  EvPoll()
+    : sock( 0 ), ev( 0 ), map( 0 ), prefetch_queue( 0 ),
+      pubsub( 0 ), prio_tick( 0 ), wr_timeout_ns( DEFAULT_NS_TIMEOUT ),
+      so_keepalive_ns( DEFAULT_NS_TIMEOUT ),
+      next_id( 0 ), now_ns( 0 ), init_ns( 0 ), ctx_id( kv::MAX_CTX_ID ),
+      dbx_id( kv::MAX_STAT_ID ), fdcnt( 0 ), wr_count( 0 ), maxfd( 0 ),
+      nfds( 0 ), efd( -1 ), null_fd( -1 ), quit( 0 ), prefetch_pending( 0 ),
+      sub_route( *this ) /*, single_thread( false )*/ {
+    ::memset( this->sock_type_str, 0, sizeof( this->sock_type_str ) );
+  }
   /*bool single_thread; (if kv single threaded) */
   /* alloc ALLOC_INCR(64) elems of the above list elems at a time, aligned 64 */
   template<class T>
@@ -352,41 +361,12 @@ struct EvPoll : public RoutePublish {
       this->free_list[ s->sock_type ].pop( s );
     }
   }
-  void * operator new( size_t, void *ptr ) { return ptr; }
-  void operator delete( void *ptr ) { ::free( ptr ); }
-  /* 16 seconds */
-  static const uint64_t DEFAULT_NS_TIMEOUT = (uint64_t) 16 * 1000 * 1000 * 1000;
-
-  EvPoll()
-    : sock( 0 ), ev( 0 ), map( 0 ), prefetch_queue( 0 ),
-      pubsub( 0 ), timer_queue( 0 ), prio_tick( 0 ),
-      wr_timeout_ns( DEFAULT_NS_TIMEOUT ), so_keepalive_ns( DEFAULT_NS_TIMEOUT),
-      next_id( 0 ), now_ns( 0 ), init_ns( 0 ), ctx_id( kv::MAX_CTX_ID ),
-      dbx_id( kv::MAX_STAT_ID ), fdcnt( 0 ), wr_count( 0 ), maxfd( 0 ),
-      nfds( 0 ), efd( -1 ), null_fd( -1 ), quit( 0 ), prefetch_pending( 0 ),
-      sub_route( *this ) /*, single_thread( false )*/ {
-    ::memset( this->sock_type_str, 0, sizeof( this->sock_type_str ) );
-  }
   /* return false if duplicate type */
   uint8_t register_type( const char *s ) noexcept;
   /* initialize epoll */
   int init( int numfds,  bool prefetch/*,  bool single*/ ) noexcept;
   /* initialize kv */
   int init_shm( EvShm &shm ) noexcept;    /* open shm pubsub */
-#if 0
-  /* add a pattern route for hash */
-  uint32_t add_pattern_route( const char *sub,  size_t prefix_len,  uint32_t hash,
-                              uint32_t fd ) noexcept;
-  /* remove a pattern route for hash */
-  uint32_t del_pattern_route( const char *sub,  size_t prefix_len,  uint32_t hash,
-                              uint32_t fd ) noexcept;
-  /* add a subscription route for hash */
-  uint32_t add_route( const char *sub,  size_t sub_len,  uint32_t hash,
-                      uint32_t fd ) noexcept;
-  /* remove a subscription route for hash */
-  uint32_t del_route( const char *sub,  size_t sub_len,  uint32_t hash,
-                      uint32_t fd ) noexcept;
-#endif
   void add_write_poll( EvSocket *s ) noexcept;
   void remove_write_poll( EvSocket *s ) noexcept;
   int wait( int ms ) noexcept;            /* call epoll() with ms timeout */
@@ -402,15 +382,6 @@ struct EvPoll : public RoutePublish {
   };
   int dispatch( void ) noexcept;          /* process any sock in the queues */
   void drain_prefetch( void ) noexcept;   /* process prefetches */
-
-  /* thse publish are used by RoutePublish::forward_msg() */
-  bool publish_one( EvPublish &pub,  uint32_t *rcount_total,
-                    RoutePublishData &rpd ) noexcept; /* publish to one dest */
-  template<uint8_t N>
-  bool publish_multi( EvPublish &pub,  uint32_t *rcount_total,
-                      RoutePublishData *rpd ) noexcept; /* a couple of dest */
-  /* publish to more than multi destinations, uses a heap to sort dests */
-  bool publish_queue( EvPublish &pub,  uint32_t *rcount_total ) noexcept;
   uint64_t current_coarse_ns( void ) noexcept; /* current time from kv */
   uint64_t create_ns( void ) const noexcept; /* create time from kv */
   int get_null_fd( void ) noexcept;         /* return dup /dev/null fd */
@@ -420,12 +391,22 @@ struct EvPoll : public RoutePublish {
   void process_quit( void ) noexcept;       /* quit state close socks */
 };
 
+struct EvConnection;
+struct EvConnectionNotify {
+  /* notifcation of ready, after authentication, etc */
+  virtual void on_connect( EvSocket &conn ) noexcept;
+  /* notification of connection close or loss */
+  virtual void on_shutdown( EvSocket &conn,  const char *err,
+                            size_t elen ) noexcept;
+};
+
 struct EvListen : public EvSocket {
   void * operator new( size_t, void *ptr ) { return ptr; }
   void operator delete( void *ptr ) { ::free( ptr ); }
 
   uint64_t      accept_cnt, /* how many accept() calls */
                 timer_id;   /* a unique id for each socket accepted */
+  EvConnectionNotify * notify;   /* notify after accept */
   const uint8_t accept_sock_type; /* what kind of sock is accepted */
 
   EvListen( EvPoll &p,  const char *lname,  const char *name );
@@ -441,15 +422,6 @@ struct EvListen : public EvSocket {
   virtual void client_stats( PeerStats &ps ) noexcept;
 };
 
-struct EvConnection;
-struct EvConnectionNotify {
-  /* notifcation of ready, after authentication, etc */
-  virtual void on_connect( EvConnection &conn ) noexcept;
-  /* notification of connection close or loss */
-  virtual void on_shutdown( EvConnection &conn,  const char *err,
-                            size_t elen ) noexcept;
-};
-
 struct EvConnection : public EvSocket, public StreamBuf {
   static const size_t RCV_BUFSIZE = 16 * 1024;
   char   * recv;           /* initially recv_buf, but may realloc */
@@ -463,13 +435,16 @@ struct EvConnection : public EvSocket, public StreamBuf {
 
   EvConnection( EvPoll &p, const uint8_t t,
                 EvConnectionNotify *n = NULL ) : EvSocket( p, t ) {
+    this->off    = 0;
+    this->len    = 0;
+    this->notify = n;
+    this->reset_recv();
+  }
+  void reset_recv( void ) {
     this->recv           = this->recv_buf;
-    this->off            = 0;
-    this->len            = 0;
     this->recv_size      = sizeof( this->recv_buf );
     this->recv_highwater = RCV_BUFSIZE - RCV_BUFSIZE / 32;
     this->send_highwater = StreamBuf::SND_BUFSIZE - StreamBuf::SND_BUFSIZE / 32;
-    this->notify         = n;
   }
   void release_buffers( void ) { /* release all buffs */
     this->clear_buffers();
@@ -480,10 +455,7 @@ struct EvConnection : public EvSocket, public StreamBuf {
     this->off = this->len = 0;
     if ( this->recv != this->recv_buf ) {
       ::free( this->recv );
-      this->recv = this->recv_buf;
-      this->recv_size = sizeof( this->recv_buf );
-      this->recv_highwater = this->recv_size - this->recv_size / 8;
-      this->send_highwater = this->recv_size * 2;
+      this->reset_recv();
     }
   }
   void adjust_recv( void ) {     /* data is read at this->recv[ this->len ] */

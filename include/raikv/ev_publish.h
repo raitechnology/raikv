@@ -80,6 +80,14 @@ struct EvPublish {
       msg_len_digits( msg_len_digs ), msg_enc( msg_encoding ),
       pub_type( publish_type ), msg_len_buf( msg_len_ptr ),
       hash( 0 ), prefix( 0 ), prefix_cnt( 0 ) {}
+
+  EvPublish( const EvPublish &p )
+    : subject( p.subject ), reply( p.reply ), msg( p.msg ),
+      subject_len( p.subject_len ), reply_len( p.reply_len ),
+      msg_len( p.msg_len ), subj_hash( p.subj_hash ), src_route( p.src_route ),
+      msg_len_digits( p.msg_len_digits ), msg_enc( p.msg_enc ),
+      pub_type( p.pub_type ), msg_len_buf( p.msg_len_buf ),
+      hash( 0 ), prefix( 0 ), prefix_cnt( 0 ) {}
 };
 
 }

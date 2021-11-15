@@ -5,8 +5,17 @@
 extern "C" {
 #endif
 /* intel crc_c instruction */
-uint32_t kv_crc_c( const void *p, size_t sz, uint32_t seed );
 uint32_t kv_hash_uint( uint32_t i );
+uint32_t kv_hash_uint2( uint32_t r,  uint32_t i );
+uint32_t kv_crc_c( const void *p, size_t sz, uint32_t seed );
+void kv_crc_c_2_diff( const void *p,  size_t sz,   uint32_t *seed,
+                      const void *p2,  size_t sz2,  uint32_t *seed2 );
+void kv_crc_c_4_diff( const void *p,   size_t sz,   uint32_t *seed,
+                      const void *p2,  size_t sz2,  uint32_t *seed2,
+                      const void *p3,  size_t sz3,  uint32_t *seed3,
+                      const void *p4,  size_t sz4,  uint32_t *seed4 );
+void kv_crc_c_array( const void **p,   size_t *psz,   uint32_t *seed,
+                     size_t count );
 
 static inline uint32_t kv_djb( const char *s,  size_t len ) {
   uint32_t key = 5381;
@@ -90,6 +99,10 @@ void kv_hash_meow128_8_same_length_a( const void **p, size_t sz, uint64_t *x );
 void kv_hash_meow128_4_same_length( const void *p, const void *p2,
                                     const void *p3, const void *p4,
                                     size_t sz, uint64_t *x );
+/* 4 same length, 4 different seeds */
+void kv_hash_meow128_4_same_length_4_seed( const void *p, const void *p2,
+                                           const void *p3, const void *p4,
+                                           size_t sz, uint64_t *x );
 void kv_hash_meow128_8_same_length( const void *p, const void *p2,
                                     const void *p3, const void *p4,
                                     const void *p5, const void *p6,

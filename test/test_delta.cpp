@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <assert.h>
 #include <raikv/delta_coder.h>
 #include <raikv/util.h>
@@ -26,6 +27,7 @@ main( int, char ** )
   uint64_t t1, t2;
   rand::xorshift1024star rng;
   DeltaCoder dc;
+  IntCoder   ic;
 
   rng.init();
   for ( i = 1; i < 16; i++ ) {
@@ -48,6 +50,21 @@ main( int, char ** )
     printf( "\n" );
   }
 
+  for ( i = 1; i < 16; i++ ) {
+    values[ i - 1 ] = i % 4;
+    cnt = ic.encode_stream( i, values, code );
+    printf( "%u -> %u: ", i, cnt );
+    for ( j = 0; j < cnt; j++ ) {
+      printf( "%x ", code[ j ] );
+    }
+    printf( " .. " );
+    cnt = ic.decode_stream( cnt, code, values2 );
+    for ( j = 0; j < cnt; j++ ) {
+      printf( "%u ", values2[ j ] );
+    }
+    printf( "\n" );
+  }
+
   values[ 0 ] = rng.next() % 10;
   for ( i = 1; i < NVALS; i++ ) {
     values[ i ] = values[ i-1 ] + 1 + rng.next() % 8;
@@ -64,7 +81,9 @@ main( int, char ** )
     cnt += dc.encode_stream( NVALS, values, 0, code );
   t2 = kv::current_monotonic_time_ns();
   cnt /= 10;
-  printf( "encoded: %u vals into %u codes (%.1fns/val)\n", NVALS, cnt,
+  printf( "encoded: %u vals into %u codes (%.1fns, %.1fns/val)\n",
+          NVALS, cnt,
+          (double) ( t2 - t1 ) / 10.0,
           (double) ( t2 - t1 ) / (double) ( NVALS * 10 ) );
   //print_values( code, cnt );
 
@@ -77,7 +96,9 @@ main( int, char ** )
     i += dc.decode_stream( cnt, code, 0, values2 );
   t2 = kv::current_monotonic_time_ns();
   i /= 10;
-  printf( "decoded: %u codes into %u vals (%.1fns/val)\n", cnt, i,
+  printf( "decoded: %u codes into %u vals (%.1fns, %.1fns/val)\n",
+          cnt, i,
+          (double) ( t2 - t1 ) / 10.0,
           (double) ( t2 - t1 ) / (double) ( NVALS * 10 ) );
 
   for ( j = 0; j < i; j++ ) {

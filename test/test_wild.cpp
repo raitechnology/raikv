@@ -33,10 +33,14 @@ do_match( reg_kind t,  const char **pat,  size_t pc,
       rc = cvt.convert_glob( pat[ i ], ::strlen( pat[ i ] ) );
     else
       rc = cvt.convert_rv( pat[ i ], ::strlen( pat[ i ] ) );
-    printf( "\n(%s) \"%s\" : \"%.*s\" -> \"%.*s\" (%lu)\n",
+    printf( "\n(%s) \"%s\" : \"%.*s\" -> \"%.*s\" (%lu) \"%.*s\" (%lu)",
             ( t == IS_GLOB ? "glob" : "rv" ), pat[ i ],
             (int) cvt.off, cvt.out, (int) cvt.prefixlen, pat[ i ],
-            cvt.prefixlen );
+            cvt.prefixlen, (int) cvt.suffixlen, cvt.suffix, cvt.suffixlen );
+    if ( cvt.shard_total != 0 )
+      printf( " shard %u of %u\n", cvt.shard_num, cvt.shard_total );
+    else
+      printf( "\n" );
     if ( rc != 0 ) {
       printf( "convert failed\n" );
       fail++;
@@ -131,16 +135,17 @@ main( int, char ** )
   const char *patrv[] = {
     "hello.*",
     "hello.>",
-    "hello.*.>",
+    "hello.*.>(0,4)",
     "*.again",
-    "hello.*.again"
+    "hello.*.again",
+    "hello.*.*(1,4)"
   };
   const char *matchrv[] = {
     "hello.world",
     "hallo",
     "hello.world.again",
     "testing.again",
-    "he.world",
+    "he.world"
   };
   int matrv[] = {
                       /* "hello.world", "hallo", "hello.world.again", "testing.again", "he.world" */
@@ -149,6 +154,7 @@ main( int, char ** )
   /* "hello.*.>"     */             -1,      -1,                   1,              -1,         -1,
   /* "*.again"       */             -1,      -1,                  -1,               1,         -1,
   /* "hello.*.again" */             -1,      -1,                   1,              -1,         -1,
+  /* "hello.*.*      */             -1,      -1,                   1,              -1,         -1,
   };
 
   const size_t pc = sizeof( pat ) / sizeof( pat[ 0 ] );

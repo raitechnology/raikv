@@ -31,32 +31,119 @@ kv_hash_uint( uint32_t i )
 }
 
 uint32_t
+kv_hash_uint2( uint32_t r, uint32_t i )
+{
+  return _mm_crc32_u32( r, i );
+}
+
+static inline uint32_t
+trail_crc_c( uint64_t r,  const uint8_t *s,  size_t sz )
+{
+  if ( ( sz & 4 ) != 0 ) {
+    r = _mm_crc32_u32( r, *(uint32_t *) s ); s+=4;
+  }
+  if ( ( sz & 2 ) != 0 ) {
+    r = _mm_crc32_u16( r, *(uint16_t *) s ); s+=2;
+  }
+  if ( ( sz & 1 ) != 0 ) {
+    r = _mm_crc32_u8( r, *(uint8_t *) s );
+  }
+  return r;
+}
+
+uint32_t
 kv_crc_c( const void *p,  size_t sz,  uint32_t seed )
 {
-  const uint8_t * s =   (uint8_t *) p;
-  const uint8_t * e = &((uint8_t *) p) [ sz ];
-  uint64_t  hash64 = seed;
+  const uint8_t * s = (uint8_t *) p;
+  uint64_t        r = seed;
 
+  while ( sz >= 8 ) {
+    r = _mm_crc32_u64( r, *(uint64_t *) s ); s+=8; sz-=8;
+  }
+  return trail_crc_c( r, s, sz );
+}
+
+void
+kv_crc_c_2_diff( const void *p,   size_t sz,   uint32_t *seed,
+                 const void *p2,  size_t sz2,  uint32_t *seed2 )
+{
+  const uint8_t * s  = (uint8_t *) p,
+                * s2 = (uint8_t *) p2;
+  uint64_t        r  = *seed,
+                  r2 = *seed2;
   for (;;) {
-    switch ( e - s ) {
-      default: hash64 = _mm_crc32_u64( hash64, *(uint64_t *) s ); s+=8;
-               break;
-      case 7: hash64 = _mm_crc32_u8( hash64, *s++ );
-              /* FALLTHRU */
-      case 6: hash64 = _mm_crc32_u16( hash64, *(uint16_t *) s ); s+=2;
-              /* FALLTHRU */
-      case 4: hash64 = _mm_crc32_u32( hash64, *(uint32_t *) s );
-              return hash64;
-      case 3: hash64 = _mm_crc32_u8( hash64, *s++ );
-              /* FALLTHRU */
-      case 2: hash64 = _mm_crc32_u16( hash64, *(uint16_t *) s );
-              return hash64;
-      case 5: hash64 = _mm_crc32_u32( hash64, *(uint32_t *) s ); s+=4;
-              /* FALLTHRU */
-      case 1: hash64 = _mm_crc32_u8( hash64, *s++ );
-              /* FALLTHRU */
-      case 0: return hash64;
+    if ( sz >= 8 ) {
+      r  = _mm_crc32_u64( r , *(uint64_t *) s  ); s+=8;  sz-=8;
     }
+    if ( sz2 >= 8 ) {
+      r2 = _mm_crc32_u64( r2, *(uint64_t *) s2 ); s2+=8; sz2-=8;
+    }
+    else if ( sz < 8 )
+      break;
+  }
+  *seed  = trail_crc_c( r,  s,  sz );
+  *seed2 = trail_crc_c( r2, s2, sz2 );
+}
+
+void
+kv_crc_c_4_diff( const void *p,   size_t sz,   uint32_t *seed,
+                 const void *p2,  size_t sz2,  uint32_t *seed2,
+                 const void *p3,  size_t sz3,  uint32_t *seed3,
+                 const void *p4,  size_t sz4,  uint32_t *seed4 )
+{
+  const uint8_t * s  = (uint8_t *) p,
+                * s2 = (uint8_t *) p2,
+                * s3 = (uint8_t *) p3,
+                * s4 = (uint8_t *) p4;
+  uint64_t        r  = *seed,
+                  r2 = *seed2,
+                  r3 = *seed3,
+                  r4 = *seed4;
+  size_t a;
+  do {
+    a = 0;
+    if ( sz >= 8 ) {
+      r  = _mm_crc32_u64( r , *(uint64_t *) s  ); s+=8;  sz-=8;
+      a |= sz;
+    }
+    if ( sz2 >= 8 ) {
+      r2 = _mm_crc32_u64( r2, *(uint64_t *) s2 ); s2+=8; sz2-=8;
+      a |= sz2;
+    }
+    if ( sz3 >= 8 ) {
+      r3 = _mm_crc32_u64( r3, *(uint64_t *) s3 ); s3+=8; sz3-=8;
+      a |= sz3;
+    }
+    if ( sz4 >= 8 ) {
+      r4 = _mm_crc32_u64( r4, *(uint64_t *) s4 ); s4+=8; sz4-=8;
+      a |= sz4;
+    }
+  } while ( a >= 8 );
+  *seed  = trail_crc_c( r,  s,  sz );
+  *seed2 = trail_crc_c( r2, s2, sz2 );
+  *seed3 = trail_crc_c( r3, s3, sz3 );
+  *seed4 = trail_crc_c( r4, s4, sz4 );
+}
+
+void
+kv_crc_c_array( const void **p,   size_t *psz,   uint32_t *seed,
+                size_t count )
+{
+  while ( count >= 4 ) {
+    kv_crc_c_4_diff( p[ 0 ], psz[ 0 ], &seed[ 0 ],
+                     p[ 1 ], psz[ 1 ], &seed[ 1 ],
+                     p[ 2 ], psz[ 2 ], &seed[ 2 ],
+                     p[ 3 ], psz[ 3 ], &seed[ 3 ] );
+    p += 4; psz += 4; seed += 4;
+    count -= 4;
+  }
+  if ( ( count & 2 ) != 0 ) {
+    kv_crc_c_2_diff( p[ 0 ], psz[ 0 ], &seed[ 0 ],
+                     p[ 1 ], psz[ 1 ], &seed[ 1 ] );
+    p += 2; psz += 2; seed += 2;
+  }
+  if ( ( count & 1 ) != 0 ) {
+    seed[ 0 ] = kv_crc_c( p[ 0 ], psz[ 0 ], seed[ 0 ] );
   }
 }
 
@@ -1720,6 +1807,54 @@ kv_hash_meow128_4_same_length( const void *p, const void *p2,
   Compress_Meow( S4, S6, S4, Mixer );    /* S4 <- S6, S4 <- Mixer */
   Compress_Meow( S8, S10, S8, Mixer );   /* S8 <- S10, S8 <- Mixer */
   Compress_Meow( S12, S14, S12, Mixer ); /* S12 <- S14, S12 <- Mixer */
+
+  x[ 0 ] = _mm_extract_epi64( S0, 0 );
+  x[ 1 ] = _mm_extract_epi64( S0, 1 );
+  x[ 2 ] = _mm_extract_epi64( S4, 0 );
+  x[ 3 ] = _mm_extract_epi64( S4, 1 );
+  x[ 4 ] = _mm_extract_epi64( S8, 0 );
+  x[ 5 ] = _mm_extract_epi64( S8, 1 );
+  x[ 6 ] = _mm_extract_epi64( S12, 0 );
+  x[ 7 ] = _mm_extract_epi64( S12, 1 );
+}
+
+void
+kv_hash_meow128_4_same_length_4_seed( const void *p, const void *p2,
+                                      const void *p3, const void *p4, size_t sz,
+                                      uint64_t *x )
+{
+  Declare_Meow( S0, S1, S2, S3 );
+  Declare_Meow( S4, S5, S6, S7 );
+  Declare_Meow( S8, S9, S10, S11 );
+  Declare_Meow( S12, S13, S14, S15 );
+
+  __m128i Mixer  = _mm_set_epi64x( x[ 1 ] + sz + 1, x[ 0 ] - sz );
+  __m128i Mixer2 = _mm_set_epi64x( x[ 3 ] + sz + 1, x[ 2 ] - sz );
+  __m128i Mixer3 = _mm_set_epi64x( x[ 5 ] + sz + 1, x[ 4 ] - sz );
+  __m128i Mixer4 = _mm_set_epi64x( x[ 7 ] + sz + 1, x[ 6 ] - sz );
+
+  Xor_Meow( S0, S1, S2, S3, Mixer );
+  Xor_Meow( S4, S5, S6, S7, Mixer2 );
+  Xor_Meow( S8, S9, S10, S11, Mixer3 );
+  Xor_Meow( S12, S13, S14, S15, Mixer4 );
+
+  Meow_Loop_4( S0, S1, S2, S3, S4, S5, S6, S7,
+               S8, S9, S10, S11, S12, S13, S14, S15,
+               p, p2, p3, p4, sz );
+
+  Mix_Meow( S3, S2, S1, S0, Mixer );
+  Mix_Meow( S7, S6, S5, S4, Mixer2 );
+  Mix_Meow( S11, S10, S9, S8, Mixer3 );
+  Mix_Meow( S15, S14, S13, S12, Mixer4 );
+
+  Compress_Meow2( S2, S3, S0, S1, S2, Mixer );
+  Compress_Meow2( S6, S7, S4, S5, S6, Mixer2 );
+  Compress_Meow2( S10, S11, S8, S9, S10, Mixer3 );
+  Compress_Meow2( S14, S15, S12, S13, S14, Mixer4 );
+  Compress_Meow( S0, S2, S0, Mixer );
+  Compress_Meow( S4, S6, S4, Mixer2 );
+  Compress_Meow( S8, S10, S8, Mixer3 );
+  Compress_Meow( S12, S14, S12, Mixer4 );
 
   x[ 0 ] = _mm_extract_epi64( S0, 0 );
   x[ 1 ] = _mm_extract_epi64( S0, 1 );

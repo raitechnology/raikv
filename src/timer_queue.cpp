@@ -222,3 +222,85 @@ EvTimerQueue::process( void ) noexcept
 
 void EvTimerQueue::write( void ) noexcept {}
 void EvTimerQueue::release( void ) noexcept {}
+
+/* start a timer event callback */
+bool
+TimerQueue::add_timer_seconds( EvTimerCallback &tcb,  uint32_t secs,
+                               uint64_t timer_id, uint64_t event_id ) noexcept
+{
+  return this->queue->add_timer_cb( tcb, secs, IVAL_SECS, timer_id, event_id );
+}
+
+bool
+TimerQueue::add_timer_millis( EvTimerCallback &tcb,  uint32_t msecs,
+                              uint64_t timer_id,  uint64_t event_id ) noexcept
+{
+  return this->queue->add_timer_cb( tcb, msecs, IVAL_MILLIS, timer_id,
+                                    event_id );
+}
+
+bool
+TimerQueue::add_timer_micros( EvTimerCallback &tcb,  uint32_t usecs,
+                              uint64_t timer_id,  uint64_t event_id ) noexcept
+{
+  return this->queue->add_timer_cb( tcb, usecs, IVAL_MICROS, timer_id,
+                                    event_id );
+}
+
+bool
+TimerQueue::add_timer_nanos( EvTimerCallback &tcb,  uint32_t nsecs,
+                             uint64_t timer_id,  uint64_t event_id ) noexcept
+{
+  return this->queue->add_timer_cb( tcb, nsecs, IVAL_NANOS, timer_id, event_id);
+}
+/* start a timer event fd */
+bool
+TimerQueue::add_timer_seconds( int32_t id,  uint32_t secs,  uint64_t timer_id,
+                               uint64_t event_id ) noexcept
+{
+  return this->queue->add_timer_units( id, secs, IVAL_SECS, timer_id, event_id);
+}
+
+bool
+TimerQueue::add_timer_millis( int32_t id,  uint32_t msecs,  uint64_t timer_id,
+                              uint64_t event_id ) noexcept
+{
+  return this->queue->add_timer_units( id, msecs, IVAL_MILLIS, timer_id,
+                                       event_id );
+}
+
+bool
+TimerQueue::add_timer_micros( int32_t id,  uint32_t usecs,  uint64_t timer_id,
+                              uint64_t event_id ) noexcept
+{
+  return this->queue->add_timer_units( id, usecs, IVAL_MICROS, timer_id,
+                                       event_id );
+}
+
+bool
+TimerQueue::add_timer_nanos( int32_t id,  uint32_t nsecs,  uint64_t timer_id,
+                             uint64_t event_id ) noexcept
+{
+  return this->queue->add_timer_units( id, nsecs, IVAL_NANOS, timer_id,
+                                       event_id );
+}
+
+bool
+TimerQueue::remove_timer( int32_t id,  uint64_t timer_id,
+                          uint64_t event_id ) noexcept
+{
+  return this->queue->remove_timer( id, timer_id, event_id );
+}
+
+uint64_t
+TimerQueue::current_monotonic_time_ns( void ) noexcept
+{
+  return this->queue->epoch;
+}
+
+uint64_t
+TimerQueue::current_time_ns( void ) noexcept
+{
+  return this->queue->real;
+}
+

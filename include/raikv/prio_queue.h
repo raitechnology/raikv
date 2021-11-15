@@ -14,6 +14,16 @@ struct PrioQueue {
 
   PrioQueue( size_t inc = 128 )
     : heap( 0 ), num_elems( 0 ), max_elems( 0 ), incrby( inc ) {}
+  ~PrioQueue() {
+    this->reset();
+  }
+  void reset( void ) {
+    if ( this->heap != NULL )
+      ::free( this->heap );
+    this->heap      = NULL;
+    this->num_elems = 0;
+    this->max_elems = 0;
+  }
 
   bool increase_heap( void ) {
     size_t newsz = this->max_elems + this->incrby;

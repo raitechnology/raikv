@@ -9,12 +9,12 @@ namespace kv {
 struct EvUnixListen : public EvListen {
   EvUnixListen( EvPoll &p,  const char *lname,  const char *name )
     : EvListen( p, lname, name ) {}
-  int listen( const char *sock,  const char *k ) noexcept;
+  int listen( const char *sock,  int opts,  const char *k ) noexcept;
   virtual bool accept( void ) noexcept { return false; }
 };
 
 namespace EvUnixConnection {
-  int connect( EvConnection &conn,  const char *sock ) noexcept;
+  int connect( EvConnection &conn,  const char *sock,  int opts ) noexcept;
 }
 
 }

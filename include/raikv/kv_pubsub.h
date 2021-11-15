@@ -121,12 +121,6 @@ struct KvSubRoute {
   uint8_t  rt_bits[ sizeof( CubeRoute128 ) ];
   uint16_t len;
   char     value[ 2 ];
-  bool equals( const void *s,  uint16_t l ) const {
-    return l == this->len && ::memcmp( s, this->value, l ) == 0;
-  }
-  void copy( const void *s,  uint16_t l ) {
-    ::memcpy( this->value, s, l );
-  }
 };
 
 struct KvSubTab : public RouteVec<KvSubRoute> {};
@@ -151,6 +145,7 @@ struct KvPubSub : public EvSocket, public KvSendQueue, public RouteNotify {
   uint16_t     ctx_id;           /* my endpoint */
   uint16_t     flags;            /* KvPubSubFlags above */
   uint32_t     dbx_id;           /* db xref */
+  RoutePublish & sub_route;        /* pub sub routing */
   kv::HashSeed hs;               /* seed for db */
   uint64_t     timer_id,         /* my timer id */
                timer_cnt,        /* count of timer expires */
@@ -195,7 +190,8 @@ struct KvPubSub : public EvSocket, public KvSendQueue, public RouteNotify {
       : EvSocket( p, p.register_type( "kv_pubsub" ) ),
         KvSendQueue( p.map->hdr.create_stamp, p.ctx_id ),
         ctx_id( p.ctx_id ), flags( KV_DO_NOTIFY ),
-        dbx_id( xid ), timer_id( (uint64_t) EV_KV_PUBSUB << 56 ),
+        dbx_id( xid ), sub_route( p.sub_route ),
+        timer_id( (uint64_t) EV_KV_PUBSUB << 56 ),
         timer_cnt( 0 ), time_ns( p.current_coarse_ns() ),
         route_size( 0 ), route_cnt( 0 ),
         sigusr_recv_cnt( 0 ), inbox_msg_cnt( 0 ), pipe_msg_cnt( 0 ),
@@ -216,7 +212,7 @@ struct KvPubSub : public EvSocket, public KvSendQueue, public RouteNotify {
     /* ::memset( this->last_seqno, 0, sizeof( this->last_seqno ) ); */
     this->PeerData::init_peer( sock, NULL, "kv" );
     this->kctx.ht.hdr.get_hash_seed( this->kctx.db_num, this->hs );
-    p.add_route_notify( *this );
+    p.sub_route.add_route_notify( *this );
   }
 
   static KvPubSub *create( EvPoll &p,  uint8_t db_num ) noexcept;

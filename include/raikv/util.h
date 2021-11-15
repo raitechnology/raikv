@@ -11,6 +11,7 @@ uint64_t kv_get_rdtsc( void ); /* intel rdtsc */
 uint64_t kv_get_rdtscp( void ); /* intel rdtscp */
 
 uint64_t kv_current_monotonic_time_ns( void ); /* nanosecs */
+uint64_t kv_current_monotonic_time_us( void ); /* microsecs */
 double kv_current_monotonic_time_s( void ); /* seconds + fraction (52b prec) */
 
 uint64_t kv_current_monotonic_coarse_ns( void ); /* nanosecs */
@@ -47,14 +48,24 @@ void kv_sighndl_install( kv_signal_handler_t *sh );
 namespace rai {
 namespace kv {
 
+#define KV_ALIGN( sz, a ) ( ( ( sz ) + ( ( a ) - 1 ) ) & ~( ( a ) - 1 ) )
 /* align<int>( 11, 8 ) == 16 */
 template <class Int> static inline Int align( Int sz,  Int a ) {
-  return ( sz + ( a - 1 ) ) & ~( a - 1 );
+  return (Int) KV_ALIGN( (size_t) sz, (size_t) a );
 }
 template <class Int> static inline Int max( Int i,  Int j ) { return i>j?i:j; }
 template <class Int> static inline Int min( Int i,  Int j ) { return i<j?i:j; }
 template <class Int> static inline Int unaligned( const void *p ) {
   Int i; ::memcpy( &i, p, sizeof( Int ) ); return i;
+}
+
+static const size_t KV_CACHE_ALIGN = 64;
+static inline void *aligned_malloc( size_t sz ) {
+#ifdef _ISOC11_SOURCE
+  return ::aligned_alloc( KV_CACHE_ALIGN, sz ); /* >= RH7 */
+#else
+  return ::memalign( KV_CACHE_ALIGN, sz ); /* RH5, RH6.. */
+#endif
 }
 
 namespace rand {
@@ -104,7 +115,8 @@ struct xoroshiro128plus {
   uint64_t state[ 2 ];
 
   xoroshiro128plus() {}
-
+  /* static_init to the same state */
+  void static_init( uint64_t x = 0,  uint64_t y = 0 ) noexcept;
   bool init( void *seed = 0,  uint16_t sz = 0 ) noexcept; /* init state */
 
   uint64_t current( void ) const {
@@ -146,6 +158,7 @@ uint64_t get_rdtsc( void ) noexcept; /* intel rdtsc */
 uint64_t get_rdtscp( void ) noexcept; /* intel rdtscp */
 
 uint64_t current_monotonic_time_ns( void ) noexcept; /* nanosecs */
+uint64_t current_monotonic_time_us( void ) noexcept; /* microsecs */
 double current_monotonic_time_s( void ) noexcept; /* s + fraction (52b prec) */
 
 uint64_t current_monotonic_coarse_ns( void ) noexcept; /* nanosecs */
@@ -247,9 +260,18 @@ inline size_t int32_to_string( int32_t v,  char *buf ) {
 }
 
 uint64_t string_to_uint64( const char *b,  size_t len ) noexcept;
+
 int64_t string_to_int64( const char *b,  size_t len ) noexcept;
 
-size_t bin_to_base64( const void *inp,  size_t in_len,  void *outp ) noexcept;
+/* no eq padding */
+#define KV_BASE64_SIZE( sz ) ( ( ( sz ) * 8 + 5 ) / 6 )
+/* w/ eq padding, aligned multiple of 4 */
+#define KV_BASE64_EQPAD( sz ) KV_ALIGN( BASE64_SIZE( sz ), 4 )
+/* only correct wihtout eq padding (will be greater, since eq trimmed) */
+#define KV_BASE64_BIN_SIZE( sz ) ( ( ( sz ) * 3 ) / 4 )
+
+size_t bin_to_base64( const void *inp,  size_t in_len,  void *outp,
+                      bool eq_padding = true ) noexcept;
 size_t base64_to_bin( const void *inp,  size_t in_len,  void *outp ) noexcept;
 
 } /* namespace kv */

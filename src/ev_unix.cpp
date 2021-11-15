@@ -15,18 +15,18 @@ using namespace rai;
 using namespace kv;
 
 int
-EvUnixListen::listen( const char *path,  const char *k ) noexcept
+EvUnixListen::listen( const char *path,  int opts,  const char *k ) noexcept
 {
   static int on = 1;
-  int sock;
   struct sockaddr_un sunaddr;
   struct stat statbuf;
+  int sock, status = 0;
 
+  this->sock_opts = opts;
   sock = ::socket( PF_LOCAL, SOCK_STREAM, 0 );
-  if ( sock < 0 ) {
-    perror( "error: socket" );
-    return -1;
-  }
+  if ( sock < 0 )
+    return this->set_sock_err( EV_ERR_SOCKET, errno );
+
   ::memset( &sunaddr, 0, sizeof( sunaddr ) );
   sunaddr.sun_family = AF_LOCAL;
   if ( ::stat( path, &statbuf ) == 0 &&
@@ -36,53 +36,56 @@ EvUnixListen::listen( const char *path,  const char *k ) noexcept
   ::strncpy( sunaddr.sun_path, path, sizeof( sunaddr.sun_path ) - 1 );
 
   if ( ::setsockopt( sock, SOL_SOCKET, SO_REUSEADDR, &on, sizeof( on ) ) != 0 )
-    perror( "warning: SO_REUSEADDR" );
+    if ( ( opts & OPT_VERBOSE ) != 0 )
+      perror( "warning: SO_REUSEADDR" );
   if ( ::bind( sock, (struct sockaddr *) &sunaddr, sizeof( sunaddr ) ) != 0 ) {
-    perror( "error: bind" );
+    if ( ( opts & OPT_VERBOSE ) != 0 )
+      perror( "error: bind" );
     goto fail;
   }
   if ( ::listen( sock, 128 ) != 0 ) {
-    perror( "error: listen" );
+    if ( ( opts & OPT_VERBOSE ) != 0 )
+      perror( "error: listen" );
     goto fail;
   }
   this->PeerData::init_peer( sock, (struct sockaddr *) &sunaddr, k );
   ::fcntl( sock, F_SETFL, O_NONBLOCK | ::fcntl( sock, F_GETFL ) );
-  if ( this->poll.add_sock( this ) < 0 )
+  if ( (status = this->poll.add_sock( this )) < 0 )
     goto fail;
   return 0;
 fail:;
   ::close( sock );
   this->fd = -1;
-  return -1;
+  return status;
 }
 
 int
-EvUnixConnection::connect( EvConnection &conn,  const char *path ) noexcept
+EvUnixConnection::connect( EvConnection &conn,  const char *path,
+                           int opts ) noexcept
 {
-  int sock;
   struct sockaddr_un sunaddr;
+  int sock, status = 0;
 
+  conn.sock_opts = opts;
   sock = ::socket( PF_LOCAL, SOCK_STREAM, 0 );
-  if ( sock < 0 ) {
-    perror( "error: socket" );
-    return -1;
-  }
+  if ( sock < 0 )
+    return conn.set_sock_err( EV_ERR_SOCKET, errno );
+
   ::memset( &sunaddr, 0, sizeof( sunaddr ) );
   sunaddr.sun_family = AF_LOCAL;
   ::strncpy( sunaddr.sun_path, path, sizeof( sunaddr.sun_path ) - 1 );
   if ( ::connect( sock, (struct sockaddr *) &sunaddr,
                   sizeof( sunaddr ) ) != 0 ) {
-    perror( "error: connect" );
+    status = conn.set_sock_err( EV_ERR_CONNECT, errno );
     goto fail;
   }
-  conn.PeerData::init_peer( sock, (struct sockaddr *) &sunaddr, "unix_client");
   ::fcntl( sock, F_SETFL, O_NONBLOCK | ::fcntl( sock, F_GETFL ) );
-  if ( conn.poll.add_sock( &conn ) < 0 ) {
+  conn.PeerData::init_peer( sock, (struct sockaddr *) &sunaddr, "unix_client");
+  if ( (status = conn.poll.add_sock( &conn )) < 0 ) {
   fail:;
     conn.fd = -1;
     ::close( sock );
-    return -1;
   }
-  return 0;
+  return status;
 }
 

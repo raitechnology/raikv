@@ -116,9 +116,16 @@ struct DeltaCoder {
     for ( uint32_t i = 0; i < nvals; ) {
       uint32_t size = nvals - ( i + 1 ),
                k    = 1,
+               fail = 0,
                sav, cnt, piv, c;
       if ( size > 14 ) /* typical pattern, k+piv = 8 -> 4 -> 2 -> 1 */
         size = 14;
+      /* does not seem to help reduce search:
+       * for ( ; size > 2; size -= 1 ) {
+           uint32_t delta = values[ i + size - 1 ] - last;
+           if ( ( delta & delta_tab[ size - 1 ].first_mask ) == delta )
+            break;
+         }*/
       for ( cnt = 0; ; ) {
         piv = size / 2;
         //printf( "%u: encode( %u cnt=%u)\n", i, k + piv, cnt );
@@ -126,14 +133,18 @@ struct DeltaCoder {
         if ( c != 0 ) { /* as size gets smaller, code gets better */
           sav = c;
           cnt = k + piv;
-        }
-        if ( size == 0 )
-          break;
-        if ( c == 0 )
-          size = piv;
-        else {
+          if ( size == 0 )
+            break;
           size -= piv + 1;
           k    += piv + 1;
+          if ( k == fail )
+            break;
+        }
+        else {
+          if ( size == 0 )
+            break;
+          size = piv;
+          fail = k + piv;
         }
       }
       if ( cnt == 0 ) /* the value could not be coded */
@@ -204,7 +215,7 @@ struct DeltaCoder {
     return ( ( code >> shift ) & p.first_mask ) + base;
   }
   /* decode a stream of codes into values */
-  static uint32_t decode_stream( uint32_t ncodes,  const uint32_t *code,  
+  static uint32_t decode_stream( uint32_t ncodes,  const uint32_t *code,
                                  uint32_t last,  uint32_t *values ) {
     uint32_t i = 0;
     for ( uint32_t j = 0; j < ncodes; j++ ) {
@@ -266,6 +277,150 @@ struct DeltaCoder {
       }
     }
     return false;
+  }
+};
+
+struct IntCoder {
+  /* bit must be set, otherwise not encoded */
+  static bool is_not_encoded( uint32_t code ) {
+    static const uint32_t IS_ENCODED_MASK = 0x80000000U;
+    return ( code & IS_ENCODED_MASK ) == 0;
+  }
+  /* code a seqn of incrementing, non-repeating values into one uint32 word */
+  static uint32_t encode( uint32_t nvals,  const uint32_t *values ) {
+    if ( nvals > 15 ) return 0;
+    DeltaTable & p = delta_tab[ nvals - 1 ];
+    uint32_t code = p.prefix_mask << 1,
+             val  = values[ 0 ] & p.first_mask;
+
+    if ( val != values[ 0 ] )
+      return 0; /* doesn't fit */
+
+    if ( nvals > 1 ) {
+      uint32_t i;
+      uint8_t  shift = p.first_shift;
+
+      code |= val << shift;
+      for ( i = 1; i < nvals - 1; i++ ) {
+        shift -= p.next_shift;
+        val    = values[ i ] & p.next_mask;
+        code  |= val << shift;
+        if ( val != values[ i ] )
+          return 0;
+      }
+      val = values[ i ] & p.next_mask;
+      if ( val != values[ i ] )
+        return 0;
+    }
+    code |= val;
+    return code; /* the result */
+  }
+  /* code vals into a stream of codes, bin search to find optimal coding */
+  static uint32_t encode_stream( uint32_t nvals,  const uint32_t *values,
+                                 uint32_t *code ) {
+    uint32_t j = 0;
+    for ( uint32_t i = 0; i < nvals; ) {
+      uint32_t size = nvals - ( i + 1 ),
+               k    = 1,
+               fail = 0,
+               sav, cnt, piv, c;
+      if ( size > 14 ) /* typical pattern, k+piv = 8 -> 4 -> 2 -> 1 */
+        size = 14;
+      for ( cnt = 0; ; ) {
+        piv = size / 2;
+        //printf( "%u: encode( %u cnt=%u)\n", i, k + piv, cnt );
+        c = encode( k + piv, &values[ i ] );
+        if ( c != 0 ) { /* as size gets smaller, code gets better */
+          sav = c;
+          cnt = k + piv;
+          if ( size == 0 )
+            break;
+          size -= piv + 1;
+          k    += piv + 1;
+          if ( k == fail )
+            break;
+        }
+        else {
+          if ( size == 0 )
+            break;
+          size = piv;
+          fail = k + piv;
+        }
+      }
+      if ( cnt == 0 ) /* the value could not be coded */
+        return 0;
+      i += cnt;
+      if ( code != NULL )
+        code[ j ] = sav;
+      j += 1;
+    }
+    return j;
+  }
+  /* calculate length of encoding */
+  static uint32_t encode_stream_length( uint32_t nvals,
+                                        const uint32_t *values ) {
+    return encode_stream( nvals, values, NULL );
+  }
+  /* calculate length of decoded code by examining the prefix */
+  static uint32_t decode_length( uint32_t code ) {
+    uint32_t mask = DELTA_START_PREFIX_MASK;
+    uint32_t nvals = 1;
+    for (;;) {
+      if ( ( mask & code ) != mask ) {
+        if ( ( mask & code ) != ( mask << 1 ) )
+          return 0; /* prefix doesn't match */
+        return nvals;
+      }
+      if ( ++nvals > MAX_DELTA_CODE_LENGTH )
+        return 0;
+      mask |= ( mask >> 1 );
+    }
+  }
+  /* decode the set encoded above */
+  static uint32_t decode( uint32_t code,  uint32_t *values ) {
+    uint32_t nvals = decode_length( code );
+    if ( nvals == 0 )
+      return 0;
+
+    DeltaTable & p = delta_tab[ nvals - 1 ];
+    uint8_t shift = p.first_shift;
+    values[ 0 ] = ( code >> shift ) & p.first_mask;
+
+    if ( nvals > 1 ) {
+      uint32_t i;
+      for ( i = 1; i < nvals - 1; i++ ) {
+        shift      -= p.next_shift;
+        values[ i ] = ( code >> shift ) & p.next_mask;
+      }
+      values[ i ] = code & p.next_mask;
+    }
+    return nvals;
+  }
+  /* decode the set encoded above */
+  static uint32_t decode_one( uint32_t code ) {
+    uint32_t nvals = decode_length( code );
+    if ( nvals == 0 )
+      return 0;
+    DeltaTable & p = delta_tab[ nvals - 1 ];
+    uint8_t  shift = p.first_shift;
+    return ( code >> shift ) & p.first_mask;
+  }
+  /* decode a stream of codes into values */
+  static uint32_t decode_stream( uint32_t ncodes,  const uint32_t *code,  
+                                 uint32_t *values ) {
+    uint32_t i = 0;
+    for ( uint32_t j = 0; j < ncodes; j++ ) {
+      i += decode( code[ j ], &values[ i ] );
+    }
+    return i;
+  }
+  /* calculate length of decoding */
+  static uint32_t decode_stream_length( uint32_t ncodes,
+                                        const uint32_t *code ) {
+    uint32_t i = 0;
+    for ( uint32_t j = 0; j < ncodes; j++ )
+      i += decode_length( code[ j ] );
+    return i;
   }
 };
 
