@@ -278,8 +278,8 @@ struct RouteDB {
     uint64_t mask = (uint64_t) 1 << prefix_len;
     if ( ( this->rt_mask & mask ) != 0 ) {
       if ( this->rt_hash[ prefix_len ]->find( hash, pos, val ) )
-        this->get_route_slow2( sub, sublen, prefix_len, mask, hash, val, routes,
-                               subj_hash );
+        return this->get_route_slow2( sub, sublen, prefix_len, mask, hash, val,
+                                      routes, subj_hash );
     }
     return this->get_bloom_route2( sub, sublen, prefix_len, mask, hash, routes,
                                    0, subj_hash );
