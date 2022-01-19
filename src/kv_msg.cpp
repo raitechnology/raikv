@@ -14,8 +14,7 @@ KvSendQueue::create_kvpublish( uint32_t h,  const char *sub,  size_t sublen,
                                const uint8_t *pref,  const uint32_t *hash,
                                uint8_t pref_cnt,  const char *reply,
                                size_t replylen,  const void *msgdata,
-                               size_t msgsz,  uint8_t code,
-                               uint8_t msg_enc,
+                               size_t msgsz,  uint16_t code,  uint32_t msg_enc,
                                const size_t max_msg_size ) noexcept
 {
   size_t hsz = KvSubMsg::hdr_size( sublen, replylen, pref_cnt ),
@@ -43,8 +42,8 @@ KvSendQueue::create_kvpublish( uint32_t h,  const char *sub,  size_t sublen,
       msg = (KvSubMsg *)
         this->create_kvmsg( KV_MSG_FRAGMENT, fsz + afrag + sizeof( uint64_t ) );
       msg->hash    = h;
-      msg->code    = code;
       msg->msg_enc = msg_enc;
+      msg->code    = code;
       msg->set_subject( sub, sublen );
       msg->set_reply( NULL, 0 );
       msg->set_src_type( 'K' );
@@ -63,8 +62,8 @@ KvSendQueue::create_kvpublish( uint32_t h,  const char *sub,  size_t sublen,
   /* the final frag or only frag will have a subject */
   msg = (KvSubMsg *) this->create_kvmsg( KV_MSG_PUBLISH, hsz + asz );
   msg->hash    = h;
-  msg->code    = code;
   msg->msg_enc = msg_enc;
+  msg->code    = code;
   msg->set_subject( sub, sublen );
   msg->set_reply( reply, replylen );
   msg->set_src_type( 'K' );
@@ -87,8 +86,8 @@ KvSendQueue::create_kvsubmsg( uint32_t h,  const char *sub,  size_t sublen,
   if ( msg != NULL ) {
     msg->hash     = h;
     msg->msg_size = 0;
-    msg->code     = code;
     msg->msg_enc  = 0;
+    msg->code     = code;
     msg->set_subject( sub, sublen );
     msg->set_reply( rep, replylen );
     msg->set_src_type( src_type );
@@ -108,8 +107,8 @@ KvSendQueue::create_kvpsubmsg( uint32_t h,  const char *pattern,  size_t patlen,
   if ( msg != NULL ) {
     msg->hash     = h;
     msg->msg_size = 0;
-    msg->code     = code;
     msg->msg_enc  = 0;
+    msg->code     = code;
     msg->set_subject( pattern, patlen );
     msg->set_reply( prefix, prefix_len );
     msg->set_src_type( src_type );

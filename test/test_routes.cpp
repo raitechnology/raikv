@@ -22,7 +22,7 @@ void print_routedb( RouteDB &rte )
           uint32_t h = xht->tab[ i ].hash,
                    v = xht->tab[ i ].val,
                    cnt;
-          cnt = ref.decompress( v, 0, NULL, 0 );
+          cnt = ref.decompress( v, 0 );
           printf( "[%lu][%x] %x(%s) ", i, h, v,
                   DeltaCoder::is_not_encoded( v )?"str":"enc");
           printf( "[ " );
@@ -319,7 +319,7 @@ TestDB::add_bloom_routes( void ) noexcept
       if ( this->rdb[ j ].is_member( val ) ) {
         if ( this->brt[ val ] == NULL )
           this->brt[ val ] = this->rte.create_bloom_route( val, NULL,
-                                                 BloomBits::resize( NULL, 0 ) );
+                                        BloomBits::resize( NULL, 0 ), "test" );
         if ( this->brt[ val ]->bloom[ 0 ]->add( h ) ) {
           BloomBits * bits = this->brt[ val ]->bloom[ 0 ]->bits;
           bits = BloomBits::resize( bits, 0 );

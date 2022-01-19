@@ -189,6 +189,7 @@ struct KvPubSub : public EvSocket, public KvSendQueue, public RouteNotify {
             uint32_t xid )
       : EvSocket( p, p.register_type( "kv_pubsub" ) ),
         KvSendQueue( p.map->hdr.create_stamp, p.ctx_id ),
+        RouteNotify( p.sub_route ),
         ctx_id( p.ctx_id ), flags( KV_DO_NOTIFY ),
         dbx_id( xid ), sub_route( p.sub_route ),
         timer_id( (uint64_t) EV_KV_PUBSUB << 56 ),
@@ -239,20 +240,10 @@ struct KvPubSub : public EvSocket, public KvSendQueue, public RouteNotify {
   bool send_kv_vec( size_t cnt,  KvMsg **vec,  kv::msg_size_t *siz,
                     KvMsgQueue &ibx,  uint64_t vec_size ) noexcept;
   /* RouteNotify */
-  virtual void on_sub( uint32_t h,  const char *sub,  size_t sublen,
-                       uint32_t src_fd,  uint32_t rcnt,  char src_type,
-                       const char *rep,  size_t rlen ) noexcept;
-  virtual void on_unsub( uint32_t h,  const char *sub,  size_t sublen,
-                         uint32_t src_fd,  uint32_t rcnt,
-                         char src_type ) noexcept;
-  virtual void on_psub( uint32_t h,  const char *pattern,  size_t patlen,
-                        const char *prefix,  uint8_t prefix_len,
-                        uint32_t src_fd,  uint32_t rcnt,
-                        char src_type ) noexcept;
-  virtual void on_punsub( uint32_t h,  const char *pattern,  size_t patlen,
-                          const char *prefix,  uint8_t prefix_len,
-                          uint32_t src_fd,  uint32_t rcnt,
-                          char src_type ) noexcept;
+  virtual void on_sub( NotifySub &sub ) noexcept;
+  virtual void on_unsub( NotifySub &sub ) noexcept;
+  virtual void on_psub( NotifyPattern &pat ) noexcept;
+  virtual void on_punsub( NotifyPattern &pat ) noexcept;
   virtual void on_reassert( uint32_t fd,  RouteVec<RouteSub> &sub_db,
                             RouteVec<RouteSub> &pat_db ) noexcept;
   /*void forward_sub( uint32_t src_fd,  uint32_t rcnt,

@@ -18,6 +18,8 @@ struct KvPubSub;           /* manages pubsub through kv shm */
 struct EvTimerQueue;       /* timerfd with heap queue of events */
 struct EvTimerEvent;       /* a timer event signal */
 struct EvKeyCtx;           /* a key operand, an expr may have multiple keys */
+struct NotifySub;          /* notify a subject subscription */
+struct NotifyPattern;      /* notify a pattern subscription */
 
 enum EvState {       /* state bits: */
   EV_READ_HI    = 0, /*   1, listen port accept */
@@ -84,6 +86,12 @@ enum EvSockErr {
   EV_ERR_BAD_FD        = 13, /* fd is not valid */
   EV_ERR_SOCKET        = 14, /* failed to create socket */
   EV_ERR_LAST          = 15 /* extend errors after LAST */
+};
+
+enum EvSubState {
+  EV_SUBSCRIBED     = 1,
+  EV_NOT_SUBSCRIBED = 2,
+  EV_COLLISION      = 4
 };
 
 struct EvSocket : public PeerData /* fd and address of peer */EV_DBG_INHERIT {
@@ -189,10 +197,14 @@ struct EvSocket : public PeerData /* fd and address of peer */EV_DBG_INHERIT {
   virtual void release( void ) noexcept = 0;
   /* a timer fired: { fd, timer_id, event_id }, return true if should rearm */
   virtual bool timer_expire( uint64_t timer_id, uint64_t event_id ) noexcept;
-  /* find a subject for hash, no collision resolution */
-  virtual bool hash_to_sub( uint32_t h, char *k, size_t &klen ) noexcept;
   /* deliver published message */
   virtual bool on_msg( EvPublish &pub ) noexcept;
+  /* find a subject for hash, no collision resolution */
+  virtual bool hash_to_sub( uint32_t h, char *k, size_t &klen ) noexcept;
+  /* test is subject is subscribed, no = 0, yes = 1, collision = 2 */
+  virtual uint8_t is_subscribed( const NotifySub &sub ) noexcept;
+  /* test is pattern is subscribed, no = 0, prefix sub = 1, pattern sub = 2 */
+  virtual uint8_t is_psubscribed( const NotifyPattern &pat ) noexcept;
   /* prefetch a key while processing other keys with continue: EV_PREFETCH */
   virtual void key_prefetch( EvKeyCtx &ctx ) noexcept;
   /* after key prefetch, continue operation */
@@ -260,34 +272,35 @@ struct EvPoll {
     }
   }
 
-  EvSocket          ** sock;            /* sock array indexed by fd */
-  struct epoll_event * ev;              /* event array used by epoll() */
-  kv::HashTab        * map;             /* the data store */
-  EvPrefetchQueue    * prefetch_queue;  /* ordering keys */
-  KvPubSub           * pubsub;          /* cross process pubsub */
-  TimerQueue           timer;           /* timer events */
-  uint64_t             prio_tick,       /* priority queue ticker */
-                       wr_timeout_ns,   /* timeout for writes in EV_WRITE_POLL */
-                       so_keepalive_ns, /* keep alive ping timeout */
-                       next_id,         /* unique id for connection */
-                       now_ns,          /* updated by current_coarse_ns() */
-                       init_ns;         /* when map or poll was created */
-  uint32_t             ctx_id,          /* this thread context */
-                       dbx_id,          /* the db context */
-                       fdcnt,           /* num fds in poll set */
-                       wr_count,        /* num fds with write set */
-                       maxfd,           /* current maximum fd number */
-                       nfds;            /* max epoll() fds, array sz this->ev */
-  int                  efd,             /* epoll fd */
-                       null_fd,         /* /dev/null fd for null sockets */
-                       quit;            /* when > 0, wants to exit */
-  static const size_t  ALLOC_INCR    = 64, /* alloc size of poll socket ar */
-                       PREFETCH_SIZE = 8;  /* pipe size of number of pref */
-  size_t               prefetch_pending;   /* count of elems in prefetch queue*/
+  EvSocket           ** sock;            /* sock array indexed by fd */
+  struct epoll_event  * ev;              /* event array used by epoll() */
+  HashTab             * map;             /* the data store */
+  TimerQueue            timer;           /* timer events */
+  EvPrefetchQueue     * prefetch_queue;  /* ordering keys */
+  KvPubSub            * pubsub;          /* cross process pubsub */
+  RedisKeyspaceNotify * keyspace;        /* update sub_route.key_flags */
+  uint64_t              prio_tick,       /* priority queue ticker */
+                        wr_timeout_ns,   /* timeout writes in EV_WRITE_POLL */
+                        so_keepalive_ns, /* keep alive ping timeout */
+                        next_id,         /* unique id for connection */
+                        now_ns,          /* updated by current_coarse_ns() */
+                        init_ns;         /* when map or poll was created */
+  uint32_t              ctx_id,          /* this thread context */
+                        dbx_id,          /* the db context */
+                        fdcnt,           /* num fds in poll set */
+                        wr_count,        /* num fds with write set */
+                        maxfd,           /* current maximum fd number */
+                        nfds;            /* max epoll() fds, array sz ev[] */
+  int                   efd,             /* epoll fd */
+                        null_fd,         /* /dev/null fd for null sockets */
+                        quit;            /* when > 0, wants to exit */
+  static const size_t   ALLOC_INCR    = 64, /* alloc size of poll socket ar */
+                        PREFETCH_SIZE = 8;  /* pipe size of number of pref */
+  size_t                prefetch_pending; /* count of elems in prefetch queue */
                    /*, prefetch_cnt[ PREFETCH_SIZE + 1 ]*/
-  RoutePDB             sub_route;       /* subscriptions */
-  RoutePublishQueue    pub_queue;       /* temp routing queue: */
-  PeerStats            peer_stats;      /* accumulator after sock closes */
+  RoutePDB              sub_route;       /* subscriptions */
+  RoutePublishQueue     pub_queue;       /* temp routing queue: */
+  PeerStats             peer_stats;      /* accumulator after sock closes */
      /* this causes a message matching multiple wildcards to be sent once */
 
   /* socket lists, active and free lists, multiple socks are allocated at a
@@ -303,7 +316,8 @@ struct EvPoll {
 
   EvPoll()
     : sock( 0 ), ev( 0 ), map( 0 ), prefetch_queue( 0 ),
-      pubsub( 0 ), prio_tick( 0 ), wr_timeout_ns( DEFAULT_NS_TIMEOUT ),
+      pubsub( 0 ), keyspace( 0 ), prio_tick( 0 ),
+      wr_timeout_ns( DEFAULT_NS_TIMEOUT ),
       so_keepalive_ns( DEFAULT_NS_TIMEOUT ),
       next_id( 0 ), now_ns( 0 ), init_ns( 0 ), ctx_id( kv::MAX_CTX_ID ),
       dbx_id( kv::MAX_STAT_ID ), fdcnt( 0 ), wr_count( 0 ), maxfd( 0 ),

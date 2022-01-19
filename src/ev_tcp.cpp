@@ -14,6 +14,12 @@ using namespace rai;
 using namespace kv;
 
 int
+EvTcpListen::listen( const char *ip,  int port,  int opts ) noexcept
+{
+  return this->listen( ip, port, opts, "tcp_listen" );
+}
+
+int
 EvTcpListen::listen( const char *ip,  int port,  int opts,
                      const char *k ) noexcept
 {

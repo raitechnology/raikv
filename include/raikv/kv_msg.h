@@ -105,11 +105,11 @@ struct KvPrefHash {
 
 struct KvSubMsg : public KvMsg {
   uint32_t hash,     /* hash of subject */
-           msg_size; /* size of message data */
+           msg_size, /* size of message data */
+           msg_enc;  /* msg encoding */
   uint16_t sublen,   /* length of subject, not including null char */
-           replylen; /* length of reply, not including null char */
-  uint8_t  code,     /* pub type */
-           msg_enc;  /* MD msg encoding type */
+           replylen, /* length of reply, not including null char */
+           code;     /* pub type */
   char     buf[ 2 ]; /* subject\0\reply\0 */
 
 /*  seqno      : 3
@@ -337,7 +337,7 @@ struct KvSendQueue {
                          const uint8_t *pref,  const uint32_t *hash,
                          uint8_t pref_cnt,  const char *reply,
                          size_t replylen,  const void *msgdata,  size_t msgsz,
-                         uint8_t code,  uint8_t msg_enc,
+                         uint16_t code,  uint32_t msg_enc,
                          const size_t max_msg_size = MAX_KV_MSG_SIZE ) noexcept;
   KvSubMsg * create_kvsubmsg( uint32_t h,  const char *sub,  size_t sublen,
                               char src_type,  KvMsgType mtype,  uint8_t code,

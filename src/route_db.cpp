@@ -256,7 +256,7 @@ RouteRef::decode( uint32_t val,  uint32_t add ) noexcept
 }
 
 void
-RouteRef::val_to_coderef( uint32_t val ) noexcept
+RouteRef::find_coderef( uint32_t val ) noexcept
 {
   size_t pos;
   if ( this->rdb.zip.zht->find( val, pos, this->ptr.off ) )
@@ -333,12 +333,12 @@ RouteZip::decompress_one( uint32_t val ) noexcept
   }
   return DeltaCoder::decode_one( val, 0 );
 }
-/* how many routes exists for a hash */
+/* how many routes exists for a hash, excluding bloom */
 uint32_t
 RouteDB::get_route_count( uint16_t prefix_len,  uint32_t hash ) noexcept
 {
-  uint32_t rcnt = 0, *routes;
-  if ( ! this->cache_find( prefix_len, hash, routes, rcnt ) ) {
+  uint32_t rcnt = 0/*, *routes*/;
+  /*if ( ! this->cache_find( prefix_len, hash, routes, rcnt ) ) {*/
     UIntHashTab * xht  = this->rt_hash[ prefix_len ];
     size_t        pos;
     uint32_t      val, off;
@@ -353,37 +353,57 @@ RouteDB::get_route_count( uint16_t prefix_len,  uint32_t hash ) noexcept
         rcnt = DeltaCoder::decode_length( val );
       }
     }
-    if ( ! this->bloom_list.is_empty() )
-      rcnt += this->get_bloom_count( prefix_len, hash );
-  }
+    /*if ( ! this->bloom_list.is_empty() )
+      rcnt += this->get_bloom_count( prefix_len, hash );*/
+  /*}*/
   return rcnt;
 }
 /* insert route for a subject hash */
 uint32_t
 RouteDB::add_route( uint16_t prefix_len,  uint32_t hash,  uint32_t r ) noexcept
 {
-  RouteRef      rte( *this, this->zip.route_spc[ prefix_len ] );
+  RouteRef rte( *this, this->zip.route_spc[ prefix_len ] );
+  return this->add_route( prefix_len, hash, r, rte );
+}
+
+uint32_t
+RouteDB::add_route( uint16_t prefix_len,  uint32_t hash,  uint32_t r,
+                    RouteRef &rte ) noexcept
+{
   UIntHashTab * xht = this->rt_hash[ prefix_len ];
   size_t        pos;
   uint32_t    * routes;
-  uint32_t      val, rcnt = 0, xcnt;
+  uint32_t      val = 0, rcnt = 0, xcnt;
+  bool          route_cached     = false,
+                decompress_route = true,
+                exists;
 
-  if ( ! this->cache_find( prefix_len, hash, routes, rcnt ) )
-    routes = NULL;
-  if ( xht->find( hash, pos, val ) )
-    rcnt = rte.decompress( val, 1, routes, rcnt, this->bloom_list.is_empty() );
-  xcnt = rte.insert( r );
+  exists = xht->find( hash, pos, val );
+  if ( this->cache_find( prefix_len, hash, routes, rcnt ) ) {
+    route_cached = true;
+    /* if bloom routes exist, don't use cached route */
+    if ( this->bloom_list.is_empty() ) {
+      rte.copy_cached( routes, rcnt, 1 );
+      decompress_route = false;
+      if ( exists && DeltaCoder::is_not_encoded( val ) )
+        rte.find_coderef( val );
+    }
+  }
+  if ( exists && decompress_route )
+    rcnt = rte.decompress( val, 1 );
+  xcnt = rte.insert( r ); /* add r to rte.routes[] */
 
   if ( rcnt == 0 ) { /* track which pattern lengths are used */
-    this->add_prefix_len( prefix_len, true );
+    if ( xht->is_empty() )
+      this->add_prefix_len( prefix_len, true );
     this->entry_count++;
   }
   /* if a route was inserted */
   if ( xcnt != rcnt ) {
-    if ( routes != NULL )
+    if ( route_cached )
       this->cache_purge( prefix_len, hash );
     val = rte.compress();
-    xht->set( hash, pos, val );
+    xht->set( hash, pos, val ); /* update val in xht */
     if ( UIntHashTab::check_resize( xht ) )
       this->rt_hash[ prefix_len ] = xht;
     rte.deref(); /* free the old code, it is no longer referenced */
@@ -394,37 +414,76 @@ RouteDB::add_route( uint16_t prefix_len,  uint32_t hash,  uint32_t r ) noexcept
 uint32_t
 RouteDB::del_route( uint16_t prefix_len,  uint32_t hash,  uint32_t r ) noexcept
 {
-  RouteRef      rte( *this, this->zip.route_spc[ prefix_len ] );
+  RouteRef rte( *this, this->zip.route_spc[ prefix_len ] );
+  return this->del_route( prefix_len, hash, r, rte );
+}
+
+uint32_t
+RouteDB::del_route( uint16_t prefix_len,  uint32_t hash,  uint32_t r,
+                    RouteRef &rte ) noexcept
+{
   UIntHashTab * xht = this->rt_hash[ prefix_len ];
   size_t        pos;
   uint32_t    * routes;
   uint32_t      val, rcnt = 0, xcnt;
+  bool          route_cached     = false,
+                decompress_route = true;
 
-  if ( ! this->cache_find( prefix_len, hash, routes, rcnt ) )
-    routes = NULL;
   if ( ! xht->find( hash, pos, val ) )
     return 0;
-  rcnt = rte.decompress( val, 0, routes, rcnt, this->bloom_list.is_empty() );
-  xcnt = rte.remove( r );
-
+  if ( this->cache_find( prefix_len, hash, routes, rcnt ) ) {
+    route_cached = true;
+    /* if bloom routes exist, don't use cached route */
+    if ( this->bloom_list.is_empty() ) {
+      rte.copy_cached( routes, rcnt, 0 );
+      decompress_route = false;
+      if ( DeltaCoder::is_not_encoded( val ) )
+        rte.find_coderef( val );
+    }
+  }
+  if ( decompress_route )
+    rcnt = rte.decompress( val, 0 );
+  xcnt = rte.remove( r ); /* remove r from rte.routes[] */
+  /* if route was deleted */
   if ( xcnt != rcnt ) {
-    if ( routes != NULL )
+    if ( route_cached )
       this->cache_purge( prefix_len, hash );
     if ( xcnt == 0 ) { /* no more routes left */
-      xht->remove( pos );
+      xht->remove( pos ); /* remove val from xht */
       if ( xht->is_empty() )
         this->del_prefix_len( prefix_len, true );
       this->entry_count--;
     }
     else { /* recompress and update hash */
       val = rte.compress();
-      xht->set( hash, pos, val );
+      xht->set( hash, pos, val ); /* update val in xht */
       if ( UIntHashTab::check_resize( xht ) )
         this->rt_hash[ prefix_len ] = xht;
     }
     rte.deref(); /* free old code buf */
   }
   return xcnt; /* count of routes after removing r */
+}
+
+uint32_t
+RouteDB::ref_route( uint16_t prefix_len,  uint32_t hash,
+                    RouteRef &rte ) noexcept
+{
+  UIntHashTab * xht = this->rt_hash[ prefix_len ];
+  size_t        pos;
+  uint32_t    * routes;
+  uint32_t      val, rcnt = 0;
+
+  if ( ! xht->find( hash, pos, val ) )
+    return 0;
+  /* if bloom routes exist, don't use cached route */
+  if ( this->bloom_list.is_empty() ) {
+    if ( this->cache_find( prefix_len, hash, routes, rcnt ) ) {
+      rte.copy_cached( routes, rcnt, 0 );
+      return rcnt;
+    }
+  }
+  return rte.decompress( val, 0 );
 }
 
 uint32_t
@@ -576,16 +635,17 @@ RouteDB::get_bloom_count( uint16_t prefix_len,  uint32_t hash ) noexcept
 
 BloomRoute *
 RouteDB::create_bloom_route( uint32_t r,  uint32_t *pref_count,
-                             BloomBits *bits ) noexcept
+                             BloomBits *bits,  const char *nm ) noexcept
 {
   return this->create_bloom_route( r,
-           this->create_bloom_ref( pref_count, bits ) );
+           this->create_bloom_ref( pref_count, bits, nm ) );
 }
 
 BloomRoute *
-RouteDB::create_bloom_route( uint32_t r,  uint32_t seed ) noexcept
+RouteDB::create_bloom_route( uint32_t r,  uint32_t seed,
+                             const char *nm ) noexcept
 {
-  return this->create_bloom_route( r, this->create_bloom_ref( seed ) );
+  return this->create_bloom_route( r, this->create_bloom_ref( seed, nm ) );
 }
 
 BloomRoute *
@@ -617,21 +677,23 @@ RouteDB::create_bloom_route( uint32_t r,  BloomRef *ref ) noexcept
 }
 
 BloomRef *
-RouteDB::create_bloom_ref( uint32_t seed ) noexcept
+RouteDB::create_bloom_ref( uint32_t seed,  const char *nm ) noexcept
 {
   void * m = ::malloc( sizeof( BloomRef ) );
-  return new ( m ) BloomRef( seed );
+  return new ( m ) BloomRef( seed, nm );
 }
 
 BloomRef *
-RouteDB::create_bloom_ref( uint32_t *pref_count,  BloomBits *bits ) noexcept
+RouteDB::create_bloom_ref( uint32_t *pref_count,  BloomBits *bits,
+                           const char *nm ) noexcept
 {
   void * m = ::malloc( sizeof( BloomRef ) );
-  return new ( m ) BloomRef( bits, pref_count );
+  return new ( m ) BloomRef( bits, pref_count, nm );
 }
 
-BloomRef::BloomRef( uint32_t seed ) noexcept
+BloomRef::BloomRef( uint32_t seed,  const char *nm ) noexcept
 {
+  this->name        = nm;
   this->bits        = NULL;
   this->links       = NULL;
   this->details     = NULL;
@@ -643,8 +705,10 @@ BloomRef::BloomRef( uint32_t seed ) noexcept
   this->update_route( NULL, BloomBits::resize( NULL, seed ), NULL, 0 );
 }
 
-BloomRef::BloomRef( BloomBits *b,  const uint32_t *pref ) noexcept
+BloomRef::BloomRef( BloomBits *b,  const uint32_t *pref,
+                    const char *nm ) noexcept
 {
+  this->name        = nm;
   this->bits        = NULL;
   this->links       = NULL;
   this->details     = NULL;
@@ -667,13 +731,16 @@ BloomRoute::add_bloom_ref( BloomRef *ref ) noexcept
   this->bloom[ n - 1 ] = ref;
   this->nblooms = n;
   ref->add_link( this );
+  /*printf( "add_bloom_ref %s -> %s.%u (cnt=%u) (%lx)\n", ref->name,
+          ((RoutePublish &) this->rdb).service_name, this->r, n,
+          ref->pref_mask );*/
 
   uint16_t prefix_len;
   for ( prefix_len = 0; prefix_len < MAX_RTE; prefix_len++ ) {
     if ( ref->pref_count[ prefix_len ] != 0 ) {
       if ( this->rdb.bloom_pref_count[ prefix_len ]++ == 0 ) {
-        if ( this->rdb.rt_hash[ prefix_len ]->is_empty() )
-          this->rdb.add_prefix_len( prefix_len, false );
+        /*if ( this->rdb.rt_hash[ prefix_len ]->is_empty() )*/
+        this->rdb.add_prefix_len( prefix_len, false );
       }
     }
   }
@@ -731,6 +798,8 @@ BloomRoute::del_bloom_ref( BloomRef *ref ) noexcept
         ::memmove( &this->bloom[ i - 1 ], &this->bloom[ i ],
                    sizeof( this->bloom[ 0 ] ) * ( n - i ) );
       this->nblooms = n - 1;
+      /*printf( "del_bloom_ref %s -> %s:%u (cnt=%u)\n", ref->name,
+               ((RoutePublish &) this->rdb).service_name, this->r, n-1 );*/
       ref->del_link( this );
       break;
     }
@@ -761,6 +830,20 @@ BloomRef::del_link( BloomRoute *b ) noexcept
       break;
     }
   }
+}
+
+BloomRoute *
+BloomRef::get_bloom_by_fd( uint32_t fd ) noexcept
+{
+  uint32_t i, n = this->nlinks;
+  for ( i = n; ; i-- ) {
+    if ( i == 0 )
+      break;
+    BloomRoute *b = this->links[ i - 1 ];
+    if ( b->r == fd )
+      return b;
+  }
+  return NULL;
 }
 
 bool
@@ -884,8 +967,8 @@ BloomRef::ref_pref_count( uint16_t prefix_len ) noexcept
     this->pref_mask |= (uint64_t) 1 << prefix_len;
   for ( uint32_t i = 0; i < this->nlinks; i++ ) {
     if ( this->links[ i ]->rdb.bloom_pref_count[ prefix_len ]++ == 0 ) {
-      if ( this->links[ i ]->rdb.rt_hash[ prefix_len ]->is_empty() )
-        this->links[ i ]->rdb.add_prefix_len( prefix_len, false );
+      /*if ( this->links[ i ]->rdb.rt_hash[ prefix_len ]->is_empty() )*/
+      this->links[ i ]->rdb.add_prefix_len( prefix_len, false );
     }
   }
 }

@@ -50,43 +50,40 @@ namespace kv {
  * Z  :  dictionary rpc request
  */
 
+struct RoutePublish;
 struct EvPublish {
-  const char * subject;        /* target subject */
-  const void * reply,          /* if rpc style pub w/reply */
-             * msg;            /* the message attached */
-  size_t       subject_len,    /* length of subject */
-               reply_len,      /* length of reply */
-               msg_len;        /* length of msg */
-  uint32_t     subj_hash,      /* crc of subject */
-               src_route;      /* fd of sender */
-  uint8_t      msg_len_digits, /* len of msg_len_buf ascii (may be 0) */
-               msg_enc,        /* the type of message (ex: MD_STRING) */
-               pub_type;       /* type of publish above */
-  const char * msg_len_buf;    /* msg_len to string */
-  uint32_t   * hash;           /* the prefix hashes which match */
-  uint8_t    * prefix;         /* the prefixes which match */
-  uint8_t      prefix_cnt;     /* count of these */
+  const char   * subject;     /* target subject */
+  const void   * reply,       /* if rpc style pub w/reply */
+               * msg;         /* the message attached */
+  RoutePublish & sub_route;   /* source if publish */
+  uint16_t       subject_len, /* length of subject */
+                 reply_len;   /* length of reply */
+  uint32_t       msg_len,     /* length of msg */
+                 subj_hash,   /* crc of subject */
+                 src_route,   /* fd of sender */
+                 msg_enc;     /* the type of message (ex: MD_STRING) */
+  uint8_t        pub_type;    /* type of publish above */
+  uint32_t     * hash;        /* the prefix hashes which match */
+  uint8_t      * prefix;      /* the prefixes which match */
+  uint8_t        prefix_cnt;  /* count of these */
 
-  EvPublish( const char *subj,  size_t subj_len,
-             const void *repl,  size_t repl_len,
-             const void *mesg,  size_t mesg_len,
-             uint32_t src,  uint32_t hash,
-             const char *msg_len_ptr,
-             uint8_t msg_len_digs,
-             uint8_t msg_encoding,  uint8_t publish_type )
+  EvPublish( const char *subj,  uint16_t subj_len,
+             const void *repl,  uint16_t repl_len,
+             const void *mesg,  uint32_t mesg_len,
+             RoutePublish &sub_rt,  uint32_t src,  uint32_t hash,
+             uint32_t msg_encoding,  uint8_t publish_type )
     : subject( subj ), reply( repl ), msg( mesg ),
-      subject_len( subj_len ), reply_len( repl_len ),
+      sub_route( sub_rt ), subject_len( subj_len ), reply_len( repl_len ),
       msg_len( mesg_len ), subj_hash( hash ), src_route( src ),
-      msg_len_digits( msg_len_digs ), msg_enc( msg_encoding ),
-      pub_type( publish_type ), msg_len_buf( msg_len_ptr ),
+      msg_enc( msg_encoding ), pub_type( publish_type ),
       hash( 0 ), prefix( 0 ), prefix_cnt( 0 ) {}
 
   EvPublish( const EvPublish &p )
     : subject( p.subject ), reply( p.reply ), msg( p.msg ),
-      subject_len( p.subject_len ), reply_len( p.reply_len ),
-      msg_len( p.msg_len ), subj_hash( p.subj_hash ), src_route( p.src_route ),
-      msg_len_digits( p.msg_len_digits ), msg_enc( p.msg_enc ),
-      pub_type( p.pub_type ), msg_len_buf( p.msg_len_buf ),
+      sub_route( p.sub_route ), subject_len( p.subject_len ),
+      reply_len( p.reply_len ), msg_len( p.msg_len ),
+      subj_hash( p.subj_hash ), src_route( p.src_route ),
+      msg_enc( p.msg_enc ), pub_type( p.pub_type ),
       hash( 0 ), prefix( 0 ), prefix_cnt( 0 ) {}
 };
 

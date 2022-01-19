@@ -258,6 +258,13 @@ test_bloom_lnk  = -lraikv
 
 $(bind)/test_bloom: $(test_bloom_objs) $(test_bloom_libs)
 
+test_coll_objs = $(objd)/test_coll.o
+test_coll_deps = $(dependd)/test_coll.d
+test_coll_libs = $(libd)/libraikv.so
+test_coll_lnk  = -lraikv
+
+$(bind)/test_coll: $(test_coll_objs) $(test_coll_libs)
+
 all_exes    += $(bind)/kv_test $(bind)/hash_test $(bind)/ping \
                $(bind)/kv_cli $(bind)/mcs_test $(bind)/kv_server \
 	       $(bind)/load $(bind)/rela_test $(bind)/ctest \
@@ -265,7 +272,7 @@ all_exes    += $(bind)/kv_test $(bind)/hash_test $(bind)/ping \
 	       $(bind)/zipf_test $(bind)/test_rtht $(bind)/test_cr \
 	       $(bind)/test_delta $(bind)/test_routes $(bind)/test_wild \
 	       $(bind)/test_uintht $(bind)/test_bitset $(bind)/test_list \
-	       $(bind)/test_bloom
+	       $(bind)/test_bloom $(bind)/test_coll
 all_depends += $(kv_test_deps) $(hash_test_deps) $(ping_deps) \
                $(kv_cli_deps) $(mcs_test_deps) $(kv_server_deps) \
 	       $(load_deps) $(rela_test_deps) $(ctest_deps) \

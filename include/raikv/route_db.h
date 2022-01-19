@@ -12,6 +12,7 @@
 #include <raikv/dlinklist.h>
 #include <raikv/route_ht.h>
 #include <raikv/kv_msg.h>
+#include <raikv/pattern_cvt.h>
 
 struct sockaddr;
 
@@ -109,27 +110,22 @@ struct RouteRef {
   RouteRef( RouteDB &db,  RouteSpace &spc )
     : rdb( db ), route_spc( spc ), routes( 0 ), rcnt( 0 ) {}
 
+  void copy_cached( uint32_t *cached,  uint32_t cache_rcnt,  uint32_t add ) {
+    this->routes = this->route_spc.make( cache_rcnt + add );
+    this->rcnt   = cache_rcnt;
+    ::memcpy( this->routes, cached, sizeof( cached[ 0 ] ) * cache_rcnt );
+  }
   /* val is the route id, decompress with add space for inserting */
-  uint32_t decompress( uint32_t val,  uint32_t add,  uint32_t *cached = NULL,
-                       uint32_t cache_rcnt = 0,  bool use_cached = false ) {
-    if ( use_cached && cached != NULL ) { /* if already cached, use that instead */
-      this->routes = this->route_spc.make( cache_rcnt + add );
-      this->rcnt   = cache_rcnt;
-      ::memcpy( this->routes, cached, sizeof( cached[ 0 ] ) * cache_rcnt );
-      if ( DeltaCoder::is_not_encoded( val ) )
-        this->val_to_coderef( val );
-    }
-    else { /* decompress val */
-      if ( DeltaCoder::is_not_encoded( val ) ) /* if is a multi value code */
-        return this->decode( val, add );
-      /* single value code, could contain up to 15 routes */
-      this->routes = this->route_spc.make( MAX_DELTA_CODE_LENGTH + add );
-      this->rcnt   = DeltaCoder::decode( val, this->routes, 0 );
-    }
+  uint32_t decompress( uint32_t val,  uint32_t add ) {
+    if ( DeltaCoder::is_not_encoded( val ) ) /* if is a multi value code */
+      return this->decode( val, add );
+    /* single value code, could contain up to 15 routes */
+    this->routes = this->route_spc.make( MAX_DELTA_CODE_LENGTH + add );
+    this->rcnt   = DeltaCoder::decode( val, this->routes, 0 );
     return this->rcnt;
   }
   /* convert val to coderef, if need to deref it */
-  void val_to_coderef( uint32_t val ) noexcept;
+  void find_coderef( uint32_t val ) noexcept;
   uint32_t decode( uint32_t val,  uint32_t add ) noexcept; /* stream of codes */
   uint32_t insert( uint32_t r ) noexcept; /* insert r into routes[] */
   uint32_t remove( uint32_t r ) noexcept; /* remove r from routes[] */
@@ -238,6 +234,12 @@ struct RouteDB {
                       uint32_t r ) noexcept;
   uint32_t del_route( uint16_t prefix_len,  uint32_t hash,
                       uint32_t r ) noexcept;
+  uint32_t add_route( uint16_t prefix_len,  uint32_t hash,
+                      uint32_t r,  RouteRef &rte ) noexcept;
+  uint32_t del_route( uint16_t prefix_len,  uint32_t hash,
+                      uint32_t r,  RouteRef &rte ) noexcept;
+  uint32_t ref_route( uint16_t prefix_len,  uint32_t hash,
+                      RouteRef &rte ) noexcept;
   bool is_member( uint16_t prefix_len,  uint32_t hash,  uint32_t r ) noexcept;
 
   bool is_sub_member( uint32_t hash,  uint32_t r ) {
@@ -314,15 +316,15 @@ struct RouteDB {
     return this->get_route_count( SUB_RTE, hash );
   }
   BloomRoute * create_bloom_route( uint32_t r,  uint32_t *pref_count,
-                                   BloomBits *bits ) noexcept;
-  BloomRoute * create_bloom_route( uint32_t r,  uint32_t seed ) noexcept;
+                                   BloomBits *bits,  const char *nm ) noexcept;
+  BloomRoute * create_bloom_route( uint32_t r,  uint32_t seed,
+                                   const char *nm ) noexcept;
   BloomRoute * create_bloom_route( uint32_t r,  BloomRef *ref ) noexcept;
-  static BloomRef * create_bloom_ref( uint32_t *pref_count,
-                                      BloomBits *bits ) noexcept;
-  static BloomRef * create_bloom_ref( uint32_t seed ) noexcept;
+  static BloomRef * create_bloom_ref( uint32_t *pref_count,  BloomBits *bits,
+                                      const char *nm ) noexcept;
+  static BloomRef * create_bloom_ref( uint32_t seed,  const char *nm ) noexcept;
   void update_bloom_route( uint32_t *pref_count,  BloomBits *bits,
                            BloomRoute *b ) noexcept;
-  void release_bloom_route( BloomRoute *b ) noexcept;
   uint32_t get_bloom_count( uint16_t prefix_len,  uint32_t hash ) noexcept;
 
   bool cache_find( uint16_t prefix_len,  uint32_t hash,
@@ -362,7 +364,7 @@ enum DetailType {
   SUFFIX_MATCH = 1,
   SHARD_MATCH  = 2
 };
-struct PatternCvt;
+
 struct BloomDetail {
   uint32_t hash;
   uint16_t prefix_len,
@@ -412,6 +414,7 @@ struct BloomDetail {
 };
 
 struct BloomRef {
+  const char  * name;
   BloomBits   * bits;
   BloomRoute ** links;
   BloomDetail * details;
@@ -424,12 +427,13 @@ struct BloomRef {
   void * operator new( size_t, void *ptr ) { return ptr; }
   void operator delete( void *ptr ) { ::free( ptr ); }
 
-  BloomRef( uint32_t seed ) noexcept;
-  BloomRef( BloomBits *b,  const uint32_t *pref ) noexcept;
+  BloomRef( uint32_t seed,  const char *nm ) noexcept;
+  BloomRef( BloomBits *b,  const uint32_t *pref,  const char *nm ) noexcept;
   void unlink( bool del_empty_routes ) noexcept;
   void zero( void ) noexcept;
   void add_link( BloomRoute *b ) noexcept;
   void del_link( BloomRoute *b ) noexcept;
+  BloomRoute *get_bloom_by_fd( uint32_t fd ) noexcept;
   bool has_link( uint32_t fd ) noexcept;
   void ref_pref_count( uint16_t prefix_len ) noexcept;
   void deref_pref_count( uint16_t prefix_len ) noexcept;
@@ -541,8 +545,8 @@ struct BloomRoute {
   RouteDB    & rdb;
   BloomRef  ** bloom;
   uint32_t     r,
-               nblooms,
-               pref_mask,
+               nblooms;
+  uint64_t     pref_mask,
                detail_mask;
   bool         is_invalid;
 
@@ -863,26 +867,109 @@ struct PeerData {
   virtual void retired_stats( PeerStats & )  { return; }
 };
 
-struct RouteNotify {
-  RouteNotify * next,
-              * back;
-  uint8_t       in_notify;
-  RouteNotify() : next( 0 ), back( 0 ), in_notify( 0 ) {}
+struct NotifySub {
+  const char * subject,
+             * reply;
+  uint16_t     subject_len,
+               reply_len;
+  uint32_t     subj_hash,
+               src_fd,
+               sub_count;
+  uint8_t      hash_collision;
+  char         src_type;
 
-  virtual void on_sub( uint32_t h,  const char *sub,  size_t len,
-                       uint32_t fd,  uint32_t rcnt,  char src_type,
-                       const char *rep,  size_t rlen ) noexcept;
-  virtual void on_unsub( uint32_t h,  const char *sub,  size_t len,
-                         uint32_t fd,  uint32_t rcnt,
-                         char src_type ) noexcept;
-  virtual void on_psub( uint32_t h,  const char *pattern,  size_t len,
-                        const char *prefix,  uint8_t prefix_len,
-                        uint32_t fd,  uint32_t rcnt,
-                        char src_type ) noexcept;
-  virtual void on_punsub( uint32_t h,  const char *pattern,  size_t len,
-                          const char *prefix,  uint8_t prefix_len,
-                          uint32_t fd,  uint32_t rcnt,
-                          char src_type ) noexcept;
+  bool is_start( void ) const {
+    return this->sub_count == 1 && this->hash_collision == 0;
+  }
+  bool is_stop( void ) const {
+    return this->sub_count == 0 && this->hash_collision == 0;
+  }
+  NotifySub( const char *s,  uint16_t slen,
+             const char *r,  uint16_t rlen,
+             uint32_t hash,  uint32_t fd,
+             bool coll,  char t ) :
+    subject( s ), reply( r ), subject_len( slen ), reply_len( rlen ),
+    subj_hash( hash ), src_fd( fd ), sub_count( 0 ), hash_collision( coll ),
+    src_type( t ) {}
+
+  NotifySub( const char *s,  uint16_t slen,
+             uint32_t hash,  uint32_t fd,
+             bool coll,  char t ) :
+    subject( s ), reply( 0 ), subject_len( slen ), reply_len( 0 ),
+    subj_hash( hash ), src_fd( fd ), sub_count( 0 ), hash_collision( coll ),
+    src_type( t ) {}
+};
+
+struct NotifyPattern {
+  const PatternCvt & cvt;
+  const char       * pattern,
+                   * reply;
+  uint16_t           pattern_len,
+                     reply_len;
+  uint32_t           prefix_hash,
+                     src_fd,
+                     sub_count;
+  uint8_t            hash_collision;
+  char               src_type;
+
+  NotifyPattern( const PatternCvt &c,
+                 const char *s,  uint16_t slen,
+                 const char *r,  uint16_t rlen,
+                 uint32_t hash,  uint32_t fd,
+                 bool coll,  char t ) :
+    cvt( c ), pattern( s ), reply( r ), pattern_len( slen ), reply_len( rlen ),
+    prefix_hash( hash ), src_fd( fd ), sub_count( 0 ), hash_collision( coll ),
+    src_type( t ) {}
+
+  NotifyPattern( const PatternCvt &c,
+                 const char *s,  uint16_t slen,
+                 uint32_t hash,  uint32_t fd,
+                 bool coll,  char t ) :
+    cvt( c ), pattern( s ), reply( 0 ), pattern_len( slen ), reply_len( 0 ),
+    prefix_hash( hash ), src_fd( fd ), sub_count( 0 ), hash_collision( coll ),
+    src_type( t ) {}
+};
+
+struct RoutePublish;
+struct RouteNotify {
+  RoutePublish & sub_route;
+  RouteNotify  * next,
+               * back;
+  uint8_t        in_notify;
+  char           notify_type;
+
+  RouteNotify( RoutePublish &p ) : sub_route( p ), next( 0 ), back( 0 ),
+                                   in_notify( 0 ), notify_type( 0 ) {}
+  virtual void on_sub( NotifySub &sub ) noexcept;
+  virtual void on_unsub( NotifySub &sub ) noexcept;
+  virtual void on_psub( NotifyPattern &pat ) noexcept;
+  virtual void on_punsub( NotifyPattern &pat ) noexcept;
+  virtual void on_reassert( uint32_t fd,  RouteVec<RouteSub> &sub_db,
+                            RouteVec<RouteSub> &pat_db ) noexcept;
+};
+
+struct RedisKeyspaceNotify : public RouteNotify {
+  /* this should be moved to raids */
+  uint32_t keyspace, /* route of __keyspace@N__ subscribes active */
+           keyevent, /* route of __keyevent@N__ subscribes active */
+           listblkd, /* route of __listblkd@N__ subscribes active */
+           zsetblkd, /* route of __zsetblkd@N__ subscribes active */
+           strmblkd, /* route of __strmblkd@N__ subscribes active */
+           monitor;  /* route of __monitor_@N__ subscribes active */
+  void * operator new( size_t, void *ptr ) { return ptr; }
+  void operator delete( void *ptr ) { ::free( ptr ); }
+  RedisKeyspaceNotify( RoutePublish &p ) : RouteNotify( p ), keyspace( 0 ),
+    keyevent( 0 ), listblkd( 0 ), zsetblkd( 0 ), strmblkd( 0 ), monitor( 0 ) {
+    this->notify_type = 'R';
+  }
+  void update_keyspace_route( uint32_t &val,  uint16_t bit,
+                              int add,  uint32_t fd ) noexcept;
+  void update_keyspace_count( const char *sub,  size_t len,
+                              int add,  uint32_t fd ) noexcept;
+  virtual void on_sub( NotifySub &sub ) noexcept;
+  virtual void on_unsub( NotifySub &sub ) noexcept;
+  virtual void on_psub( NotifyPattern &pat ) noexcept;
+  virtual void on_punsub( NotifyPattern &pat ) noexcept;
   virtual void on_reassert( uint32_t fd,  RouteVec<RouteSub> &sub_db,
                             RouteVec<RouteSub> &pat_db ) noexcept;
 };
@@ -893,17 +980,86 @@ struct RoutePublish : public RouteDB {
   EvPoll  & poll;
   kv::DLinkList<RouteNotify> notify_list;
   const char * service_name;
-  /* this should be moved to a notify_list */
-  uint32_t keyspace, /* route of __keyspace@N__ subscribes active */
-           keyevent, /* route of __keyevent@N__ subscribes active */
-           listblkd, /* route of __listblkd@N__ subscribes active */
-           zsetblkd, /* route of __zsetblkd@N__ subscribes active */
-           strmblkd, /* route of __strmblkd@N__ subscribes active */
-           monitor;  /* route of __monitor_@N__ subscribes active */
+  uint32_t route_id;  /* id used by endpoints to identify route */
   uint16_t key_flags; /* bits set for key subs above:
                          EKF_KEYSPACE_FWD | EKF_KEYEVENT_FWD |
                          EKF_LISTBLKD_NOT | EKF_ZSETBLKD_NOT |
                          EKF_STRMBLKD_NOT | EKF_MONITOR */
+
+  void do_notify_sub( NotifySub &sub ) {
+    for ( RouteNotify *p = this->notify_list.hd; p != NULL; p = p->next )
+      p->on_sub( sub );
+  }
+  void do_notify_unsub( NotifySub &sub ) {
+    for ( RouteNotify *p = this->notify_list.hd; p != NULL; p = p->next )
+      p->on_unsub( sub );
+  }
+  void do_notify_psub( NotifyPattern &pat ) {
+    for ( RouteNotify *p = this->notify_list.hd; p != NULL; p = p->next )
+      p->on_psub( pat );
+  }
+  void do_notify_punsub( NotifyPattern &pat ) {
+    for ( RouteNotify *p = this->notify_list.hd; p != NULL; p = p->next )
+      p->on_punsub( pat );
+  }
+  void resolve_collisions( NotifySub &sub,  RouteRef &rte ) noexcept;
+  void resolve_pcollisions( NotifyPattern &pat,  RouteRef &rte ) noexcept;
+
+  void add_sub( NotifySub &sub ) {
+    RouteRef rte( *this, this->zip.route_spc[ SUB_RTE ] );
+    if ( sub.hash_collision == 0 )
+      sub.sub_count = this->add_route( SUB_RTE, sub.subj_hash, sub.src_fd, rte );
+    else if ( ! this->notify_list.is_empty() )
+      sub.sub_count = this->ref_route( SUB_RTE, sub.subj_hash, rte );
+    else
+      sub.sub_count = 1;
+    if ( sub.sub_count > 1 )
+      this->resolve_collisions( sub, rte );
+    this->do_notify_sub( sub );
+  }
+
+  void del_sub( NotifySub &sub ) {
+    RouteRef rte( *this, this->zip.route_spc[ SUB_RTE ] );
+    if ( sub.hash_collision == 0 )
+      sub.sub_count = this->del_route( SUB_RTE, sub.subj_hash, sub.src_fd, rte );
+    else if ( ! this->notify_list.is_empty() )
+      sub.sub_count = this->ref_route( SUB_RTE, sub.subj_hash, rte );
+    else
+      sub.sub_count = 0;
+    if ( sub.sub_count > 0 )
+      this->resolve_collisions( sub, rte );
+    this->do_notify_unsub( sub );
+  }
+
+  void add_pat( NotifyPattern &pat ) {
+    uint16_t prefix_len = pat.cvt.prefixlen;
+    RouteRef rte( *this, this->zip.route_spc[ prefix_len ] );
+    if ( pat.hash_collision == 0 )
+      pat.sub_count = this->add_route( prefix_len, pat.prefix_hash, pat.src_fd,
+                                       rte );
+    else if ( ! this->notify_list.is_empty() )
+      pat.sub_count = this->ref_route( prefix_len, pat.prefix_hash, rte );
+    else
+      pat.sub_count = 1;
+    if ( pat.sub_count > 1 )
+      this->resolve_pcollisions( pat, rte );
+    this->do_notify_psub( pat );
+  }
+
+  void del_pat( NotifyPattern &pat ) {
+    uint16_t prefix_len = pat.cvt.prefixlen;
+    RouteRef rte( *this, this->zip.route_spc[ prefix_len ] );
+    if ( pat.hash_collision == 0 )
+      pat.sub_count = this->del_route( prefix_len, pat.prefix_hash, pat.src_fd,
+                                       rte );
+    else if ( ! this->notify_list.is_empty() )
+      pat.sub_count = this->ref_route( prefix_len, pat.prefix_hash, rte ) - 1;
+    else
+      pat.sub_count = 0;
+    if ( pat.sub_count > 0 )
+      this->resolve_pcollisions( pat, rte );
+    this->do_notify_punsub( pat );
+  }
 
   bool forward_msg( EvPublish &pub ) noexcept;
   bool forward_except( EvPublish &pub,  const BitSpace &fdexcpt ) noexcept;
@@ -920,22 +1076,6 @@ struct RoutePublish : public RouteDB {
   bool forward_to( EvPublish &pub,  uint32_t fd ) noexcept;
   bool hash_to_sub( uint32_t r,  uint32_t h,  char *key,
                     size_t &keylen ) noexcept;
-  void update_keyspace_route( uint32_t &val,  uint16_t bit,  int add,
-                              uint32_t fd ) noexcept;
-  void update_keyspace_count( const char *sub,  size_t len,  int add,
-                              uint32_t fd ) noexcept;
-  /* notify subscription start / stop to listeners */
-  void notify_sub( uint32_t h,  const char *sub,  size_t len,
-                   uint32_t fd,  uint32_t rcnt,  char src_type,
-                   const char *rep = NULL,  size_t rlen = 0 ) noexcept;
-  void notify_unsub( uint32_t h,  const char *sub,  size_t len,
-                     uint32_t fd,  uint32_t rcnt,  char src_type ) noexcept;
-  void notify_psub( uint32_t h,  const char *pattern,  size_t len,
-                    const char *prefix,  uint8_t prefix_len,
-                    uint32_t fd,  uint32_t rcnt,  char src_type ) noexcept;
-  void notify_punsub( uint32_t h,  const char *pattern,  size_t len,
-                     const char *prefix,  uint8_t prefix_len,
-                     uint32_t fd,  uint32_t rcnt,  char src_type ) noexcept;
   void notify_reassert( uint32_t fd,  RouteVec<RouteSub> &sub_db,
                         RouteVec<RouteSub> &pat_db ) noexcept;
   void add_route_notify( RouteNotify &x ) {
@@ -954,9 +1094,7 @@ struct RoutePublish : public RouteDB {
   void operator delete( void *ptr ) { ::free( ptr ); }
 
   RoutePublish( EvPoll &p,  const char *svc )
-    : poll( p ), service_name( svc ),
-      keyspace( 0 ), keyevent( 0 ), listblkd( 0 ), zsetblkd( 0 ),
-      strmblkd( 0 ), monitor( 0 ), key_flags( 0 ) {}
+    : poll( p ), service_name( svc ), route_id( 0 ), key_flags( 0 ) {}
 };
 
 /* callbacks cannot disappear between epochs, fd based connections that can

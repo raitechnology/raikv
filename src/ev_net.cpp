@@ -17,6 +17,7 @@
 #include <raikv/ev_publish.h>
 #include <raikv/kv_pubsub.h>
 #include <raikv/timer_queue.h>
+#include <raikv/pattern_cvt.h>
 
 using namespace rai;
 using namespace kv;
@@ -44,6 +45,11 @@ EvPoll::register_type( const char *s ) noexcept
   return 0;
 }
 
+struct DbgRouteNotify : public RouteNotify {
+  void * operator new( size_t, void *ptr ) { return ptr; }
+  DbgRouteNotify( RoutePublish &p ) : RouteNotify( p ) {}
+};
+
 int
 EvPoll::init( int numfds,  bool prefetch/*,  bool single*/ ) noexcept
 {
@@ -68,6 +74,9 @@ EvPoll::init( int numfds,  bool prefetch/*,  bool single*/ ) noexcept
   this->timer.queue = EvTimerQueue::create_timer_queue( *this );
   if ( this->timer.queue == NULL )
     return -1;
+  void * p = ::malloc( sizeof( DbgRouteNotify ) );
+  RouteNotify *x = new ( p ) DbgRouteNotify( this->sub_route );
+  this->sub_route.add_route_notify( *x );
   return 0;
 }
 
@@ -82,6 +91,13 @@ EvPoll::init_shm( EvShm &shm ) noexcept
       fprintf( stderr, "Unable to open kv pub sub\n" );
       return -1;
     }
+    void * p = ::malloc( sizeof( RedisKeyspaceNotify ) );
+    if ( p == NULL ) {
+      perror( "malloc" );
+      return -1;
+    }
+    this->keyspace = new ( p ) RedisKeyspaceNotify( this->sub_route );
+    this->sub_route.add_route_notify( *this->keyspace );
   }
   return 0;
 }
@@ -373,6 +389,8 @@ EvSocket::process_close( void ) noexcept
 bool EvSocket::timer_expire( uint64_t, uint64_t ) noexcept { return false; }
 /* pub sub, subject resolution, deliver publish message */
 bool EvSocket::hash_to_sub( uint32_t, char *, size_t & ) noexcept { return false; }
+uint8_t EvSocket::is_subscribed( const NotifySub & ) noexcept { return EV_NOT_SUBSCRIBED; }
+uint8_t EvSocket::is_psubscribed( const NotifyPattern & ) noexcept { return EV_NOT_SUBSCRIBED; }
 bool EvSocket::on_msg( EvPublish & ) noexcept { return true; }
 /* key prefetch, requires a batch of keys to hide latency */
 void EvSocket::key_prefetch( EvKeyCtx & ) noexcept {}
@@ -594,6 +612,7 @@ EvPoll::dispatch( void ) noexcept
 
 namespace rai {
 namespace kv {
+uint32_t kv_debug;
 struct ForwardBase {
   RoutePublish & sub_route;
   uint32_t       total;
@@ -618,7 +637,8 @@ struct ForwardAll : public ForwardBase {
     if ( fd <= this->sub_route.poll.maxfd &&
          (s = this->sub_route.poll.sock[ fd ]) != NULL ) {
       this->total++;
-      /*this->debug_subject( pub, s, "fwd_all" );*/
+      if ( kv_debug )
+        this->debug_subject( pub, s, "fwd_all" );
       return s->on_msg( pub );
     }
     return true;
@@ -636,7 +656,8 @@ struct ForwardSome : public ForwardBase {
       if ( fd <= this->sub_route.poll.maxfd &&
            (s = this->sub_route.poll.sock[ fd ]) != NULL ) {
         this->total++;
-        /*this->debug_subject( pub, s, "fwd_som" );*/
+        if ( kv_debug )
+          this->debug_subject( pub, s, "fwd_som" );
         return s->on_msg( pub );
       }
     }
@@ -652,7 +673,8 @@ struct ForwardExcept : public ForwardBase {
     if ( ! this->fdexcept.is_member( fd ) && fd <= this->sub_route.poll.maxfd &&
          (s = this->sub_route.poll.sock[ fd ]) != NULL ) {
       this->total++;
-      /*this->debug_subject( pub, s, "fwd_exc" );*/
+      if ( kv_debug )
+        this->debug_subject( pub, s, "fwd_exc" );
       return s->on_msg( pub );
     }
     return true;
@@ -667,7 +689,8 @@ struct ForwardNotFd : public ForwardBase {
     if ( fd != this->not_fd && fd <= this->sub_route.poll.maxfd &&
          (s = this->sub_route.poll.sock[ fd ]) != NULL ) {
       this->total++;
-      /*this->debug_subject( pub, s, "fwd_not" );*/
+      if ( kv_debug )
+        this->debug_subject( pub, s, "fwd_not" );
       return s->on_msg( pub );
     }
     return true;
@@ -683,7 +706,8 @@ struct ForwardNotFd2 : public ForwardBase {
          fd <= this->sub_route.poll.maxfd &&
          (s = this->sub_route.poll.sock[ fd ]) != NULL ) {
       this->total++;
-      /*this->debug_subject( pub, s, "fwd_nt2" );*/
+      if ( kv_debug )
+        this->debug_subject( pub, s, "fwd_nt2" );
       return s->on_msg( pub );
     }
     return true;
@@ -711,7 +735,8 @@ publish_one( EvPublish &pub,  RoutePublishData &rpd,  Forward &fwd ) noexcept
   for ( uint32_t i = 0; i < rcount; i++ ) {
     flow_good &= fwd.on_msg( routes[ i ], pub );
   }
-  /*fwd.debug_total( pub );*/
+  if ( kv_debug )
+    fwd.debug_total( pub );
   return flow_good;
 }
 
@@ -762,7 +787,8 @@ publish_multi_64( EvPublish &pub,  RoutePublishData *rpd,  uint8_t n,
     pub.prefix_cnt = cnt;
     flow_good &= fwd.on_msg( min_route, pub );
   }
-  /*fwd.debug_total( pub );*/
+  if ( kv_debug )
+    fwd.debug_total( pub );
 }
 
 template<uint8_t N, class Forward>
@@ -807,7 +833,8 @@ publish_multi( EvPublish &pub,  RoutePublishData *rpd,
     pub.prefix_cnt = cnt;
     flow_good &= fwd.on_msg( min_route, pub );
   }
-  /*fwd.debug_total( pub );*/
+  if ( kv_debug )
+    fwd.debug_total( pub );
 }
 
 /* same as above with a prio queue heap instead of linear search */
@@ -853,7 +880,8 @@ publish_queue( EvPublish &pub,  RoutePublishQueue &queue,
     pub.prefix_cnt = cnt;
     flow_good &= fwd.on_msg( min_route, pub );
   }
-  /*fwd.debug_total( pub );*/
+  if ( kv_debug )
+    fwd.debug_total( pub );
   return flow_good;
 }
 
@@ -967,8 +995,9 @@ RoutePublish::forward_all( EvPublish &pub,  uint32_t *routes,
 bool
 RoutePublish::forward_set( EvPublish &pub,  const BitSpace &fdset ) noexcept
 {
-  bool    flow_good = true;
-  uint8_t prefix    = SUB_RTE;
+  uint32_t cnt       = 0;
+  bool     flow_good = true;
+  uint8_t  prefix    = SUB_RTE;
 
   pub.hash       = &pub.subj_hash;
   pub.prefix     = &prefix;
@@ -982,12 +1011,20 @@ RoutePublish::forward_set( EvPublish &pub,  const BitSpace &fdset ) noexcept
         EvSocket * s;
         if ( fd > this->poll.maxfd )
           break;
-        if ( (s = this->poll.sock[ fd ]) != NULL )
+        if ( (s = this->poll.sock[ fd ]) != NULL ) {
           flow_good &= s->on_msg( pub );
+          if ( kv_debug ) {
+            printf( "fwd_set %u\n", fd );
+            cnt++;
+          }
+        }
       }
       word >>= 1;
     }
   }
+  if ( kv_debug && cnt == 0 )
+    printf( "fwd_set empty\n" );
+
   return flow_good;
 }
 
@@ -995,8 +1032,9 @@ bool
 RoutePublish::forward_set_not_fd( EvPublish &pub,  const BitSpace &fdset,
                                   uint32_t not_fd ) noexcept
 {
-  bool    flow_good = true;
-  uint8_t prefix    = SUB_RTE;
+  uint32_t cnt       = 0;
+  bool     flow_good = true;
+  uint8_t  prefix    = SUB_RTE;
 
   pub.hash       = &pub.subj_hash;
   pub.prefix     = &prefix;
@@ -1010,12 +1048,19 @@ RoutePublish::forward_set_not_fd( EvPublish &pub,  const BitSpace &fdset,
         EvSocket * s;
         if ( fd > this->poll.maxfd )
           break;
-        if ( (s = this->poll.sock[ fd ]) != NULL )
+        if ( (s = this->poll.sock[ fd ]) != NULL ) {
           flow_good &= s->on_msg( pub );
+          if ( kv_debug ) {
+            printf( "fwd_not_%u %u\n", not_fd, fd );
+            cnt++;
+          }
+        }
       }
       word >>= 1;
     }
   }
+  if ( kv_debug && cnt == 0 )
+    printf( "fwd_not_%u empty\n", not_fd );
   return flow_good;
 }
 
@@ -1061,10 +1106,19 @@ RoutePublish::forward_to( EvPublish &pub,  uint32_t fd ) noexcept
   pub.hash       = phash;
   pub.prefix     = prefix;
   pub.prefix_cnt = n;
+
   EvSocket * s;
-  if ( fd <= this->poll.maxfd && (s = this->poll.sock[ fd ]) != NULL )
-    return s->on_msg( pub );
-  return true;
+  bool       b = true;
+  if ( fd <= this->poll.maxfd && (s = this->poll.sock[ fd ]) != NULL ) {
+    b = s->on_msg( pub );
+    if ( kv_debug ) {
+      printf( "fwd_to_%u ok\n", fd );
+    }
+  }
+  else if ( kv_debug ) {
+    printf( "fwd_to_%u empty\n", fd );
+  }
+  return b;
 }
 
 /* convert a hash into a subject string, this may have collisions */
@@ -1078,16 +1132,54 @@ RoutePublish::hash_to_sub( uint32_t r,  uint32_t h,  char *key,
     b = s->hash_to_sub( h, key, keylen );
   return b;
 }
-/* modify keyspace route */
-inline void
-RoutePublish::update_keyspace_route( uint32_t &val,  uint16_t bit,
-                                     int add,  uint32_t fd ) noexcept
+
+void
+RoutePublish::resolve_collisions( NotifySub &sub,  RouteRef &rte ) noexcept
 {
-  RouteRef rte( *this, this->zip.route_spc[ 0 ] );
+  for ( uint32_t i = 0; i < rte.rcnt; i++ ) {
+    uint32_t r = rte.routes[ i ];
+    if ( r != sub.src_fd && r <= this->poll.maxfd ) {
+      EvSocket *s;
+      if ( (s = this->poll.sock[ r ]) != NULL ) {
+        uint8_t v = s->is_subscribed( sub );
+        if ( ( v & EV_COLLISION ) != 0  )
+          sub.hash_collision = 1;
+        if ( ( v & EV_NOT_SUBSCRIBED ) != 0 )
+          sub.sub_count--;
+      }
+    }
+  }
+}
+
+void
+RoutePublish::resolve_pcollisions( NotifyPattern &pat,  RouteRef &rte ) noexcept
+{
+  for ( uint32_t i = 0; i < rte.rcnt; i++ ) {
+    uint32_t r = rte.routes[ i ];
+    if ( r != pat.src_fd && r <= this->poll.maxfd ) {
+      EvSocket *s;
+      if ( (s = this->poll.sock[ r ]) != NULL ) {
+        uint8_t v = s->is_psubscribed( pat );
+        if ( ( v & EV_COLLISION ) != 0  )
+          pat.hash_collision = 1;
+        if ( ( v & EV_NOT_SUBSCRIBED ) != 0 )
+          pat.sub_count--;
+      }
+    }
+  }
+}
+
+/* modify keyspace route */
+void
+RedisKeyspaceNotify::update_keyspace_route( uint32_t &val,  uint16_t bit,
+                                            int add,  uint32_t fd ) noexcept
+{
+  RouteRef rte( this->sub_route, this->sub_route.zip.route_spc[ 0 ] );
   uint32_t rcnt = 0, xcnt;
+  uint16_t & key_flags = this->sub_route.key_flags;
 
   /* if bit is set, then val has routes */
-  if ( ( this->key_flags & bit ) != 0 )
+  if ( ( key_flags & bit ) != 0 )
     rcnt = rte.decompress( val, add > 0 );
   /* if unsub or sub */
   if ( add < 0 )
@@ -1099,20 +1191,20 @@ RoutePublish::update_keyspace_route( uint32_t &val,  uint16_t bit,
     /* if route deleted */
     if ( xcnt == 0 ) {
       val = 0;
-      this->key_flags &= ~bit;
+      key_flags &= ~bit;
     }
     /* otherwise added */
     else {
-      this->key_flags |= bit;
+      key_flags |= bit;
       val = rte.compress();
     }
     rte.deref();
   }
 }
 /* track number of subscribes to keyspace subjects to enable them */
-inline void
-RoutePublish::update_keyspace_count( const char *sub,  size_t len,
-                                     int add,  uint32_t fd ) noexcept
+void
+RedisKeyspaceNotify::update_keyspace_count( const char *sub,  size_t len,
+                                            int add,  uint32_t fd ) noexcept
 {
   /* keyspace subjects are special, since subscribing to them can create
    * some overhead */
@@ -1139,55 +1231,38 @@ RoutePublish::update_keyspace_count( const char *sub,  size_t len,
 }
 /* client subscribe, notify to kv pubsub */
 void
-RoutePublish::notify_sub( uint32_t h,  const char *sub,  size_t len,
-                          uint32_t fd,  uint32_t rcnt,  char src_type,
-                          const char *rep,  size_t rlen ) noexcept
+RedisKeyspaceNotify::on_sub( NotifySub &sub ) noexcept
 {
-  if ( len > 11 )
-    this->update_keyspace_count( sub, 11, 1, fd );
-  for ( RouteNotify *p = this->notify_list.hd; p != NULL; p = p->next ) {
-    p->on_sub( h, sub, len, fd, rcnt, src_type, rep, rlen );
-  }
+  if ( sub.subject_len > 11 )
+    this->update_keyspace_count( sub.subject, 11, 1, sub.src_fd );
 }
 
 void
-RoutePublish::notify_unsub( uint32_t h,  const char *sub,  size_t len,
-                            uint32_t fd,  uint32_t rcnt,
-                            char src_type ) noexcept
+RedisKeyspaceNotify::on_unsub( NotifySub &sub ) noexcept
 {
-  if ( len > 11 )
-    this->update_keyspace_count( sub, 11, -1, fd );
-  for ( RouteNotify *p = this->notify_list.hd; p != NULL; p = p->next ) {
-    p->on_unsub( h, sub, len, fd, rcnt, src_type );
-  }
+  if ( sub.subject_len > 11 )
+    this->update_keyspace_count( sub.subject, 11, -1, sub.src_fd );
 }
 /* client pattern subscribe, notify to kv pubsub */
 void
-RoutePublish::notify_psub( uint32_t h,  const char *pattern,  size_t len,
-                           const char *prefix,  uint8_t prefix_len,
-                           uint32_t fd,  uint32_t rcnt,
-                           char src_type ) noexcept
+RedisKeyspaceNotify::on_psub( NotifyPattern &pat ) noexcept
 {
-  size_t pre_len = ( prefix_len < 11 ? prefix_len : 11 );
-  this->update_keyspace_count( prefix, pre_len, 1, fd );
-  for ( RouteNotify *p = this->notify_list.hd; p != NULL; p = p->next ) {
-    p->on_psub( h, pattern, len, prefix, prefix_len, fd, rcnt, src_type );
-  }
+  size_t pre_len = ( pat.cvt.prefixlen < 11 ? pat.cvt.prefixlen : 11 );
+  this->update_keyspace_count( pat.pattern, pre_len, 1, pat.src_fd );
 }
 
 void
-RoutePublish::notify_punsub( uint32_t h,  const char *pattern,  size_t len,
-                             const char *prefix,  uint8_t prefix_len,
-                             uint32_t fd,  uint32_t rcnt,
-                             char src_type ) noexcept
+RedisKeyspaceNotify::on_punsub( NotifyPattern &pat ) noexcept
 {
-  size_t pre_len = ( prefix_len < 11 ? prefix_len : 11 );
-  this->update_keyspace_count( prefix, pre_len, -1, fd );
-  for ( RouteNotify *p = this->notify_list.hd; p != NULL; p = p->next ) {
-    p->on_punsub( h, pattern, len, prefix, prefix_len, fd, rcnt, src_type );
-  }
+  size_t pre_len = ( pat.cvt.prefixlen < 11 ? pat.cvt.prefixlen : 11 );
+  this->update_keyspace_count( pat.pattern, pre_len, -1, pat.src_fd );
 }
 
+void
+RedisKeyspaceNotify::on_reassert( uint32_t ,  RouteVec<RouteSub> &,
+                                  RouteVec<RouteSub> & ) noexcept
+{
+}
 void
 RoutePublish::notify_reassert( uint32_t fd, RouteVec<RouteSub> &sub_db,
                                RouteVec<RouteSub> &pat_db ) noexcept
@@ -1197,16 +1272,43 @@ RoutePublish::notify_reassert( uint32_t fd, RouteVec<RouteSub> &sub_db,
   }
 }
 /* defined for vtable to avoid pure virtuals */
-void RouteNotify::on_sub( uint32_t,  const char *,  size_t,  uint32_t,
-                          uint32_t,  char,  const char *,  size_t ) noexcept {}
-void RouteNotify::on_unsub( uint32_t,  const char *,  size_t,
-                            uint32_t,  uint32_t,  char ) noexcept {}
-void RouteNotify::on_psub( uint32_t,  const char *,  size_t, const char *,
-                           uint8_t,  uint32_t,  uint32_t, char ) noexcept {}
-void RouteNotify::on_punsub( uint32_t,  const char *,  size_t, const char *,
-                             uint8_t, uint32_t,  uint32_t, char ) noexcept {}
-void RouteNotify::on_reassert( uint32_t, RouteVec<RouteSub> &,
-                               RouteVec<RouteSub> & ) noexcept {}
+void
+RouteNotify::on_sub( NotifySub &sub ) noexcept
+{
+  printf( "on_sub( sub=%.*s, rep=%.*s, h=0x%x, fd=%u, cnt=%u, col=%u, %c )\n",
+          sub.subject_len, sub.subject, sub.reply_len, sub.reply,
+          sub.subj_hash, sub.src_fd, sub.sub_count, sub.hash_collision,
+          sub.src_type );
+}
+void
+RouteNotify::on_unsub( NotifySub &sub ) noexcept
+{
+  printf( "on_unsub( sub=%.*s, h=0x%x, fd=%u, cnt=%u, col=%u, %c )\n",
+          sub.subject_len, sub.subject,
+          sub.subj_hash, sub.src_fd, sub.sub_count, sub.hash_collision,
+          sub.src_type );
+}
+void
+RouteNotify::on_psub( NotifyPattern &pat ) noexcept
+{
+  printf( "on_psub( sub=%.*s, rep=%.*s, h=0x%x, fd=%u, cnt=%u, col=%u, %c )\n",
+          pat.pattern_len, pat.pattern, pat.reply_len, pat.reply,
+          pat.prefix_hash, pat.src_fd, pat.sub_count, pat.hash_collision,
+          pat.src_type );
+}
+void
+RouteNotify::on_punsub( NotifyPattern &pat ) noexcept
+{
+  printf( "on_punsub( sub=%.*s, h=0x%x, fd=%u, cnt=%u, col=%u, %c )\n",
+          pat.pattern_len, pat.pattern,
+          pat.prefix_hash, pat.src_fd, pat.sub_count,
+          pat.hash_collision, pat.src_type );
+}
+void
+RouteNotify::on_reassert( uint32_t, RouteVec<RouteSub> &,
+                          RouteVec<RouteSub> & ) noexcept
+{
+}
 /* shutdown and close all open socks */
 void
 EvPoll::process_quit( void ) noexcept

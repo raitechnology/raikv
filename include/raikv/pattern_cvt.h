@@ -4,6 +4,11 @@
 namespace rai {
 namespace kv {
 
+enum PatternFmt {
+  RV_PATTERN_FMT   = 0,
+  GLOB_PATTERN_FMT = 1
+};
+
 /* convert glob pattern or nats/rv/capr sub pattern to pcre pattern */
 struct PatternCvt {
   static const size_t MAX_PREFIX_LEN = 63; /* uint64_t bit mask */
@@ -15,14 +20,15 @@ struct PatternCvt {
                suffixlen;
   size_t       maxlen;       /* max size of output */
   void       * tmp;          /* tmp alloc if needed for output */
-  uint32_t     shard_num,    /* if [S,N] suffix */
+  uint32_t     shard_num,    /* if (S,N) suffix */
                shard_total;
   bool         match_prefix; /* if matching prefix of subject */
+  PatternFmt   fmt;
 
   PatternCvt()
     : out( this->buf ), suffix( 0 ), off( 0 ), prefixlen( 0 ), suffixlen( 0 ),
       maxlen( sizeof( this->buf ) ), tmp( 0 ), shard_num( 0 ),
-      shard_total( 0 ), match_prefix( false ) {}
+      shard_total( 0 ), match_prefix( false ), fmt( RV_PATTERN_FMT ) {}
   ~PatternCvt() {
     if ( this->tmp != NULL )
       ::free( this->tmp );
@@ -78,7 +84,7 @@ struct PatternCvt {
   void match_shard( const char *pattern,  size_t &patlen ) {
     /* (S,N) */
     size_t i = patlen - 1;
-    if ( pattern[ i ] == ')' ) { /* look for [S,N] */
+    if ( pattern[ i ] == ')' ) { /* look for (S,N) */
       if ( rev_scan_int( pattern, i, this->shard_total ) ) {
         if ( i > 0 && pattern[ --i ] == ',' ) {
           if ( rev_scan_int( pattern, i, this->shard_num ) ) {
@@ -105,6 +111,7 @@ struct PatternCvt {
     bool   inside_bracket,
            anchor_end = ! this->match_prefix;
 
+    this->fmt = GLOB_PATTERN_FMT;
     this->off = 0;
     if ( patlen > 0 ) {
       this->str_out( "(?s)\\A", 6 ); /* match nl & anchor start */
@@ -195,6 +202,7 @@ struct PatternCvt {
     size_t k, j = 0, suf = 0;
     bool   anchor_end = ! this->match_prefix;
 
+    this->fmt = RV_PATTERN_FMT;
     this->off = 0;
     if ( patlen > 0 ) {
       this->str_out( "(?s)\\A", 6 ); /* match nl & anchor start */

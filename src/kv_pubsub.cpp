@@ -447,7 +447,7 @@ KvPubSub::force_unsubscribe( void ) noexcept
 
   for ( sub = list; sub != NULL; sub = sub->next ) {
     const char * key  = sub->value;
-    size_t       n, plen = sizeof( SYS_WILD_PREFIX ) - 1;
+    size_t       plen = sizeof( SYS_WILD_PREFIX ) - 1;
     if ( ::memcmp( key, SYS_WILD_PREFIX, plen ) == 0 &&
          key[ plen ] >= '0' && key[ plen ] <= '9' ) {
       size_t prefixlen = key[ plen ] - '0';
@@ -459,19 +459,22 @@ KvPubSub::force_unsubscribe( void ) noexcept
       this->sub_tab.remove( sub->hash, key, sub->len );
       if ( this->sub_tab.find_by_hash( sub->hash ) == NULL ) {
         /*printf( "force delpat %.*s\n", (int) prefixlen, &key[ plen ] );*/
-        n = this->sub_route.del_pattern_route( sub->hash, this->fd,
-                                               prefixlen );
+        this->sub_route.del_pattern_route( sub->hash, this->fd, prefixlen );
+#if 0
         this->sub_route.notify_punsub( sub->hash, NULL, 0, &key[ plen ],
                                        prefixlen, this->fd, n, 'K' );
+#endif
       }
     }
     else {
       this->sub_tab.remove( sub->hash, key, sub->len );
       if ( this->sub_tab.find_by_hash( sub->hash ) == NULL ) {
         /*printf( "force delrte %.*s\n", (int) sub->len, key );*/
-        n = this->sub_route.del_sub_route( sub->hash, this->fd );
+        this->sub_route.del_sub_route( sub->hash, this->fd );
+#if 0
         this->sub_route.notify_unsub( sub->hash, key, sub->len,
                                       this->fd, n, 'K' );
+#endif
       }
     }
   }
@@ -618,27 +621,26 @@ KvPubSub::update_mcast_sub( const char *sub,  size_t len,  int flags ) noexcept
 }
 
 void
-KvPubSub::on_sub( uint32_t h,  const char *sub,  size_t sublen,
-                  uint32_t src_fd,  uint32_t rcnt,  char src_type,
-                  const char *rep,  size_t rlen ) noexcept
+KvPubSub::on_sub( NotifySub &sub ) noexcept
 {
-  if ( src_fd == (uint32_t) this->fd )
+  if ( sub.src_fd == (uint32_t) this->fd )
     return;
   int use_find = USE_FIND;
-  if ( rcnt == 1 ) /* first route added */
+  if ( sub.sub_count == 1 ) /* first route added */
     use_find = 0;
-  else if ( rcnt == 2 ) { /* if first route and subscribed elsewhere */
-    if ( this->sub_route.is_sub_member( h, this->fd ) )
+  else if ( sub.sub_count == 2 ) { /* if first route and subscribed elsewhere */
+    if ( this->sub_route.is_sub_member( sub.subj_hash, this->fd ) )
       use_find = 0;
   }
   /* subscribe must check the route is set because the hash used for the route
    * is may have collisions:  when another subject is subscribed and has a
    * collision, the route count will be for both subjects */
-  this->update_mcast_sub( sub, sublen, use_find | ACTIVATE );
+  this->update_mcast_sub( sub.subject, sub.subject_len, use_find | ACTIVATE );
 
   KvSubMsg *submsg =
-    this->create_kvsubmsg( h, sub, sublen, src_type, KV_MSG_SUB,
-                           'L', rep, rlen );
+    this->create_kvsubmsg( sub.subj_hash, sub.subject, sub.subject_len,
+                           sub.src_type, KV_MSG_SUB, 'L', sub.reply,
+                           sub.reply_len );
   if ( submsg != NULL ) {
   /*printf( "subscribe %x %.*s %u:%c\n", h, (int) len, sub, sub_id, src_type );*/
     this->idle_push( EV_WRITE );
@@ -650,26 +652,26 @@ KvPubSub::on_sub( uint32_t h,  const char *sub,  size_t sublen,
 }
 
 void
-KvPubSub::on_unsub( uint32_t h,  const char *sub,  size_t sublen,
-                    uint32_t src_fd,  uint32_t rcnt,  char src_type ) noexcept
+KvPubSub::on_unsub( NotifySub &sub ) noexcept
 {
-  printf( "unsub %.*s rcnt %u (%s)\n", (int) sublen, sub, rcnt,
-          (src_fd == (uint32_t) this->fd) ? "from kv" : "from ds" );
-  if ( src_fd == (uint32_t) this->fd ) {
+  printf( "unsub %.*s rcnt %u (%s)\n", (int) sub.subject_len, sub.subject,
+   sub.sub_count, (sub.src_fd == (uint32_t) this->fd) ? "from kv" : "from ds" );
+  if ( sub.src_fd == (uint32_t) this->fd )
     return;
-  }
+
   bool do_unsubscribe = false;
-  if ( rcnt == 0 ) /* no more routes left */
+  if ( sub.sub_count == 0 ) /* no more routes left */
     do_unsubscribe = true;
-  else if ( rcnt == 1 ) { /* if the only route left is not in my server */
-    if ( this->sub_route.is_sub_member( h, this->fd ) )
+  else if ( sub.sub_count == 1 ) { /* if the only route left is not in my server */
+    if ( this->sub_route.is_sub_member( sub.subj_hash, this->fd ) )
       do_unsubscribe = true;
   }
   if ( do_unsubscribe ) /* mask out my ctx id from the sub */
-    this->update_mcast_sub( sub, sublen, DEACTIVATE );
+    this->update_mcast_sub( sub.subject, sub.subject_len, DEACTIVATE );
   /* notify unsub */
   KvSubMsg *submsg =
-    this->create_kvsubmsg( h, sub, sublen, src_type, KV_MSG_UNSUB,
+    this->create_kvsubmsg( sub.subj_hash, sub.subject, sub.subject_len,
+                           sub.src_type, KV_MSG_UNSUB,
                            do_unsubscribe ? 'D' : 'C', NULL, 0 );
   if ( submsg != NULL ) {
   /*printf( "unsubscribe %x %.*s\n", h, (int) len, sub );*/
@@ -682,27 +684,27 @@ KvPubSub::on_unsub( uint32_t h,  const char *sub,  size_t sublen,
 }
 
 void
-KvPubSub::on_psub( uint32_t h,  const char *pattern,  size_t patlen,
-                   const char *prefix,  uint8_t prefix_len,
-                   uint32_t src_fd,  uint32_t rcnt,  char src_type ) noexcept
+KvPubSub::on_psub( NotifyPattern &pat ) noexcept
 {
-  if ( src_fd == (uint32_t) this->fd )
+  if ( pat.src_fd == (uint32_t) this->fd )
     return;
   int use_find = USE_FIND;
-  if ( rcnt == 1 ) /* first route added */
+  if ( pat.sub_count == 1 ) /* first route added */
     use_find = 0;
-  else if ( rcnt == 2 ) { /* if first route and subscribed elsewhere */
-    if ( this->sub_route.is_member( prefix_len, h, this->fd ) )
+  else if ( pat.sub_count == 2 ) { /* if first route and subscribed elsewhere */
+    if ( this->sub_route.is_member( pat.cvt.prefixlen, pat.prefix_hash,
+                                    this->fd ) )
       use_find = 0;
   }
   /* subscribe must check the route is set because the hash used for the route
    * is may have collisions:  when another subject is subscribed and has a
    * collision, the route count will be for both subjects */
-  SysWildSub w( prefix, prefix_len );
+  SysWildSub w( pat.pattern, pat.cvt.prefixlen );
   this->update_mcast_sub( w.sub, w.len, use_find | ACTIVATE );
 
   KvSubMsg *submsg =
-    this->create_kvpsubmsg( h, pattern, patlen, prefix, prefix_len, src_type,
+    this->create_kvpsubmsg( pat.prefix_hash, pat.pattern, pat.pattern_len,
+                            pat.pattern, pat.cvt.prefixlen, pat.src_type,
                             KV_MSG_PSUB, 'L' );
   if ( submsg != NULL ) {
     this->idle_push( EV_WRITE );
@@ -714,24 +716,24 @@ KvPubSub::on_psub( uint32_t h,  const char *pattern,  size_t patlen,
 }
 
 void
-KvPubSub::on_punsub( uint32_t h,  const char *pattern,  size_t patlen,
-                     const char *prefix,  uint8_t prefix_len,
-                     uint32_t src_fd,  uint32_t rcnt,  char src_type ) noexcept
+KvPubSub::on_punsub( NotifyPattern &pat ) noexcept
 {
-  if ( src_fd == (uint32_t) this->fd )
+  if ( pat.src_fd == (uint32_t) this->fd )
     return;
   bool do_unsubscribe = false;
-  if ( rcnt == 0 ) /* no more routes left */
+  if ( pat.sub_count == 0 ) /* no more routes left */
     do_unsubscribe = true;
-  else if ( rcnt == 1 ) { /* if the only route left is not in my server */
-    if ( this->sub_route.is_member( prefix_len, h, this->fd ) )
+  else if ( pat.sub_count == 1 ) { /* if the only route left is not in my server */
+    if ( this->sub_route.is_member( pat.cvt.prefixlen, pat.prefix_hash,
+                                    this->fd ) )
       do_unsubscribe = true;
   }
-  SysWildSub w( prefix, prefix_len );
+  SysWildSub w( pat.pattern, pat.cvt.prefixlen );
   if ( do_unsubscribe ) /* mask out my ctx id from the sub */
     this->update_mcast_sub( w.sub, w.len, DEACTIVATE );
   KvSubMsg *submsg =
-    this->create_kvpsubmsg( h, pattern, patlen, prefix, prefix_len, src_type,
+    this->create_kvpsubmsg( pat.prefix_hash, pat.pattern, pat.pattern_len,
+                            pat.pattern, pat.cvt.prefixlen, pat.src_type,
                             KV_MSG_PUNSUB, do_unsubscribe ? 'D' : 'C' );
   if ( submsg != NULL ) {
     this->idle_push( EV_WRITE );
@@ -848,26 +850,29 @@ KvPubSub::scan_ht( void ) noexcept
             cr.clear( this->ctx_id );
             if ( ! cr.is_empty() && kp->keylen > 0 ) {
             /*printf( "addkey: %.*s\r\n", kp->keylen - 1, key );*/
-              uint32_t n, hash = kv_crc_c( key, kp->keylen - 1, 0 );
+              uint32_t hash = kv_crc_c( key, kp->keylen - 1, 0 );
               KvSubRoute * rt;
               rt = this->sub_tab.upsert( hash, key, kp->keylen - 1 );
               cr.copy_to( rt->rt_bits );
               this->subscr_cr.or_bits( cr );
               if ( ! is_sys_wild ) {
-                n = this->sub_route.add_sub_route( hash, this->fd );
+                this->sub_route.add_sub_route( hash, this->fd );
+#if 0
                 this->sub_route.notify_sub( hash, key, kp->keylen - 1,
                                             this->fd, n, 'K', NULL, 0 );
+#endif
               }
               else {
                 PatternCvt cvt;
                 cvt.match_prefix = true;
                 cvt.convert_glob( &key[ plen ], prefixlen );
 
-                n = this->sub_route.add_pattern_route( hash, this->fd,
-                                                       prefixlen );
+                this->sub_route.add_pattern_route( hash, this->fd, prefixlen );
+#if 0
                 this->sub_route.notify_psub( hash, cvt.out, cvt.off,
                                              &key[ plen ], prefixlen,
                                              this->fd, n, 'K' );
+#endif
               }
             }
           }
@@ -1684,7 +1689,7 @@ KvPubSub::route_msg( KvMsg &msg ) noexcept
       EvPublish pub( submsg.subject(), submsg.sublen,
                      submsg.reply(), submsg.replylen,
                      submsg.get_msg_data(), submsg.msg_size,
-                     this->fd, submsg.hash, NULL, 0,
+                     this->sub_route, this->fd, submsg.hash,
                      submsg.msg_enc, submsg.code );
       this->sub_route.forward_msg( pub, NULL, submsg.get_prefix_cnt(),
                                    submsg.prefix_array() );
@@ -1695,7 +1700,7 @@ KvPubSub::route_msg( KvMsg &msg ) noexcept
       EvPublish pub( submsg.subject(), submsg.sublen,
                      submsg.reply(), submsg.replylen,
                      frag->buf, frag->msg_size,
-                     this->fd, submsg.hash, NULL, 0,
+                     this->sub_route, this->fd, submsg.hash,
                      submsg.msg_enc, submsg.code );
       this->sub_route.forward_msg( pub, NULL, submsg.get_prefix_cnt(),
                                    submsg.prefix_array() );
@@ -1714,16 +1719,18 @@ KvPubSub::route_msg( KvMsg &msg ) noexcept
       /*msg.print_sub();*/
       KvSubMsg &submsg = (KvSubMsg &) msg;
       CubeRoute128 cr;
-      uint32_t n = 2;
 
       this->get_sub_mcast( submsg.subject(), submsg.sublen, cr );
       cr.clear( this->ctx_id ); /* remove my subscriber id */
+      NotifySub sub( submsg.subject(), submsg.sublen,
+                     submsg.reply(), submsg.replylen,
+                     submsg.hash, this->fd, false, submsg.src_type() );
       /* if no more routes to shm exist, then remove */
       if ( cr.is_empty() ) {
         /*printf( "remsub: %.*s\r\n", submsg.sublen, submsg.subject() );*/
         this->sub_tab.remove( submsg.hash, submsg.subject(), submsg.sublen );
-        if ( this->sub_tab.find_by_hash( submsg.hash ) == NULL )
-          n = this->sub_route.del_sub_route( submsg.hash, this->fd );
+        sub.hash_collision = ( this->sub_tab.find_by_hash( submsg.hash ) != NULL );
+        this->sub_route.del_sub( sub );
       }
       /* adding a route, publishes will be forwarded to shm */
       else {
@@ -1733,18 +1740,7 @@ KvPubSub::route_msg( KvMsg &msg ) noexcept
                                    submsg.sublen );
         cr.copy_to( rt->rt_bits );
         this->subscr_cr.or_bits( cr );
-        n = this->sub_route.add_sub_route( submsg.hash, this->fd );
-      }
-      if ( msg.msg_type == KV_MSG_SUB ) {
-        this->sub_route.notify_sub( submsg.hash, submsg.subject(),
-                                    submsg.sublen, this->fd, n,
-                                    submsg.src_type(), submsg.reply(),
-                                    submsg.replylen );
-      }
-      else {
-        this->sub_route.notify_unsub( submsg.hash, submsg.subject(),
-                                      submsg.sublen, this->fd, n,
-                                      submsg.src_type() );
+        this->sub_route.add_sub( sub );
       }
 #if 0
       if ( ! this->sub_notifyq.is_empty() )
@@ -1756,7 +1752,6 @@ KvPubSub::route_msg( KvMsg &msg ) noexcept
     case KV_MSG_PUNSUB: {
       /*msg.print_sub();*/
       KvSubMsg &submsg = (KvSubMsg &) msg;
-      uint32_t n = 2;
       CubeRoute128 cr;
       SysWildSub w( submsg.reply(), submsg.replylen );
       this->get_sub_mcast( w.sub, w.len, cr );
@@ -1766,8 +1761,8 @@ KvPubSub::route_msg( KvMsg &msg ) noexcept
         /*printf( "remwild: %.*s\r\n", (int) w.len, w.sub );*/
         this->sub_tab.remove( submsg.hash, w.sub, w.len );
         if ( this->sub_tab.find_by_hash( submsg.hash ) == NULL )
-          n = this->sub_route.del_pattern_route( submsg.hash, this->fd,
-                                                 submsg.replylen );
+          this->sub_route.del_pattern_route( submsg.hash, this->fd,
+                                             submsg.replylen );
       }
       /* adding a route, publishes will be forwarded to shm */
       else {
@@ -1776,9 +1771,10 @@ KvPubSub::route_msg( KvMsg &msg ) noexcept
         rt = this->sub_tab.upsert( submsg.hash, w.sub, w.len );
         cr.copy_to( rt->rt_bits );
         this->subscr_cr.or_bits( cr );
-        n = this->sub_route.add_pattern_route( submsg.hash, this->fd,
-                                               submsg.replylen );
+        this->sub_route.add_pattern_route( submsg.hash, this->fd,
+                                           submsg.replylen );
       }
+#if 0
       if ( msg.msg_type == KV_MSG_PSUB ) {
         this->sub_route.notify_psub( submsg.hash, submsg.subject(),
                                      submsg.sublen, submsg.reply(),
@@ -1791,6 +1787,7 @@ KvPubSub::route_msg( KvMsg &msg ) noexcept
                                        submsg.replylen, this->fd, n,
                                        submsg.src_type() );
       }
+#endif
 #if 0
       if ( ! this->sub_notifyq.is_empty() )
         this->forward_sub( this->fd, n, submsg );
