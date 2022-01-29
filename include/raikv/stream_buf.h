@@ -230,26 +230,30 @@ struct StreamBuf {
     }
     return &this->out_buf[ this->sz ];
   }
-  void append( const void *p,  size_t amt ) {
+  char *append( const void *p,  size_t amt ) {
     char *b = this->alloc( amt );
     if ( b != NULL ) {
       ::memcpy( b, p, amt );
       this->sz += amt;
+      return b;
     }
     else {
       this->alloc_fail = true;
+      return NULL;
     }
   }
-  void append2( const void *p,  size_t amt,
+  char *append2( const void *p,  size_t amt,
                 const void *p2,  size_t amt2 ) {
     char *b = this->alloc( amt + amt2 );
     if ( b != NULL ) {
       ::memcpy( b, p, amt );
       ::memcpy( &b[ amt ], p2, amt2 );
       this->sz += amt + amt2;
+      return b;
     }
     else {
       this->alloc_fail = true;
+      return NULL;
     }
   }
 };

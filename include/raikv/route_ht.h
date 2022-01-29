@@ -124,6 +124,8 @@ struct RouteHT {
       data_copy( data, s, l );
     else
       ::memcpy( data.value, s, l );
+    if ( l == 0 )
+      data.value[ 0 ] = 1; /* not removed */
   }
   /* put data at location in ht */
   Data *inplace( uint32_t h,  const void *s,  uint16_t l,  uint16_t i ) {
