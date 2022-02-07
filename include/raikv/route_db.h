@@ -875,6 +875,7 @@ struct NotifySub {
   uint32_t     subj_hash,
                src_fd,
                sub_count;
+  void       * src;
   uint8_t      hash_collision;
   char         src_type;
 
@@ -887,17 +888,17 @@ struct NotifySub {
   NotifySub( const char *s,  uint16_t slen,
              const char *r,  uint16_t rlen,
              uint32_t hash,  uint32_t fd,
-             bool coll,  char t ) :
+             bool coll,  char t,  void *source = NULL ) :
     subject( s ), reply( r ), subject_len( slen ), reply_len( rlen ),
-    subj_hash( hash ), src_fd( fd ), sub_count( 0 ), hash_collision( coll ),
-    src_type( t ) {}
+    subj_hash( hash ), src_fd( fd ), sub_count( 0 ), src( source ),
+    hash_collision( coll ), src_type( t ) {}
 
   NotifySub( const char *s,  uint16_t slen,
              uint32_t hash,  uint32_t fd,
-             bool coll,  char t ) :
+             bool coll,  char t,  void *source = NULL ) :
     subject( s ), reply( 0 ), subject_len( slen ), reply_len( 0 ),
-    subj_hash( hash ), src_fd( fd ), sub_count( 0 ), hash_collision( coll ),
-    src_type( t ) {}
+    subj_hash( hash ), src_fd( fd ), sub_count( 0 ), src( source ),
+    hash_collision( coll ), src_type( t ) {}
 };
 
 struct NotifyPattern {
@@ -909,6 +910,7 @@ struct NotifyPattern {
   uint32_t           prefix_hash,
                      src_fd,
                      sub_count;
+  void             * src;
   uint8_t            hash_collision;
   char               src_type;
 
@@ -916,18 +918,18 @@ struct NotifyPattern {
                  const char *s,  uint16_t slen,
                  const char *r,  uint16_t rlen,
                  uint32_t hash,  uint32_t fd,
-                 bool coll,  char t ) :
+                 bool coll,  char t,  void *source = NULL ) :
     cvt( c ), pattern( s ), reply( r ), pattern_len( slen ), reply_len( rlen ),
-    prefix_hash( hash ), src_fd( fd ), sub_count( 0 ), hash_collision( coll ),
-    src_type( t ) {}
+    prefix_hash( hash ), src_fd( fd ), sub_count( 0 ), src( source ),
+    hash_collision( coll ), src_type( t ) {}
 
   NotifyPattern( const PatternCvt &c,
                  const char *s,  uint16_t slen,
                  uint32_t hash,  uint32_t fd,
-                 bool coll,  char t ) :
+                 bool coll,  char t,  void *source = NULL ) :
     cvt( c ), pattern( s ), reply( 0 ), pattern_len( slen ), reply_len( 0 ),
-    prefix_hash( hash ), src_fd( fd ), sub_count( 0 ), hash_collision( coll ),
-    src_type( t ) {}
+    prefix_hash( hash ), src_fd( fd ), sub_count( 0 ), src( source ),
+    hash_collision( coll ), src_type( t ) {}
 };
 
 struct RoutePublish;

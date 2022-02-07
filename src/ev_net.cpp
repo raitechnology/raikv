@@ -1856,7 +1856,8 @@ EvUdp::discard_pkt( void ) noexcept
   hdr.msg_flags      = 0;
   nbytes = ::recvmsg( this->fd, &hdr, 0 );
   if ( nbytes > 0 )
-    fprintf( stderr, "Discard %ld bytes\n", (long) nbytes );
+    fprintf( stderr, "Discard %ld bytes in_nmsgs %u in_size %u\n",
+             (long) nbytes, this->in_nmsgs, this->in_size );
   return nbytes;
 }
 
