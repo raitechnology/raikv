@@ -347,11 +347,14 @@ KeyStatus
 MsgCtx::alloc_segment( void *res,  uint64_t size,
                        uint16_t chain_size ) noexcept
 {
-  const uint32_t   hdr_size  = MsgHdr::hdr_size( *this->kbuf ),
-                   algn_shft = this->ht.hdr.seg_align_shift;
-  const uint64_t   seg_algn  = this->ht.hdr.seg_align(),
-                   seg_size  = this->ht.hdr.seg_size();
-  const uint16_t   nsegs     = this->ht.hdr.nsegs;
+  if ( this->ht.hdr.ht_read_only )
+    return KEY_HT_FULL;
+
+  const uint32_t hdr_size  = MsgHdr::hdr_size( *this->kbuf ),
+                 algn_shft = this->ht.hdr.seg_align_shift;
+  const uint64_t seg_algn  = this->ht.hdr.seg_align(),
+                 seg_size  = this->ht.hdr.seg_size();
+  const uint16_t nsegs     = this->ht.hdr.nsegs;
 
   if ( nsegs == 0 )
     return KEY_TOO_BIG;

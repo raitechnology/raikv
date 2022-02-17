@@ -86,7 +86,7 @@ EvPoll::init_shm( EvShm &shm ) noexcept
   this->map    = shm.map;
   this->ctx_id = shm.ctx_id;
   this->dbx_id = shm.dbx_id;
-  if ( this->map != NULL ) {
+  if ( this->map != NULL && ! this->map->hdr.ht_read_only ) {
     if ( (this->pubsub = KvPubSub::create( *this, 254 )) == NULL ) {
       fprintf( stderr, "Unable to open kv pub sub\n" );
       return -1;

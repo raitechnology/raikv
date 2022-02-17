@@ -265,6 +265,13 @@ test_coll_lnk  = -lraikv
 
 $(bind)/test_coll: $(test_coll_objs) $(test_coll_libs)
 
+test_min_objs = $(objd)/test_min.o
+test_min_deps = $(dependd)/test_min.d
+test_min_libs = $(libd)/libraikv.so
+test_min_lnk  = -lraikv
+
+$(bind)/test_min: $(test_min_objs) $(test_min_libs)
+
 all_exes    += $(bind)/kv_test $(bind)/hash_test $(bind)/ping \
                $(bind)/kv_cli $(bind)/mcs_test $(bind)/kv_server \
 	       $(bind)/load $(bind)/rela_test $(bind)/ctest \
@@ -272,7 +279,7 @@ all_exes    += $(bind)/kv_test $(bind)/hash_test $(bind)/ping \
 	       $(bind)/zipf_test $(bind)/test_rtht $(bind)/test_cr \
 	       $(bind)/test_delta $(bind)/test_routes $(bind)/test_wild \
 	       $(bind)/test_uintht $(bind)/test_bitset $(bind)/test_list \
-	       $(bind)/test_bloom $(bind)/test_coll
+	       $(bind)/test_bloom $(bind)/test_coll $(bind)/test_min
 all_depends += $(kv_test_deps) $(hash_test_deps) $(ping_deps) \
                $(kv_cli_deps) $(mcs_test_deps) $(kv_server_deps) \
 	       $(load_deps) $(rela_test_deps) $(ctest_deps) \
@@ -280,7 +287,7 @@ all_depends += $(kv_test_deps) $(hash_test_deps) $(ping_deps) \
 	       $(zipf_test_dpes) $(test_rtht_deps) $(test_cr_deps) \
 	       $(test_delta_deps) $(test_routes_deps) $(test_wild_deps) \
 	       $(test_uintht_deps) $(test_bitset_deps) $(test_list_deps) \
-	       $(test_bloom_deps)
+	       $(test_bloom_deps) $(test_coll_deps) $(test_min_deps)
 
 all_dirs := $(bind) $(libd) $(objd) $(dependd)
 

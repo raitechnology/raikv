@@ -128,8 +128,9 @@ struct FileHdr {
              ht_load,                /* hash entry used / ht_size */
              value_load;             /* seg data used / seg size */
   uint8_t    load_percent,           /* current_load * 100 / critical_load */
-             critical_load;      
-  uint16_t   padh;
+             critical_load,
+             ht_read_only,
+             pad0;
   AtomUInt16 next_ctx;               /* next free ctx[] */
   AtomUInt16 ctx_used;               /* number of ctx used */
   uint32_t   max_immed_value_size;   /* sizeof value in entry, including key */

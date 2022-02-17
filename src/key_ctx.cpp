@@ -25,7 +25,7 @@ KeyCtx::KeyCtx( HashTab &t,  uint32_t xid,  KeyFragment *b ) noexcept
   , inc( 0 )
   , msg_chain_size( 0 )
   , drop_flags( 0 )
-  , flags( KEYCTX_IS_READ_ONLY )
+  , flags( KEYCTX_IS_READ_ONLY | t.hdr.ht_read_only )
   , stat( t.stats[ xid ] )
   , max_chains( t.hdr.ht_size )
 {
@@ -70,7 +70,7 @@ KeyCtx::KeyCtx( KeyCtx &kctx ) noexcept
   , inc( 0 )
   , msg_chain_size( 0 )
   , drop_flags( 0 )
-  , flags( KEYCTX_IS_READ_ONLY )
+  , flags( KEYCTX_IS_READ_ONLY | ( kctx.flags & KEYCTX_HT_READ_ONLY ) )
   , stat( kctx.stat )
   , max_chains( kctx.ht_size )
 {
@@ -129,14 +129,16 @@ KeyCtx::acquire( void ) noexcept
   this->init_acquire();
   if kv_unlikely( this->cuckoo_buckets <= 1 ) {
     switch ( this->test( KEYCTX_IS_SINGLE_THREAD | KEYCTX_MULTI_KEY_ACQUIRE |
-                         KEYCTX_EVICT_ACQUIRE ) ) {
-      default:
+                         KEYCTX_EVICT_ACQUIRE | KEYCTX_HT_READ_ONLY ) ) {
+      case 0:
         return this->acquire_linear_probe( this->key, this->start );
       case KEYCTX_MULTI_KEY_ACQUIRE:
         return this->multi_acquire_linear_probe( this->key, this->start );
       case KEYCTX_IS_SINGLE_THREAD: /* single thread version */
         return this->acquire_linear_probe_single_thread( this->key,
                                                          this->start );
+      default:
+        return KEY_HT_FULL;
       case KEYCTX_EVICT_ACQUIRE:
         status = this->acquire_linear_probe( this->key, this->start );
         break;
@@ -144,13 +146,15 @@ KeyCtx::acquire( void ) noexcept
   }
   else {
     switch ( this->test( KEYCTX_IS_SINGLE_THREAD | KEYCTX_MULTI_KEY_ACQUIRE |
-                         KEYCTX_EVICT_ACQUIRE ) ) {
-      default:
+                         KEYCTX_EVICT_ACQUIRE | KEYCTX_HT_READ_ONLY ) ) {
+      case 0:
         return this->acquire_cuckoo( this->key, this->start );
       case KEYCTX_MULTI_KEY_ACQUIRE:
         return this->multi_acquire_cuckoo( this->key, this->start );
       case KEYCTX_IS_SINGLE_THREAD: /* single thread version */
         return this->acquire_cuckoo_single_thread( this->key, this->start );
+      default:
+        return KEY_HT_FULL;
       case KEYCTX_EVICT_ACQUIRE:
         status = this->acquire_cuckoo( this->key, this->start );
         break;
@@ -182,18 +186,17 @@ KeyStatus
 KeyCtx::try_acquire( void ) noexcept
 {
   this->init_acquire();
-  switch ( this->test( KEYCTX_IS_SINGLE_THREAD ) ) {
-    case 0:
-    default:
-      if ( this->cuckoo_buckets <= 1 )
-        return this->try_acquire_linear_probe( this->key, this->start );
-      return this->try_acquire_cuckoo( this->key, this->start );
-
-    case KEYCTX_IS_SINGLE_THREAD: /* single thread version */
-      if ( this->cuckoo_buckets <= 1 )
-        return this->acquire_linear_probe_single_thread( this->key, this->start );
-      return this->acquire_cuckoo_single_thread( this->key, this->start );
+  if kv_unlikely( this->test( KEYCTX_HT_READ_ONLY ) )
+    return KEY_HT_FULL;
+  if kv_unlikely( this->test( KEYCTX_IS_SINGLE_THREAD ) ) {
+    /* single thread version */
+    if ( this->cuckoo_buckets <= 1 )
+      return this->acquire_linear_probe_single_thread( this->key, this->start );
+    return this->acquire_cuckoo_single_thread( this->key, this->start );
   }
+  if ( this->cuckoo_buckets <= 1 )
+    return this->try_acquire_linear_probe( this->key, this->start );
+  return this->try_acquire_cuckoo( this->key, this->start );
 }
 
 /* if find locates key, returns KEY_OK, sets entry at &ht[ key % ht_size ] */
@@ -201,18 +204,15 @@ KeyStatus
 KeyCtx::find( void ) noexcept
 {
   this->init_find();
-  switch ( this->test( KEYCTX_IS_SINGLE_THREAD ) ) {
-    case 0:
-    default:
-      if ( this->cuckoo_buckets <= 1 )
-        return this->find_linear_probe( this->key, this->start );
-      return this->find_cuckoo( this->key, this->start );
-
-    case KEYCTX_IS_SINGLE_THREAD: /* single thread version */
-      if ( this->cuckoo_buckets <= 1 )
-        return this->find_linear_probe_single_thread( this->key, this->start );
-      return this->find_cuckoo_single_thread( this->key, this->start );
+  if kv_unlikely( this->test( KEYCTX_IS_SINGLE_THREAD ) ) {
+    /* single thread version */
+    if ( this->cuckoo_buckets <= 1 )
+      return this->find_linear_probe_single_thread( this->key, this->start );
+    return this->find_cuckoo_single_thread( this->key, this->start );
   }
+  if ( this->cuckoo_buckets <= 1 )
+    return this->find_linear_probe( this->key, this->start );
+  return this->find_cuckoo( this->key, this->start );
 }
 
 /* mark as dropped */

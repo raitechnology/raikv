@@ -88,14 +88,15 @@ struct MsgCtx;
    }
 */
 enum KeyCtxFlags {
-  KEYCTX_IS_READ_ONLY      = 1, /* result of find(), etc.. no lock acq */
-  KEYCTX_IS_GC_ACQUIRE     = 2, /* if GC is trying to acquire for moving */
-  KEYCTX_IS_CUCKOO_ACQUIRE = 4, /* if Cuckoo relocate is trying to make space */
-  KEYCTX_IS_HT_EVICT       = 8, /* if chains == max_chains, is eviction */
-  KEYCTX_IS_SINGLE_THREAD  = 16,/* don't use thread synchronization */
-  KEYCTX_NO_COPY_ON_READ   = 32,/* don't copy message on read, use seal check */
-  KEYCTX_MULTI_KEY_ACQUIRE = 64,/* when multiple keys are being acquired */
-  KEYCTX_EVICT_ACQUIRE     = 128/* when acquire should evict old on new entry */
+  KEYCTX_HT_READ_ONLY      = 1, /* can't mutate hash tab */
+  KEYCTX_IS_READ_ONLY      = 2, /* result of find(), etc.. no lock acq */
+  KEYCTX_IS_GC_ACQUIRE     = 4, /* if GC is trying to acquire for moving */
+  KEYCTX_IS_CUCKOO_ACQUIRE = 8, /* if Cuckoo relocate is trying to make space */
+  KEYCTX_IS_HT_EVICT       = 16,/* if chains == max_chains, is eviction */
+  KEYCTX_IS_SINGLE_THREAD  = 32,/* don't use thread synchronization */
+  KEYCTX_NO_COPY_ON_READ   = 64,/* don't copy message on read, use seal check */
+  KEYCTX_MULTI_KEY_ACQUIRE = 128,/* when multiple keys are being acquired */
+  KEYCTX_EVICT_ACQUIRE     = 256 /* when acquire should evict old on new entry */
 };
 
 typedef uint32_t msg_size_t;

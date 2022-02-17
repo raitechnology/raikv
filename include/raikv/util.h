@@ -207,7 +207,6 @@ template <class Int, class UInt>
 size_t int_to_string( Int v,  char *buf,  size_t len ) {
   if ( v < 0 ) {
     len--; *buf++ = '-';
-    v = -v;
     return 1 + uint_to_string<UInt>( neg<UInt>( v ), buf, len - 1 );
   }
   return uint_to_string<UInt>( (UInt) v, buf, len );
