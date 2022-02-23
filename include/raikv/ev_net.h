@@ -94,6 +94,13 @@ enum EvSubState {
   EV_COLLISION      = 4
 };
 
+enum EvSockBase {
+  EV_OTHER_BASE      = 0,
+  EV_LISTEN_BASE     = 1,
+  EV_CONNECTION_BASE = 2,
+  EV_UDP_BASE        = 3
+};
+
 struct EvSocket : public PeerData /* fd and address of peer */EV_DBG_INHERIT {
   EvPoll      & poll;       /* the parent container */
   uint64_t      prio_cnt;   /* timeslice each socket for a slot to run */
@@ -103,15 +110,16 @@ struct EvSocket : public PeerData /* fd and address of peer */EV_DBG_INHERIT {
   uint8_t       sock_flags; /* in active list or free list */
   uint16_t      sock_err,   /* error condition */
                 sock_errno;
-  uint32_t      sock_pad;
+  const uint8_t sock_base;
+  uint8_t       sock_pad[ 3 ];
   uint64_t      bytes_recv, /* stat counters for bytes and msgs */
                 bytes_sent,
                 msgs_recv,
                 msgs_sent;
 
-  EvSocket( EvPoll &p,  const uint8_t t )
+  EvSocket( EvPoll &p,  const uint8_t t,  const uint8_t b = EV_OTHER_BASE )
     : poll( p ), prio_cnt( 0 ), state( 0 ),  sock_opts( 0 ), sock_type( t ),
-      sock_flags( 0 ) { this->init_stats(); }
+      sock_flags( 0 ), sock_base( b ) { this->init_stats(); }
   void init_stats( void ) {
     this->sock_err   = 0;
     this->sock_errno = 0;
@@ -447,8 +455,8 @@ struct EvConnection : public EvSocket, public StreamBuf {
   EvConnectionNotify * notify;
   char     recv_buf[ RCV_BUFSIZE ] __attribute__((__aligned__( 64 )));
 
-  EvConnection( EvPoll &p, const uint8_t t,
-                EvConnectionNotify *n = NULL ) : EvSocket( p, t ) {
+  EvConnection( EvPoll &p, const uint8_t t, EvConnectionNotify *n = NULL )
+      : EvSocket( p, t, EV_CONNECTION_BASE ) {
     this->off    = 0;
     this->len    = 0;
     this->notify = n;
@@ -515,7 +523,7 @@ struct EvUdp : public EvSocket, public StreamBuf {
             in_nsize,  /* new array size, ajusted based on activity */
             out_nmsgs;
 
-  EvUdp( EvPoll &p, const uint8_t t ) : EvSocket( p, t ),
+  EvUdp( EvPoll &p, const uint8_t t ) : EvSocket( p, t, EV_UDP_BASE ),
     in_mhdr( 0 ), out_mhdr( 0 ), in_moff( 0 ), in_nmsgs( 0 ), in_size( 0 ),
     in_nsize( 1 ), out_nmsgs( 0 ) {}
   void zero( void ) {

@@ -397,7 +397,7 @@ void EvSocket::key_prefetch( EvKeyCtx & ) noexcept {}
 int  EvSocket::key_continue( EvKeyCtx & ) noexcept { return 0; }
 
 EvListen::EvListen( EvPoll &p,  const char *lname,  const char *name )
-    : EvSocket( p, p.register_type( lname ) ), accept_cnt( 0 ),
+    : EvSocket( p, p.register_type( lname ), EV_LISTEN_BASE ), accept_cnt( 0 ),
       notify( 0 ), accept_sock_type( p.register_type( name ) )
 {
   this->timer_id = (uint64_t) this->accept_sock_type << 56;
@@ -479,7 +479,7 @@ EvPoll::drain_prefetch( void ) noexcept
 uint64_t
 EvPoll::current_coarse_ns( void ) noexcept
 {
-  if ( this->map != NULL )
+  if ( this->map != NULL && ! this->map->hdr.ht_read_only )
     this->now_ns = this->map->hdr.current_stamp;
   else
     this->now_ns = current_realtime_coarse_ns();
@@ -489,7 +489,7 @@ EvPoll::current_coarse_ns( void ) noexcept
 uint64_t
 EvPoll::create_ns( void ) const noexcept
 {
-  if ( this->map != NULL )
+  if ( this->map != NULL && ! this->map->hdr.ht_read_only )
     return this->map->hdr.create_stamp;
   return this->init_ns;
 }
