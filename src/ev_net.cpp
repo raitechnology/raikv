@@ -260,7 +260,7 @@ EvPoll::add_sock( EvSocket *s ) noexcept
   this->active_list.push_tl( s );
   /* if sock starts in write mode, add it to the queue */
   s->prio_cnt = this->prio_tick;
-  if ( s->state != 0 )
+  if ( s->sock_state != 0 )
     this->push_event_queue( s );
   uint64_t ns = this->current_coarse_ns();
   s->start_ns   = ns;
@@ -446,7 +446,7 @@ EvPoll::drain_prefetch( void ) noexcept
           s->pop( EV_PREFETCH ); /* continue prefetching */
         }
         else { /* push back into queue if has an event for read or write */
-          if ( s->state != 0 )
+          if ( s->sock_state != 0 )
             this->push_event_queue( s );
         }
         break;
@@ -555,7 +555,7 @@ EvPoll::dispatch( void ) noexcept
     this->ev_queue.pop();
     /*printf( "fd %d type %s state %s\n",
       s->fd, sock_type_string( s->type ), state_string( (EvState) state ) );*/
-    /*printf( "dispatch %u %u (%x)\n", s->type, state, s->state );*/
+    /*printf( "dispatch %u %u (%x)\n", s->type, state, s->sock_state );*/
     switch ( state ) {
       case EV_READ:
       case EV_READ_LO:
@@ -595,7 +595,7 @@ EvPoll::dispatch( void ) noexcept
         /* otherwise continue busy */
         break;
     }
-    if ( s->state != 0 ) {
+    if ( s->sock_state != 0 ) {
       if ( s->test( EV_WRITE_HI ) ) {
         if ( s->test( EV_WRITE_POLL ) ) {
           ret |= POLL_NEEDED;
@@ -1326,7 +1326,7 @@ EvPoll::process_quit( void ) noexcept
           s->set_queue( IN_NO_QUEUE );
           this->ev_queue.remove( s ); /* close state */
         }
-        if ( s->state != 0 )
+        if ( s->sock_state != 0 )
           s->popall();
         s->push( EV_CLOSE );
         this->push_event_queue( s );
@@ -1518,7 +1518,7 @@ EvSocket::client_kill( void ) noexcept
       this->set_queue( IN_NO_QUEUE );
       this->poll.ev_queue.remove( this ); /* close state */
     }
-    if ( this->state != 0 )
+    if ( this->sock_state != 0 )
       this->popall();
     this->idle_push( EV_CLOSE );
   }
@@ -2050,7 +2050,7 @@ EvSocket::print_sock_error( char *out,  size_t outlen ) noexcept
     off += ::snprintf( &o[ off ], olen - off, " error=%u/%s",
                        this->sock_err, s );
   off += ::snprintf( &o[ off ], olen - off, " fd=%d state=%x name=%s peer=%s",
-                     this->fd, this->state, this->name, this->peer_address.buf );
+               this->fd, this->sock_state, this->name, this->peer_address.buf );
   if ( e != NULL )
     off += ::snprintf( &o[ off ], olen - off, " errno=%u/%s",
                        this->sock_errno, e );
@@ -2081,8 +2081,8 @@ EvSocket::idle_push( EvState s ) noexcept
     }
     /* check if added state requires queue to be rearranged */
     else {
-      int x1 = __builtin_ffs( this->state ),
-          x2 = __builtin_ffs( this->state | ( 1 << s ) );
+      int x1 = __builtin_ffs( this->sock_state ),
+          x2 = __builtin_ffs( this->sock_state | ( 1 << s ) );
       /* new state has higher priority than current state, reorder queue */
       if ( x1 > x2 ) {
         if ( this->in_queue( IN_EVENT_QUEUE ) ) {

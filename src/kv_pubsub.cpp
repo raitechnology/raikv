@@ -1498,7 +1498,7 @@ void
 KvPubSub::write( void ) noexcept
 {
   CubeRoute128 used;
-  int old_state = this->state;
+  int old_state = this->sock_state;
 
   this->pop2( EV_WRITE, EV_WRITE_HI );
   used.zero();

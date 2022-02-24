@@ -104,7 +104,7 @@ enum EvSockBase {
 struct EvSocket : public PeerData /* fd and address of peer */EV_DBG_INHERIT {
   EvPoll      & poll;       /* the parent container */
   uint64_t      prio_cnt;   /* timeslice each socket for a slot to run */
-  uint32_t      state;      /* bit mask of states, the queues the sock is in */
+  uint32_t      sock_state; /* bit mask of states, the queues the sock is in */
   uint16_t      sock_opts;  /* sock opt bits above */
   const uint8_t sock_type;  /* listen or connection */
   uint8_t       sock_flags; /* in active list or free list */
@@ -118,8 +118,8 @@ struct EvSocket : public PeerData /* fd and address of peer */EV_DBG_INHERIT {
                 msgs_sent;
 
   EvSocket( EvPoll &p,  const uint8_t t,  const uint8_t b = EV_OTHER_BASE )
-    : poll( p ), prio_cnt( 0 ), state( 0 ),  sock_opts( 0 ), sock_type( t ),
-      sock_flags( 0 ), sock_base( b ) { this->init_stats(); }
+    : poll( p ), prio_cnt( 0 ), sock_state( 0 ),  sock_opts( 0 ),
+      sock_type( t ), sock_flags( 0 ), sock_base( b ) { this->init_stats(); }
   void init_stats( void ) {
     this->sock_err   = 0;
     this->sock_errno = 0;
@@ -166,21 +166,21 @@ struct EvSocket : public PeerData /* fd and address of peer */EV_DBG_INHERIT {
 
   /* priority queue states */
   EvState get_dispatch_state( void ) const {
-    return (EvState) ( __builtin_ffs( this->state ) - 1 );
+    return (EvState) ( __builtin_ffs( this->sock_state ) - 1 );
   }
   /* priority queue test, ordered by first bit set (EV_WRITE > EV_READ).
    * a sock with EV_READ bit set will have a higher priority than one with
    * EV_WRITE */
-  int test( int s ) const { return this->state & ( 1U << s ); }
-  void push( int s )      { this->state |= ( 1U << s ); }
-  void pop( int s )       { this->state &= ~( 1U << s ); }
+  int test( int s ) const { return this->sock_state & ( 1U << s ); }
+  void push( int s )      { this->sock_state |= ( 1U << s ); }
+  void pop( int s )       { this->sock_state &= ~( 1U << s ); }
   void pop2( int s, int t ) {
-    this->state &= ~( ( 1U << s ) | ( 1U << t ) ); }
+    this->sock_state &= ~( ( 1U << s ) | ( 1U << t ) ); }
   void pop3( int s, int t, int u ) {
-    this->state &= ~( ( 1U << s ) | ( 1U << t ) | ( 1U << u ) ); }
-  void popall( void )     { this->state = 0; }
+    this->sock_state &= ~( ( 1U << s ) | ( 1U << t ) | ( 1U << u ) ); }
+  void popall( void )     { this->sock_state = 0; }
   void pushpop( int s, int t ) {
-    this->state = ( this->state | ( 1U << s ) ) & ~( 1U << t ); }
+    this->sock_state = ( this->sock_state | ( 1U << s ) ) & ~( 1U << t ); }
   void idle_push( EvState s ) noexcept;
   void close_error( uint16_t serr,  uint16_t err ) noexcept;
   /* convert sock_err to string, or null if unknown code */
@@ -244,8 +244,8 @@ struct EvSocket : public PeerData /* fd and address of peer */EV_DBG_INHERIT {
 
 struct EvPoll {
   static bool is_event_greater( EvSocket *s1,  EvSocket *s2 ) {
-    int x1 = __builtin_ffs( s1->state ),
-        x2 = __builtin_ffs( s2->state );
+    int x1 = __builtin_ffs( s1->sock_state ),
+        x2 = __builtin_ffs( s2->sock_state );
     /* prio_cnt is incremented forever, it makes queue fair */
     return x1 > x2 || ( x1 == x2 && s1->prio_cnt > s2->prio_cnt );
   }
