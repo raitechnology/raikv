@@ -30,7 +30,7 @@ struct ZipfianGen {
   double zeta_static( uint64_t n ) {
     double sum = 0;
     for ( uint64_t i = 0; i < n; i++ )
-      sum += 1.0 / pow( i + 1, theta );
+      sum += 1.0 / pow( (double) ( i + 1 ), theta );
     return sum;
   }
 

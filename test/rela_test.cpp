@@ -1,6 +1,8 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>
+#define __STDC_FORMAT_MACROS
+#include <inttypes.h>
 #include <stdlib.h>
 
 #include <raikv/rela_ts.h>
@@ -87,11 +89,11 @@ main( int, char ** )
     stamp.get( base, clock, exp, upd );
 
     print_time( exp - base, buf, sizeof( buf ) );
-    printf( "qtr %u, %s diff = %ld secs\n", stamp.u.x.clock_base,
+    printf( "qtr %u, %s diff = %" PRId64 " secs\n", stamp.u.x.clock_base,
             buf, ( exp - x ) / NANOS );
 
     print_time( upd - base, buf2, sizeof( buf2 ) );
-    printf( "qtr %u, %s diff = %ld ns\n", stamp.u.x.clock_base,
+    printf( "qtr %u, %s diff = %" PRId64 " ns\n", stamp.u.x.clock_base,
             buf2, ( y - upd ) );
 
     off2 += 7 * HOUR_NS + 912364;
@@ -117,14 +119,14 @@ main( int, char ** )
   printf( "MAX_EXPIRES_NS = %s\n",
           print_time( MAX_EXPIRES_NS, buf, sizeof( buf ) ) );
   for ( i = 0; i < 4; i++ ) {
-    printf( "%u EXP QUARTER: (%lx) %s -> (%lx) %s\n", i,
+    printf( "%u EXP QUARTER: (%" PRIx64 ") %s -> (%" PRIx64 ") %s\n", i,
             RELA_CLOCK_QTR * (uint64_t) i,
             print_time( RELA_CLOCK_QTR * (uint64_t) i, buf, sizeof( buf ) ),
             RELA_CLOCK_QTR * (uint64_t) i + MAX_EXPIRES_NS,
             print_time( RELA_CLOCK_QTR * (uint64_t) i + MAX_EXPIRES_NS,
                         buf2, sizeof( buf2 ) ) );
   }
-  printf( "sizeof( RelativeStamp ) = %lu\n", sizeof( RelativeStamp ) );
+  printf( "sizeof( RelativeStamp ) = %" PRIu64 "\n", sizeof( RelativeStamp ) );
 
   return 0;
 }

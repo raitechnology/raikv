@@ -2,11 +2,17 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#define __STDC_FORMAT_MACROS
+#include <inttypes.h>
+#ifndef _MSC_VER
 #include <unistd.h>
-#include <fcntl.h>
-#include <ctype.h>
 #include <sys/stat.h>
 #include <sys/mman.h>
+#else
+#include <raikv/win.h>
+#endif
+#include <fcntl.h>
+#include <ctype.h>
 #include <raikv/key_hash.h>
 #include <raikv/delta_coder.h>
 #include <raikv/uint_ht.h>
@@ -20,45 +26,77 @@ using namespace kv;
 static const char * linux_words,
                  ** word;
 static uint32_t   * word_len,
-                    words_size,
                     words_cnt;
+static uint64_t     words_size;
+static const uint32_t max_words = 512 * 1024;
 
 bool
-load_words( void ) noexcept
+load_words( const char *input ) noexcept
 {
-  static char words[] = "/usr/share/dict/linux.words";
+#ifndef _MSC_VER
+  static char words[] = "/usr/share/dict/words";
 /* if redirected to file, read that */
-  int    fd  = ::open( words, O_RDONLY );
+  if ( input == NULL ) input = words;
+  int    fd  = ::open( input, O_RDONLY );
   void * map = MAP_FAILED;
   struct stat st;
 
   if ( fd < 0 ) {
-    ::perror( words );
+    ::perror( input );
     return false;
   }
   if ( ::fstat( fd, &st ) == 0 )
     map = ::mmap( 0, st.st_size, PROT_READ, MAP_PRIVATE, fd, 0 );
   if ( map == MAP_FAILED ) {
-    ::perror( words );
+    ::perror( input );
     ::close( fd );
     return false;
   }
   ::close( fd );
   words_size  = st.st_size;
+#else
+  static char words[] = "words";
+  if ( input == NULL ) input = words;
+  HANDLE h = CreateFileA( input, GENERIC_READ, NULL, NULL,
+                          OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL );
+  LARGE_INTEGER st;
+  if ( h == INVALID_HANDLE_VALUE ) {
+    fprintf( stderr, "err open %s: %u\n", input, GetLastError() );
+    return false;
+  }
+  GetFileSizeEx( h, &st );
+  words_size = st.QuadPart;
+  HANDLE maph = CreateFileMappingA( h, NULL, PAGE_READONLY, 0, 0, NULL );
+  if ( maph == NULL ) {
+    fprintf( stderr, "err map %s: %u\n", input, GetLastError() );
+    CloseHandle( h );
+    return false;
+  }
+  void *map = MapViewOfFile( maph, FILE_MAP_READ, 0, 0, 0 );
+  if ( map == NULL ) {
+    fprintf( stderr, "err view %s: %u\n", input, GetLastError() );
+    CloseHandle( h );
+    CloseHandle( maph );
+    return false;
+  }
+  CloseHandle( h );
+  CloseHandle( maph );
+#endif
   linux_words = (const char *) map;
-  word     = (const char **) ::malloc( 512 * 1024 * sizeof( word[ 0 ] ) );
-  word_len = (uint32_t *)    ::malloc( 512 * 1024 * sizeof( word_len[ 0 ] ) );
+  word     = (const char **) ::malloc( max_words * sizeof( word[ 0 ] ) );
+  word_len = (uint32_t *)    ::malloc( max_words * sizeof( word_len[ 0 ] ) );
 
-  uint32_t off = 0, left = words_size;
+  uint64_t off = 0, left = words_size;
   while ( off < words_size ) {
     const void *p = ::memchr( &linux_words[ off ], '\n', left );
     if ( p == NULL )
       break;
     word[ words_cnt ]     = &linux_words[ off ];
-    word_len[ words_cnt ] = (const char *) p - word[ words_cnt ];
+    word_len[ words_cnt ] = (uint32_t) ( (const char *) p - word[ words_cnt ] );
     off  = ( (const char *) p - linux_words ) + 1;
     left = words_size - off;
-    words_cnt++;
+    if ( ++words_cnt == max_words )
+      break;
   }
   return true;
 }
@@ -88,7 +126,7 @@ serialize( const BloomBits &bits ) noexcept
   t2 = current_monotonic_time_ns();
 
   printf( "encode time %.3f usecs\n", ((double) t2 - (double) t1) / 1000.0 );
-  printf( "bytes sz %u, %.1f bytes / entry, %.1f bytes / bloom size (%lu)\n",
+  printf( "bytes sz %u, %.1f bytes / entry, %.1f bytes / bloom size (%" PRIu64 ")\n",
            spc.code_sz * 4, (double) spc.code_sz * 4 / (double) bits.count,
            (double) spc.code_sz * 4 / (double) bits.width, bits.width );
   t1 = current_monotonic_time_ns();
@@ -146,7 +184,7 @@ false_rate( BloomBits *filter,  uint32_t n ) noexcept
 {
   uint32_t cnt = 0, total = words_cnt - n;
   for ( ; n < words_cnt; n++ ) {
-    uint64_t h = hash_word( word[ n ], word_len[ n ] );
+    uint32_t h = hash_word( word[ n ], word_len[ n ] );
     if ( filter->is_member( h ) )
       cnt++;
   }
@@ -158,7 +196,7 @@ filter_count( BloomBits *filter,  uint32_t n ) noexcept
 {
   uint32_t cnt = 0;
   for ( uint32_t x = 0; x < n; x++ ) {
-    uint64_t h = hash_word( word[ x ], word_len[ x ] );
+    uint32_t h = hash_word( word[ x ], word_len[ x ] );
     if ( filter->is_member( h ) )
       cnt++;
   }
@@ -168,8 +206,8 @@ filter_count( BloomBits *filter,  uint32_t n ) noexcept
 void
 test_filter( void ) noexcept
 {
-  uint32_t n;
-  uint64_t h, t1, t2;
+  uint32_t n, h;
+  uint64_t t1, t2;
   double false_ratio;
   BloomBits * filter = BloomBits::resize( NULL, 0 );
   for ( n = 0; n < words_cnt; ) {
@@ -188,13 +226,13 @@ test_filter( void ) noexcept
       t2 = current_monotonic_time_ns();
       printf( "%.1f ns/lookup %.2f%% false rate\n",
               (double) ( t2 - t1 ) / (double) words_cnt, false_ratio );
-      printf( "resize cnt %u (%.1f bits) (%lu ht coll) %lu(%u,%u,%u,%u) -> ",
+      printf( "resize cnt %u (%.1f bits) (%" PRIu64 " ht coll) %" PRIu64 "(%u,%u,%u,%u) -> ",
               n, (double) filter->width * 8.0 / (double) n, elem_count,
               filter->width, filter->SHFT1, filter->SHFT2, filter->SHFT3,
               filter->SHFT4 );
       fflush( stdout );
       filter = BloomBits::resize( filter, 0 );
-      printf( "%lu (%u,%u,%u,%u)\n", 
+      printf( "%" PRIu64 " (%u,%u,%u,%u)\n", 
               filter->width, filter->SHFT1, filter->SHFT2, filter->SHFT3,
               filter->SHFT4 );
       fflush( stdout );
@@ -215,9 +253,9 @@ test_filter( void ) noexcept
 }
 
 int
-main( void )
+main( int argc,  const char *argv[] )
 {
-  if ( ! load_words() )
+  if ( ! load_words( argc > 1 ? argv[ 1 ] : NULL ) )
     return 1;
   test_filter();
   return 0;

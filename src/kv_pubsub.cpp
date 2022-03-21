@@ -3,6 +3,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stddef.h>
+#include <inttypes.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <assert.h>
@@ -149,8 +150,8 @@ KvPubSub::print_backlog( void ) noexcept
     if ( this->snd_inbox[ i ] != NULL ) {
       KvMsgQueue & ibx = *this->snd_inbox[ i ];
       if ( ( ibx.pub_size | ibx.backlog_size ) != 0 ) {
-        printf( "[ %lu ] pub_size=%lu pub_cnt=%lu pub_msg=%lu "
-                "back_size=%lu back_cnt=%lu sig=%lu high=%lu\n", i,
+        printf( "[ %" PRIu64 " ] pub_size=%" PRIu64 " pub_cnt=%" PRIu64 " pub_msg=%" PRIu64 " "
+                "back_size=%" PRIu64 " back_cnt=%" PRIu64 " sig=%" PRIu64 " high=%" PRIu64 "\n", i,
                 ibx.pub_size, ibx.pub_cnt, ibx.pub_msg,
                 ibx.backlog_size, ibx.backlog_cnt,
                 ibx.signal_cnt, ibx.high_water_size );
@@ -229,7 +230,7 @@ KvPubSub::get_set_mcast( CubeRoute128 &result_cr ) noexcept
               uint32_t pid = this->kctx.ht.ctx[ id ].ctx_pid,
                        tid = this->kctx.ht.ctx[ id ].ctx_thrid;
               this->dead_cr.set( id );
-              fprintf( stderr, "ctx %lu pid %u tid %u is dead\n", id,
+              fprintf( stderr, "ctx %" PRIu64 " pid %u tid %u is dead\n", id,
                        pid, tid );
             }
             else {
@@ -332,7 +333,7 @@ KvPubSub::register_mcast( void ) noexcept
         if ( t >= MAX_PIPE_CONNECT_TIME_USECS ) {
           uint32_t pid = this->kctx.ht.ctx[ id ].ctx_pid,
                    tid = this->kctx.ht.ctx[ id ].ctx_thrid;
-          fprintf( stderr, "giving up connecting pipe to ctx %lu pid %u tid %u"
+          fprintf( stderr, "giving up connecting pipe to ctx %" PRIu64 " pid %u tid %u"
                            " (time %u secs)\n",
                    id, pid, tid, t / 1000000 );
           bad_cr.set( id );
@@ -1483,7 +1484,7 @@ KvPubSub::notify_peers( CubeRoute128 &used ) noexcept
           uint16_t fl  = this->kctx.ht.ctx[ dest ].ctx_flags;
           if ( pid > 0 && ( fl & KV_NO_SIGUSR ) == 0 ) {
             if ( this->poll.quit )
-              printf( "quit[ %u ], notify pid:%d tid:%d dest ctx %ld\n",
+              printf( "quit[ %u ], notify pid:%d tid:%d dest ctx %" PRId64 "\n",
                       this->ctx_id, pid, tid, dest );
             ::kill( tid, kv_msg_signal );
             ibx.signal_cnt++;
@@ -1588,7 +1589,7 @@ KvPubSub::check_backlog_warning( KvMsgQueue &ibx ) noexcept
     }
     else
       s = "";
-    printf( "[ %u ] %s no progress (time=%.3f): %lu size, %lu cnt, high %d\n",
+    printf( "[ %u ] %s no progress (time=%.3f): %" PRIu64 " size, %" PRIu64 " cnt, high %d\n",
             ibx.ibx_num, s,
         (double) ( this->time_ns - ibx.backlog_progress_ns ) / 1000000000.0,
                 ibx.backlog_size, ibx.backlog_cnt,
@@ -1870,7 +1871,7 @@ KvPubSub::open_pipe( size_t src ) noexcept
     if ( mute != n ) {
       mute = n;
       fprintf( stderr,
-               "unable to open pipe (%u, %lu) (times=%lu) is_dead = %s\n",
+               "unable to open pipe (%u, %" PRIu64 ") (times=%" PRIu64 ") is_dead = %s\n",
             this->ctx_id, src, cnt, this->is_dead( src ) ? "true" : "false" );
     }
   }
@@ -1924,7 +1925,7 @@ KvPubSub::read( void ) noexcept
 static void
 read_error( size_t src,  const void *data,  size_t data_len )
 {
-  fprintf( stderr, "Bad data from %lu\n", src );
+  fprintf( stderr, "Bad data from %" PRIu64 "\n", src );
   KvHexDump::dump_hex( data, data_len );
 }
 

@@ -1,87 +1,202 @@
 #ifndef __rai__raikv__atom_h__
 #define __rai__raikv__atom_h__
 
-#ifndef __x86_64__
+/*#ifndef __x86_64__
 #error TODO: other arch
-#endif
+#endif*/
 
 /* also include stdint.h */
 #ifdef __cplusplus
 extern "C" {
 #endif
-/* alias for mfence instruction */
-#define kv_sync_mfence() __sync_synchronize()
-
-/* a compiler store fence */
-#define kv_sync_sfence() __asm__ __volatile__( "" ::: "memory" )
-
-/* use a pointer to force the compiler to calculate it */
-#define kv_escape( p ) __asm__ __volatile__ ( "" : : "g"(p) : "memory" );
-
-/* alias for pause instruction
- * https://software.intel.com/en-us/articles/benefitting-power-and-performance-sleep-loops */
-#define kv_sync_pause() __asm__ __volatile__( "pause":::"memory" )
-
-/* volatile not really necessary, use kv_sync_load(), kv_sync_store() */
+/* volatile not really necessary */
 typedef volatile uint64_t kv_atom_uint64_t;
 typedef volatile uint32_t kv_atom_uint32_t;
 typedef volatile uint16_t kv_atom_uint16_t;
 typedef volatile uint8_t  kv_atom_uint8_t;
 
+uint8_t kv_sync_xchg8( kv_atom_uint8_t *a,  uint8_t new_val );
+uint16_t kv_sync_xchg16( kv_atom_uint16_t *a,  uint16_t new_val );
+uint32_t kv_sync_xchg32( kv_atom_uint32_t *a,  uint32_t new_val );
+uint64_t kv_sync_xchg64( kv_atom_uint64_t *a,  uint64_t new_val );
+
+int kv_sync_cmpxchg8( kv_atom_uint8_t *a, uint8_t old_val, uint8_t new_val );
+int kv_sync_cmpxchg16( kv_atom_uint16_t *a, uint16_t old_val, uint16_t new_val );
+int kv_sync_cmpxchg32( kv_atom_uint32_t *a, uint32_t old_val, uint32_t new_val );
+int kv_sync_cmpxchg64( kv_atom_uint64_t *a, uint64_t old_val, uint64_t new_val );
+
+uint8_t kv_sync_add8( kv_atom_uint8_t *a,  uint8_t val );
+uint16_t kv_sync_add16( kv_atom_uint16_t *a,  uint16_t val );
+uint32_t kv_sync_add32( kv_atom_uint32_t *a,  uint32_t val );
+uint64_t kv_sync_add64( kv_atom_uint64_t *a,  uint64_t val );
+
+uint8_t kv_sync_sub8( kv_atom_uint8_t *a,  uint8_t val );
+uint16_t kv_sync_sub16( kv_atom_uint16_t *a,  uint16_t val );
+uint32_t kv_sync_sub32( kv_atom_uint32_t *a,  uint32_t val );
+uint64_t kv_sync_sub64( kv_atom_uint64_t *a,  uint64_t val );
+
+void kv_sync_store8( kv_atom_uint8_t *a, uint8_t val );
+void kv_sync_store16( kv_atom_uint16_t *a, uint16_t val );
+void kv_sync_store32( kv_atom_uint32_t *a, uint32_t val );
+void kv_sync_store64( kv_atom_uint64_t *a, uint64_t val );
+
+uint8_t kv_sync_load8( kv_atom_uint8_t *a );
+uint16_t kv_sync_load16( kv_atom_uint16_t *a );
+uint32_t kv_sync_load32( kv_atom_uint32_t *a );
+uint64_t kv_sync_load64( kv_atom_uint64_t *a );
+
+#ifndef _MSC_VER
+/* alias for mfence instruction */
+static inline void kv_sync_mfence( void ) { __sync_synchronize(); }
+/* a compiler store fence */
+static inline void kv_sync_sfence( void ) { __asm__ __volatile__( "" ::: "memory" ); }
+/* alias for pause instruction
+ * https://software.intel.com/en-us/articles/benefitting-power-and-performance-sleep-loops */
+static inline void kv_sync_pause( void ) { __asm__ __volatile__( "pause":::"memory" ); }
+/* prefetch addr, for read, locality */
+static inline void kv_prefetch( const void *addr, int rdwr, int locality ) {
+  (void) locality;
+  if ( rdwr == 0 )
+    __builtin_prefetch( addr, 0, 1 );
+  else
+    __builtin_prefetch( addr, 1, 1 );
+}
 #if __cplusplus >= 201103L || __STDC_VERSION__ >= 201112L
-
-/* atomics for spin locks and counters, requires gcc -std=c11 */
-#define kv_sync_xchg( a, new_val ) \
-  __atomic_exchange_n( a, new_val, __ATOMIC_RELAXED )
-
-#define kv_sync_cmpxchg( a, old_val, new_val ) \
-  __atomic_compare_exchange_n( a, &old_val, new_val, 0, __ATOMIC_RELAXED, \
-                               __ATOMIC_RELAXED )
-#define kv_sync_add( a, val ) \
-  __atomic_add_fetch( a, val, __ATOMIC_RELAXED )
-
-#define kv_sync_sub( a, val ) \
-  __atomic_sub_fetch( a, val, __ATOMIC_RELAXED )
-
-#define kv_sync_store( a, val ) \
-  __atomic_store_n( a, val, __ATOMIC_RELAXED )
-
-#define kv_sync_load( a ) \
-  __atomic_load_n( a, __ATOMIC_ACQUIRE )
-
-#define kv_acquire_fence() \
-  __atomic_thread_fence( __ATOMIC_ACQUIRE )
-
-#define kv_release_fence() \
-  __atomic_thread_fence( __ATOMIC_RELEASE )
+static inline void kv_acquire_fence( void ) { __atomic_thread_fence( __ATOMIC_ACQUIRE ); }
+static inline void kv_release_fence( void ) { __atomic_thread_fence( __ATOMIC_RELEASE ); }
+#else
+static inline void kv_acquire_fence( void ) { kv_sync_sfence(); }
+static inline void kv_release_fence( void ) { kv_sync_sfence(); }
+#endif
 
 #else
-
-/* atomics for spin locks and counters, requires gcc 4.3 */
-#define kv_sync_xchg( a, new_val ) \
-  __sync_lock_test_and_set( a, new_val )
-
-#define kv_sync_cmpxchg( a, old_val, new_val ) \
-  __sync_bool_compare_and_swap( a, old_val, new_val )
-
-#define kv_sync_add( a, val ) \
-  __sync_fetch_and_add( a, val )
-
-#define kv_sync_sub( a, val ) \
-  __sync_fetch_and_sub( a, val )
-
-#define kv_sync_store( a, val ) \
-  kv_sync_sfence(); *(a) = val
-
-#define kv_sync_load( a ) \
-  *(a); kv_sync_sfence()
-
-#define kv_acquire_fence() \
-  kv_sync_sfence() /* nothing for x86 */
-
-#define kv_release_fence() \
-  kv_sync_sfence() /* nothing for x86 */
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN 1
 #endif
+#include <intrin.h>
+static inline void kv_sync_mfence( void ) { _ReadWriteBarrier(); }
+static inline void kv_sync_sfence( void ) { _mm_sfence(); }
+static inline void kv_sync_pause( void ) { _mm_pause(); }
+static inline void kv_prefetch( const void *addr, int rdwr, int locality ) {
+  _mm_prefetch( (char *) addr, 1 );
+}
+static inline void kv_acquire_fence( void ) { kv_sync_sfence(); }
+static inline void kv_release_fence( void ) { kv_sync_sfence(); }
+#endif
+
+#ifdef __cplusplus
+}
+
+#ifndef _MSC_VER
+#if 0
+/* use a pointer to force the compiler to calculate it */
+#define kv_escape( p ) __asm__ __volatile__ ( "" : : "g"(p) : "memory" )
+#endif
+/* atomics for spin locks and counters, requires gcc -std=c11 */
+#if __cplusplus >= 201103L || __STDC_VERSION__ >= 201112L
+template <class Int> static inline Int kv_sync_xchg( volatile Int *a, Int new_val ) {
+  return __atomic_exchange_n( a, new_val, __ATOMIC_RELAXED );
+}
+template <class Int> static inline Int kv_sync_cmpxchg( volatile Int *a, Int old_val, Int new_val ) {
+  return __atomic_compare_exchange_n( a, &old_val, new_val, 0, __ATOMIC_RELAXED, __ATOMIC_RELAXED );
+}
+template <class Int> static inline Int kv_sync_add( volatile Int *a, Int val ) {
+  return __atomic_add_fetch( a, val, __ATOMIC_RELAXED );
+}
+template <class Int> static inline Int kv_sync_sub( volatile Int *a, Int val ) {
+  return __atomic_sub_fetch( a, val, __ATOMIC_RELAXED );
+}
+template <class Int> static inline void kv_sync_store( volatile Int *a, Int val ) {
+  __atomic_store_n( a, val, __ATOMIC_RELAXED );
+}
+template <class Int> static inline Int kv_sync_load( volatile Int *a ) {
+  return __atomic_load_n( a, __ATOMIC_ACQUIRE );
+}
+
+/* gcc 4.3 (RH5?) */
+#else
+template <class Int> static inline Int kv_sync_xchg( volatile Int *a, Int new_val ) {
+  return __sync_lock_test_and_set( a, new_val )
+}
+template <class Int> static inline Int kv_sync_cmpxchg( volatile Int *a, Int old_val, Int new_val ) {
+  return __sync_bool_compare_and_swap( a, old_val, new_val );
+}
+template <class Int> static inline Int kv_sync_add( volatile Int *a, Int val ) {
+  return __sync_fetch_and_add( a, val );
+}
+template <class Int> static inline Int kv_sync_sub( volatile Int *a, Int val ) {
+  return __sync_fetch_and_sub( a, val );
+}
+template <class Int> static inline void kv_sync_store( volatile Int *a, Int val ) {
+  kv_sync_sfence(); *(a) = val
+}
+template <class Int> static inline Int kv_sync_load( volatile Int *a ) {
+  Int i = *(a); kv_sync_sfence(); return i;
+}
+#endif
+
+/* _MSC_VER */
+#else
+
+static inline uint8_t kv_sync_xchg( kv_atom_uint8_t *a,  uint8_t new_val ) {
+  return (uint8_t) _InterlockedExchange8( (char *) a, (char) new_val );
+}
+static inline uint16_t kv_sync_xchg( kv_atom_uint16_t *a,  uint16_t new_val ) {
+  return (uint16_t) _InterlockedExchange16( (short *) a, (short) new_val );
+}
+static inline uint32_t kv_sync_xchg( kv_atom_uint32_t *a,  uint32_t new_val ) {
+  return (uint32_t) _InterlockedExchange( (long *) a, (long) new_val );
+}
+static inline uint64_t kv_sync_xchg( kv_atom_uint64_t *a,  uint64_t new_val ) {
+  return (uint64_t) _InterlockedExchange64( (__int64 *) a, (__int64) new_val );
+}
+
+static inline bool kv_sync_cmpxchg( kv_atom_uint8_t *a, uint8_t old_val, uint8_t new_val ) {
+  return (uint8_t) _InterlockedCompareExchange8( (char *) a, (char) new_val, (char) old_val ) == old_val;
+}
+static inline bool kv_sync_cmpxchg( kv_atom_uint16_t *a, uint16_t old_val, uint16_t new_val ) {
+  return (uint16_t) _InterlockedCompareExchange16( (short *) a, (short) new_val, (short) old_val ) == old_val;
+}
+static inline bool kv_sync_cmpxchg( kv_atom_uint32_t *a, uint32_t old_val, uint32_t new_val ) {
+  return (uint32_t) _InterlockedCompareExchange( (long *) a, (long) new_val, (long) old_val ) == old_val;
+}
+static inline bool kv_sync_cmpxchg( kv_atom_uint64_t *a, uint64_t old_val, uint64_t new_val ) {
+  return (uint64_t) _InterlockedCompareExchange64( (__int64 *) a, (__int64) new_val, (__int64) old_val ) == old_val;
+}
+
+static inline uint8_t kv_sync_add( kv_atom_uint8_t *a,  uint8_t val ) {
+  return (uint8_t) _InterlockedExchangeAdd8( (char *) a, (char) val );
+}
+static inline uint16_t kv_sync_add( kv_atom_uint16_t *a,  uint16_t val ) {
+  return (uint16_t) _InterlockedExchangeAdd16( (short *) a, (short) val );
+}
+static inline uint32_t kv_sync_add( kv_atom_uint32_t *a,  uint32_t val ) {
+  return (uint32_t) _InterlockedExchangeAdd( (long *) a, (long) val );
+}
+static inline uint64_t kv_sync_add( kv_atom_uint64_t *a,  uint64_t val ) {
+  return (uint64_t) _InterlockedExchangeAdd64( (__int64 *) a, (__int64) val );
+}
+
+static inline uint8_t kv_sync_sub( kv_atom_uint8_t *a,  uint8_t val ) {
+  return (uint8_t) _InterlockedExchangeAdd8( (char *) a, -(char) val );
+}
+static inline uint16_t kv_sync_sub( kv_atom_uint16_t *a,  uint16_t val ) {
+  return (uint16_t) _InterlockedExchangeAdd16( (short *) a, -(short) val );
+}
+static inline uint32_t kv_sync_sub( kv_atom_uint32_t *a,  uint32_t val ) {
+  return (uint32_t) _InterlockedExchangeAdd( (long *) a, -(long) val );
+}
+static inline uint64_t kv_sync_sub( kv_atom_uint64_t *a,  uint64_t val ) {
+  return (uint64_t) _InterlockedExchangeAdd64( (__int64 *) a, -(__int64) val );
+}
+template <class Int> static inline void kv_sync_store( volatile Int *a, Int val ) {
+  kv_sync_sfence(); *(a) = val;
+}
+template <class Int> static inline Int kv_sync_load( volatile Int *a ) {
+  Int i = *(a); kv_sync_sfence(); return i;
+}
+
+#endif /* _MSC_VER */
 
 static inline int
 kv_sync_bit_try_lock( volatile uint64_t *ptr,  uint64_t mask )
@@ -125,11 +240,7 @@ kv_sync_bit_spin_unlock( volatile uint64_t *ptr,  uint64_t mask )
     kv_sync_pause();
   }
 }
-#ifdef __cplusplus
-}
-#endif
 
-#ifdef __cplusplus
 namespace rai {
 namespace kv {
 

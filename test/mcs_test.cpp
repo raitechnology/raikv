@@ -1,9 +1,15 @@
 #include <stdio.h>
 #include <time.h>
 #include <stdint.h>
+#define __STDC_FORMAT_MACROS
+#include <inttypes.h>
 #include <string.h>
+#ifndef _MSC_VER
 #include <unistd.h>
 #include <pthread.h>
+#else
+#include <raikv/win.h>
+#endif
 #include <raikv/atom.h>
 
 using namespace rai;
@@ -64,23 +70,36 @@ loop( uint64_t my_id )
                               ctx[ my_id ].wait, closure );
     me.unl = 0;
   }
+  printf( "fini %" PRIu64 "\n", my_id );
 }
 
+#ifndef _MSC_VER
 void *
 run( void *p )
 {
+  printf( "start %" PRIu64 "\n", (uint64_t) p );
   loop( (uint64_t) p );
   return 0;
 }
+#else
+DWORD WINAPI
+run( void *p )
+{
+  printf( "start %" PRIu64 "\n", (uint64_t) p );
+  loop( (uint64_t) p );
+  return 0;
+}
+#endif
 
 int
 main( int, char ** )
 {
   uint64_t i;
-  pthread_t thr[ CTX_CNT ];
   for ( i = 0; i < HT_CNT; i++ ) {
     ht[ i ].h = i;
   }
+#ifndef _MSC_VER
+  pthread_t thr[ CTX_CNT ];
   for ( i = 0; i < CTX_CNT; i++ ) {
     pthread_create( &thr[ i ], NULL, run, (void *) i );
   }
@@ -88,11 +107,22 @@ main( int, char ** )
   for ( i = 0; i < CTX_CNT; i++ ) {
     pthread_join( thr[ i ], NULL );
   }
+#else
+  HANDLE thr[ CTX_CNT ];
+  for ( i = 0; i < CTX_CNT; i++ ) {
+    thr[ i ] = CreateThread( NULL, 0, run, (void *) i, 0, NULL );
+  }
+  go = 1;
+  WaitForMultipleObjects( CTX_CNT, thr, TRUE, INFINITE );
+  for ( i = 0; i < CTX_CNT; i++ ) {
+    CloseHandle( thr[ i ] );
+  }
+#endif
   for ( i = 0; i < HT_CNT; i++ ) {
-    printf( "ht [%lu]: count=%u\n", (uint64_t) ht[ i ].h, ht[ i ].count );
+    printf( "ht [%" PRIu64 "]: count=%u\n", (uint64_t) ht[ i ].h, ht[ i ].count );
   }
   for ( i = 0; i < CTX_CNT; i++ ) {
-    printf( "ctx[%lu]: spin=%lu wait=%lu\n", i, ctx[ i ].spin, ctx[ i ].wait );
+    printf( "ctx[%" PRIu64 "]: spin=%" PRIu64 " wait=%" PRIu64 "\n", i, ctx[ i ].spin, ctx[ i ].wait );
   }
   return 0;
 }

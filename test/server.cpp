@@ -2,12 +2,14 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#ifndef _MSC_VER
 #include <unistd.h>
-#include <signal.h>
 #include <fcntl.h>
+#else
+#include <raikv/win.h>
+#endif
 #include <math.h>
 #include <ctype.h>
-#include <errno.h>
 
 #include <raikv/shm_ht.h>
 #include <raikv/monitor.h>
@@ -103,7 +105,7 @@ main( int argc, char *argv[] )
     geom.map_size         = mbsize;
     geom.max_value_size   = ratio < 0.999 ? valsize : 0;
     geom.hash_entry_size  = align<uint32_t>( entsize, 64 );
-    geom.hash_value_ratio = ratio;
+    geom.hash_value_ratio = (float) ratio;
     geom.cuckoo_buckets   = buckets;
     geom.cuckoo_arity     = arity;
     mode = atoi( mo );
@@ -140,16 +142,17 @@ main( int argc, char *argv[] )
 
   SignalHandler sighndl;
   Monitor svr( *map, stats_ival, check_ival );
-  char    junk[ 8 ];
-  ssize_t nbytes;
-  bool    tty = false;
-
   sighndl.install();
+
+#ifndef _MSC_VER
+  bool tty = false;
   if ( isatty( 0 ) ) {
     fcntl( 0, F_SETFL, fcntl( 0, F_GETFL, 0 ) | O_NONBLOCK );
     tty = true;
   }
   for (;;) {
+    ssize_t nbytes;
+    char    junk[ 8 ];
     if ( tty && (nbytes = read( 0, junk, sizeof( junk ) )) > 0 )
       svr.stats_counter = 0; /* print header again */
     svr.interval_update();
@@ -157,10 +160,17 @@ main( int argc, char *argv[] )
     if ( sighndl.signaled )
       break;
   }
+#else
+  for (;;) {
+    Sleep( 1 );
 
+    svr.interval_update();
+    if ( sighndl.signaled )
+      break;
+  }
+#endif
   printf( "bye\n" );
   fflush( stdout );
   delete map;
   return 0;
 }
-

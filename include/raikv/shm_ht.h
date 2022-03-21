@@ -268,7 +268,7 @@ struct ThrCtx : public ThrCtxEntry { /* each thread needs one of these */
 #endif
   uint64_t next_mcs_lock( void ) {
     uint32_t id = ( this->mcs_used == 0 ) ? 0 :
-                  ( 64 - __builtin_clzl( this->mcs_used ) );
+                  ( 64 - kv_clzl( this->mcs_used ) );
     for ( ; ; id++ ) {
       if ( id >= MCS_CNT )
         id = 0;
@@ -297,7 +297,7 @@ struct ThrCtx : public ThrCtxEntry { /* each thread needs one of these */
       if ( ( x & 1 ) == 0 ) {
         if ( x == 0 )
           return false;
-        i += __builtin_ffsl( x ) - 1;
+        i += kv_ffsl( x ) - 1;
       }
       if ( pos + 1 == this->mcs[ i ].lock_id )
         return true;
@@ -312,7 +312,7 @@ struct ThrCtxOwner { /* closure for MCSLock to find the owner of a lock */
     return this->ctx[ mcs_id >> ThrCtxEntry::MCS_SHIFT ].get_mcs_lock( mcs_id );
   }
   bool is_active( uint64_t mcs_id ) {
-    uint32_t ctx_id = ( mcs_id >> ThrCtxEntry::MCS_SHIFT );
+    uint32_t ctx_id = (uint32_t) ( mcs_id >> ThrCtxEntry::MCS_SHIFT );
     if ( ctx_id >= MAX_CTX_ID )
       return false;
     return ( this->ctx[ ctx_id ].mcs_used &
@@ -408,9 +408,9 @@ public:
     const void * p = (void *)
             this->get_entry( this->hdr.ht_mod( k ), this->hdr.hash_entry_size );
     if ( for_read )
-      __builtin_prefetch( p, 0, locality );
+      kv_prefetch( p, 0, locality );
     else
-      __builtin_prefetch( p, 1, locality );
+      kv_prefetch( p, 1, locality );
   }
   /* mem is shm via mmap(): new HashTab( mmap( fd ) ) */
   void * operator new( size_t, void *ptr ) { return ptr; }

@@ -543,7 +543,7 @@ void kv_release_key_ctx( kv_key_ctx_t *kctx );
 
 void kv_set_key( kv_key_ctx_t *kctx,  kv_key_frag_t *kbuf );
 void kv_set_hash( kv_key_ctx_t *kctx,  uint64_t k,  uint64_t k2 );
-void kv_prefetch( kv_key_ctx_t *kctx,  uint8_t for_read );
+void kv_key_prefetch( kv_key_ctx_t *kctx,  uint8_t for_read );
 
 /* status = kv_acquire( kctx );
  * if ( status == KEY_OK ) {

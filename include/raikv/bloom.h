@@ -139,7 +139,7 @@ struct BloomBits {
       if ( x != 0 ) {
         if ( ( x & 1 ) != 0 )
           return true;
-        i += __builtin_ffsl( x ) - 1;
+        i += kv_ffsl( x ) - 1;
         return true;
       }
       off++;
@@ -161,13 +161,13 @@ struct BloomBits {
              end = this->width / WORD_BYTE_SIZE - sizeof( w ) / WORD_BYTE_SIZE;
     for ( off = 0; off <= end; off += sizeof( w ) / WORD_BYTE_SIZE ) {
       ::memcpy( w, &this->bits[ off ], sizeof( w ) );
-      cnt += __builtin_popcountl( w[ 0 ] );
-      cnt += __builtin_popcountl( w[ 1 ] );
-      cnt += __builtin_popcountl( w[ 2 ] );
-      cnt += __builtin_popcountl( w[ 3 ] );
+      cnt += kv_popcountl( w[ 0 ] );
+      cnt += kv_popcountl( w[ 1 ] );
+      cnt += kv_popcountl( w[ 2 ] );
+      cnt += kv_popcountl( w[ 3 ] );
     }
     for ( ; off < this->width / WORD_BYTE_SIZE; off++ )
-      cnt += __builtin_popcount( this->bits[ off ] );
+      cnt += kv_popcountl( this->bits[ off ] );
     return cnt;
   }
   /* split hash into one of 4 slices */

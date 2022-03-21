@@ -2,7 +2,12 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#define __STDC_FORMAT_MACROS
 #include <inttypes.h>
+#include <assert.h>
+#ifdef _MSC_VER
+#include <raikv/win.h>
+#else
 #include <unistd.h>
 #include <fcntl.h>
 #include <errno.h>
@@ -11,7 +16,7 @@
 #include <sys/stat.h>
 #include <sys/ipc.h>
 #include <sys/shm.h>
-#include <sys/syscall.h>
+#endif
 
 #include <raikv/shm_ht.h>
 #include <raikv/util.h>
@@ -144,7 +149,7 @@ HashTab::initialize( const char *map_name,  const HashTabGeom &geom ) noexcept
   assert( tab_size <= data_area );
 
   this->hdr.ht_size         = sz;      /* number of entries */
-  this->hdr.log2_ht_size    = szlog2;
+  this->hdr.log2_ht_size    = (uint8_t) szlog2;
   this->hdr.ht_mod_shift    = shift;
   this->hdr.ht_mod_mask     = mask;
   this->hdr.ht_mod_fraction = fraction;
@@ -183,8 +188,8 @@ HashTab::initialize( const char *map_name,  const HashTabGeom &geom ) noexcept
       this->hdr.seg_align_shift++;
     seg_size = ( data_size / nsegs ) & ~( this->hdr.seg_align() - 1 ); /*floor*/
 
-    this->hdr.seg_start_val = ( seg_off >> this->hdr.seg_align_shift );
-    this->hdr.seg_size_val  = ( seg_size >> this->hdr.seg_align_shift );
+    this->hdr.seg_start_val = (uint32_t) ( seg_off >> this->hdr.seg_align_shift );
+    this->hdr.seg_size_val  = (uint32_t) ( seg_size >> this->hdr.seg_align_shift );
     this->hdr.seg[ 0 ].init( seg_off, seg_size );
 
     for ( i = 1; i < nsegs; i++ ) {
@@ -194,7 +199,7 @@ HashTab::initialize( const char *map_name,  const HashTabGeom &geom ) noexcept
     /* initialize the message headers */
     for ( i = 0; i < nsegs; i++ ) {
       MsgHdr * msg_hdr = (MsgHdr *) this->seg_data( i, 0 );
-      msg_hdr->size     = seg_size;
+      msg_hdr->size     = (uint32_t) seg_size;
       msg_hdr->msg_size = 0;
       msg_hdr->release();
     }
@@ -213,7 +218,7 @@ HashTab::initialize( const char *map_name,  const HashTabGeom &geom ) noexcept
     rng.init( (void *) &buf[ i ], sizeof( uint64_t ) * 2 );
     i += 2;
     if ( nsegs > 0 )
-      this->ctx[ j ].seg_num = rng.next() % nsegs;
+      this->ctx[ j ].seg_num = (uint16_t) ( rng.next() % nsegs );
   }
   for ( j = 0; j < DB_COUNT; j++ ) {
     this->hdr.seed[ j ].hash1 = buf[ i ];
@@ -340,36 +345,45 @@ HashTab *
 HashTab::create_map( const char *map_name,  uint8_t facility,
                      HashTabGeom &geom,  int map_mode /*0666*/) noexcept
 {
-  const char * fn         = map_name;
-  uint64_t     page_align = (uint64_t) ::sysconf( _SC_PAGESIZE ),
-               map_size;
-  int          oflags, fd;
+  const char * fn = map_name;
   void       * p;
-  key_t        key;
-  int          j, flags[ 3 ]; /* flags for normal, 2m pages, 1g pages */
-  int          mode_flags, excl, huge;
-  bool         is_file_mmap;
+  HashTab    * ht;
+  uint64_t     page_align,
+               map_size;
 
-  for ( j = 0; j < 3; j++ )
-    flags[ j ] = 0;
-  
+#ifndef _MSC_VER
+  page_align = (uint64_t) ::sysconf( _SC_PAGESIZE );
+#else
+  SYSTEM_INFO info;
+  GetSystemInfo( &info );
+  page_align = info.dwPageSize;
+#endif
+
+  map_size = align<uint64_t>( geom.map_size, page_align );
+  assert( map_size >= geom.map_size );
+
   if ( facility == 0 && (facility = parse_map_name( fn )) == 0 )
     return NULL;
+
   if ( ::strlen( map_name ) + 1 > MAX_FILE_HDR_NAME_LEN ) {
     fprintf( stderr, "map name \"%s\" too large\n", map_name );
     return NULL;
   }
-#if 0
-  if ( ( facility & KV_HUGE_2MB ) != 0 )
-    page_align = align<uint64_t>( page_align, PGSZ_2M );
 
-  if ( ( facility & KV_HUGE_1GB ) != 0 )
-    page_align = align<uint64_t>( page_align, PGSZ_1G );
-#endif
+#ifndef _MSC_VER
+  int    j,
+         flags[ 3 ], /* flags for normal, 2m pages, 1g pages */
+         oflags,
+         fd,
+         mode_flags,
+         excl,
+         huge;
+  bool   is_file_mmap;
+
+  for ( j = 0; j < 3; j++ )
+    flags[ j ] = 0;
+  
   /* need a pid file or a lck file fo exclusive access as server */
-  map_size = align<uint64_t>( geom.map_size, page_align );
-  assert( map_size >= geom.map_size );
-
   /* if normal files */
   switch ( facility & ( KV_FILE_MMAP | KV_POSIX_SHM | KV_SYSV_SHM ) ) {
     default:
@@ -453,7 +467,8 @@ HashTab::create_map( const char *map_name,  uint8_t facility,
         huge = P4K;
       break;
 
-    case KV_SYSV_SHM:
+    case KV_SYSV_SHM: {
+      key_t key;
       excl = IPC_CREAT | IPC_EXCL;
       /* create with 0666 */
       flags[ 0 ]  = SHM_R | SHM_W;
@@ -521,8 +536,9 @@ HashTab::create_map( const char *map_name,  uint8_t facility,
       else
         huge = P4K;
       break;
+    }
   }
-  HashTab *ht = new ( p ) HashTab( map_name, geom );
+  ht = new ( p ) HashTab( map_name, geom );
 
   /* try to lock memory */
   if ( ::mlock( p, map_size ) != 0 )
@@ -542,6 +558,28 @@ HashTab::create_map( const char *map_name,  uint8_t facility,
                 shm_type[ POSIX_TYPE ][ huge ], SHM_TYPE_SIZE ); /* sysv based */
       break;
   }
+#else
+  DWORD  szh = (DWORD) ( map_size >> ( sizeof( DWORD) * 8 ) ),
+         szl = (DWORD) ( map_size & ~(DWORD) 0 );
+  char   gbuf[ MAX_FILE_HDR_NAME_LEN + sizeof( "Local\\" ) ];
+  ::snprintf( gbuf, sizeof( gbuf ), "Local\\%s", fn );
+  HANDLE fh  = CreateFileMappingA( INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE,
+                                   szh, szl, gbuf );
+  if ( fh == NULL ) {
+    fprintf( stderr, "Can't create file mapping %s (%d)\n", fn,
+             GetLastError() );
+    return NULL;
+  }
+  p = MapViewOfFile( fh, FILE_MAP_ALL_ACCESS, 0, 0, map_size );
+  if ( p == NULL ) {
+    fprintf( stderr, "Can't map view of file %s (%d)\n", fn,
+             GetLastError() );
+    CloseHandle( fh );
+    return NULL;
+  }
+  ht = new ( p ) HashTab( map_name, geom );
+  ::memcpy( &ht->hdr.sig[ SHM_TYPE_IDX ], "WINDOWS", SHM_TYPE_SIZE );
+#endif
   remove_closed( p );
   return ht;
 }
@@ -553,23 +591,27 @@ HashTab::attach_map( const char *map_name,  uint8_t facility,
                      HashTabGeom &geom ) noexcept
 {
   const char * fn = map_name;
-  HashHdr      hdr;
-  uint64_t     page_align = (uint64_t) ::sysconf( _SC_PAGESIZE ),
-               map_size;
   void       * p;
-  int          fd, j, flags[ 3 ];
-  key_t        key;
-  bool         is_file_mmap;
-  
+  uint64_t     page_align,
+               map_size;
+  HashHdr      hdr;
+
+#ifndef _MSC_VER
+  page_align = (uint64_t) ::sysconf( _SC_PAGESIZE );
+#else
+  SYSTEM_INFO info;
+  GetSystemInfo( &info );
+  page_align = info.dwPageSize;
+#endif
+
   if ( facility == 0 && (facility = parse_map_name( fn )) == 0 )
     return NULL;
-#if 0
-  if ( ( facility & KV_HUGE_2MB ) != 0 )
-    page_align = align<uint64_t>( page_align, PGSZ_2M );
 
-  if ( ( facility & KV_HUGE_1GB ) != 0 )
-    page_align = align<uint64_t>( page_align, PGSZ_1G );
-#endif
+#ifndef _MSC_VER
+  int     fd, j, flags[ 3 ];
+  key_t   key;
+  bool    is_file_mmap;
+  
   for ( j = 0; j < 3; j++ )
     flags[ j ] = 0;
   switch ( facility & ( KV_FILE_MMAP | KV_POSIX_SHM | KV_SYSV_SHM ) ) {
@@ -698,6 +740,31 @@ HashTab::attach_map( const char *map_name,  uint8_t facility,
         return NULL;
       break;
   }
+  ::mlock( p, map_size ); /* ignore the warning, the create() will show it */
+
+#else
+  char gbuf[ MAX_FILE_HDR_NAME_LEN + sizeof( "Local\\" ) ];
+  ::snprintf( gbuf, sizeof( gbuf ), "Local\\%s", fn );
+  HANDLE fh  = OpenFileMappingA( FILE_MAP_ALL_ACCESS, FALSE, gbuf );
+  if ( fh == NULL ) {
+    fprintf( stderr, "Can't open file mapping %s (%d)\n", fn,
+             GetLastError() );
+    return NULL;
+  }
+  uint64_t hdr_align = align<uint64_t>( sizeof( hdr ), page_align );
+  p = MapViewOfFile( fh, FILE_MAP_ALL_ACCESS, 0, 0, hdr_align );
+  if ( p == NULL ) {
+    fprintf( stderr, "Can't map view of file %s (%d)\n", fn,
+             GetLastError() );
+    CloseHandle( fh );
+    return NULL;
+  }
+  ::memcpy( &hdr, p, sizeof( hdr ) );
+  map_size = align<uint64_t>( hdr.map_size, page_align );
+  UnmapViewOfFile( p );
+
+  p = MapViewOfFile( fh, FILE_MAP_ALL_ACCESS, 0, 0, map_size );
+#endif
 
   geom.map_size         = hdr.map_size;
   geom.max_value_size   = hdr.max_value_size;
@@ -706,7 +773,6 @@ HashTab::attach_map( const char *map_name,  uint8_t facility,
   geom.cuckoo_buckets   = hdr.cuckoo_buckets;
   geom.cuckoo_arity     = hdr.cuckoo_arity;
 
-  ::mlock( p, map_size ); /* ignore the warning, the create() will show it */
   /*if ( ::mlock( p, map_size ) != 0 )*/
     /*show_perror( "warning: mlock()", map_name )*/;
   remove_closed( p );
@@ -717,12 +783,14 @@ int
 HashTab::remove_map( const char *map_name,  uint8_t facility ) noexcept
 {
   const char * fn = map_name;
-  int          fd, j, flags[ 3 ];
-  key_t        key;
-  bool         is_file_mmap;
   
   if ( facility == 0 && (facility = parse_map_name( fn )) == 0 )
     return -1;
+
+#ifndef _MSC_VER
+  int          fd, j, flags[ 3 ];
+  key_t        key;
+  bool         is_file_mmap;
   for ( j = 0; j < 3; j++ )
     flags[ j ] = 0;
   switch ( facility & ( KV_FILE_MMAP | KV_POSIX_SHM | KV_SYSV_SHM ) ) {
@@ -776,6 +844,8 @@ HashTab::remove_map( const char *map_name,  uint8_t facility ) noexcept
       }
       return 0;
   }
+#endif
+  return 0;
 }
 
 void
@@ -784,7 +854,7 @@ HashTab::operator delete( void *ptr ) noexcept
   if ( ptr != NULL ) {
     if ( is_closed( ptr ) )
       return;
-    if ( ((char *) ptr)[ SHM_TYPE_IDX ] != 'a' )
+    if ( ((char *) ptr)[ SHM_TYPE_IDX ] != 'a' ) /* alloc */
       ((HashTab *) ptr)->close_map();
     else
       ::free( ptr );
@@ -794,30 +864,21 @@ HashTab::operator delete( void *ptr ) noexcept
 int
 HashTab::close_map( void ) noexcept
 {
-  uint64_t     page_align = (uint64_t) ::sysconf( _SC_PAGESIZE ),
-               map_size;
-  void       * p = (void *) this;
-  const char * s = &this->hdr.sig[ SHM_TYPE_IDX ];
+  void * p = (void *) this;
+  int    status = 0;
   if ( p == NULL )
     return -2;
-#if 0
-  int          i, j;
-  for ( i = 0; i < 4; i++ ) {
-    for ( j = 0; j < 3; j++ )
-      if ( ::memcmp( s, shm_type[ i ][ j ], SHM_TYPE_SIZE ) == 0 )
-        goto break_loop;
-  }
-break_loop:;
-  if ( huge == type + 1 )
-    page_align = align<uint64_t>( page_align, PGSZ_2M );
-  else if ( huge == type + 2 )
-    page_align = align<uint64_t>( page_align, PGSZ_1G );
-#endif
+
+#ifndef _MSC_VER
+  uint64_t     page_align,
+               map_size;
+  const char * s = &this->hdr.sig[ SHM_TYPE_IDX ];
+
+  page_align = (uint64_t) ::sysconf( _SC_PAGESIZE );
   map_size = align<uint64_t>( this->hdr.map_size, page_align );
 
   if ( ::munlock( p, map_size ) != 0 )
     ::perror( "warning: munlock()" );
-  int status = 0;
   if ( s[ 0 ] == 'p' || s[ 0 ] == 'f' ) { /* posix or file */
     if ( ::munmap( p, map_size ) != 0 ) {
       ::perror( "warning: munmap()" );
@@ -833,6 +894,9 @@ break_loop:;
   else if ( s[ 0 ] != 'a' ) {
     fprintf( stderr, "bad close_map\n" );
   }
+#else
+  UnmapViewOfFile( p );
+#endif
   add_closed( p );
   return status;
 }
@@ -843,8 +907,8 @@ HashTab::attach_ctx( uint64_t key ) noexcept
 {
   const uint64_t bizyid = ZOMBIE64 | key;
   uint32_t i     = this->hdr.next_ctx.add( 1 ) % MAX_CTX_ID,
-           start = i,
-           val;
+           start = i;
+  uint64_t val;
   bool     second_time = false;
 
   if ( ( key & ZOMBIE64 ) != 0 )
@@ -859,7 +923,7 @@ HashTab::attach_ctx( uint64_t key ) noexcept
       el.zero();
       el.ctx_id     = i;
       el.ctx_pid    = ::getpid();
-      el.ctx_thrid  = ::syscall( SYS_gettid );
+      el.ctx_thrid  = ::getthrid();
       el.ctx_flags  = 0;
       el.db_stat_hd = MAX_STAT_ID;
       el.db_stat_tl = MAX_STAT_ID;
@@ -1022,7 +1086,7 @@ EvShm::create( const char *map_name,  kv_geom_t *geom,  int map_mode,
     if ( geom->max_value_size == 0 || geom->max_value_size > value_space / 3 ) {
       const uint64_t sz = 256 * 1024 * 1024;
       uint64_t d  = 8; /* 8 = 512MB/64MB, 8 = 1G/128MB, 16 = 2G/256G */
-      geom->max_value_size = value_space / d;
+      geom->max_value_size = (uint32_t) ( value_space / d );
       while ( d < 128 && geom->max_value_size / 2 > sz ) {
         geom->max_value_size /= 2;
         d *= 2;
@@ -1049,7 +1113,7 @@ EvShm::print( void ) noexcept
     hts->fetch();
     for ( uint32_t db = 0; db < DB_COUNT; db++ ) {
       if ( this->map->hdr.test_db_opened( db ) ) {
-        printf( "db[ %u ].entry_cnt:%s %lu\n", db,
+        printf( "db[ %u ].entry_cnt:%s %" PRIu64 "\n", db,
                 ( ( db < 10 ) ? "   " : ( ( db < 100 ) ? "  " : " " ) ),
                 hts->db_stats[ db ].last.add -
                 hts->db_stats[ db ].last.drop );
@@ -1073,7 +1137,9 @@ EvShm::attach( uint8_t db_num ) noexcept
   /* centos don't have gettid() */
   if ( this->map == NULL )
     return -1;
-  this->ctx_id = this->map->attach_ctx( ::syscall( SYS_gettid ) );
+  uint64_t k;
+  k = ::getthrid();
+  this->ctx_id = this->map->attach_ctx( k );
   if ( this->ctx_id != MAX_CTX_ID ) {
     this->dbx_id = this->map->attach_db( this->ctx_id, db_num );
     return 0;

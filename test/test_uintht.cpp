@@ -2,6 +2,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#define __STDC_FORMAT_MACROS
+#include <inttypes.h>
 #include <raikv/uint_ht.h>
 #include <raikv/key_hash.h>
 #include <raikv/util.h>
@@ -20,26 +22,26 @@ do_test( const char *kind )
 
   t = kv_current_monotonic_time_ns();
   for ( i = 0; i < iters; i++ ) {
-    ht->upsert( Int( kv_hash_uint( i ) ), Value( i ) );
+    ht->upsert( Int( kv_hash_uint( (uint32_t) i ) ), Value( i ) );
     IntHashTabT<Int,Value>::check_resize( ht );
   }
   ins_time = kv_current_monotonic_time_ns() - t;
 
   t = kv_current_monotonic_time_ns();
   for ( i = 0; i < iters; i++ ) {
-    if ( ! ht->find( Int( kv_hash_uint( i ) ), pos, v ) ) {
-      fprintf( stderr, "not found %lu\n", (uint64_t) i );
+    if ( ! ht->find( Int( kv_hash_uint( (uint32_t) i ) ), pos, v ) ) {
+      fprintf( stderr, "not found %" PRIu64 "\n", (uint64_t) i );
     }
     else if ( v != i ) {
-      fprintf( stderr, "collision %lu != %lu\n", (uint64_t) v, (uint64_t) i );
+      fprintf( stderr, "collision %" PRIu64 " != %" PRIu64 "\n", (uint64_t) v, (uint64_t) i );
     }
   }
   find_time = kv_current_monotonic_time_ns() - t;
 
   t = kv_current_monotonic_time_ns();
   for ( i = 0; i < iters; i += 2 ) {
-    if ( ! ht->find( Int( kv_hash_uint( i ) ), pos, v ) ) {
-      fprintf( stderr, "not found %lu\n", (uint64_t) i );
+    if ( ! ht->find( Int( kv_hash_uint( (uint32_t) i ) ), pos, v ) ) {
+      fprintf( stderr, "not found %" PRIu64 "\n", (uint64_t) i );
     }
     else {
       ht->remove( pos );
@@ -50,8 +52,8 @@ do_test( const char *kind )
 
   t = kv_current_monotonic_time_ns();
   for ( i = 1; i < iters; i += 2 ) {
-    if ( ! ht->find( Int( kv_hash_uint( i ) ), pos, v ) ) {
-      fprintf( stderr, "not found %lu\n", (uint64_t) i );
+    if ( ! ht->find( Int( kv_hash_uint( (uint32_t) i ) ), pos, v ) ) {
+      fprintf( stderr, "not found %" PRIu64 "\n", (uint64_t) i );
     }
     else {
       ht->remove( pos );
@@ -61,7 +63,7 @@ do_test( const char *kind )
   odd_time = kv_current_monotonic_time_ns() - t;
 
   printf( "%s ", kind );
-  printf( "cnt %lu/%lu, ns per ins: %.2f, find %.2f, even %.2f, odd %.2f\n",
+  printf( "cnt %" PRIu64 "/%" PRIu64 ", ns per ins: %.2f, find %.2f, even %.2f, odd %.2f\n",
            iters, ht->elem_count,
            (double) ins_time / (double) iters,
            (double) find_time / (double) iters,
@@ -81,25 +83,25 @@ do_test2( const char *kind )
 
   t = kv_current_monotonic_time_ns();
   for ( i = 0; i < iters; i++ ) {
-    ht.upsert( Int( kv_hash_uint( i ) ), Value( i ) );
+    ht.upsert( Int( kv_hash_uint( (uint32_t) i ) ), Value( i ) );
   }
   ins_time = kv_current_monotonic_time_ns() - t;
 
   t = kv_current_monotonic_time_ns();
   for ( i = 0; i < iters; i++ ) {
-    if ( ! ht.find( Int( kv_hash_uint( i ) ), pos, v ) ) {
-      fprintf( stderr, "not found %lu\n", (uint64_t) i );
+    if ( ! ht.find( Int( kv_hash_uint( (uint32_t) i ) ), pos, v ) ) {
+      fprintf( stderr, "not found %" PRIu64 "\n", (uint64_t) i );
     }
     else if ( v != i ) {
-      fprintf( stderr, "collision %lu != %lu\n", (uint64_t) v, (uint64_t) i );
+      fprintf( stderr, "collision %" PRIu64 " != %" PRIu64 "\n", (uint64_t) v, (uint64_t) i );
     }
   }
   find_time = kv_current_monotonic_time_ns() - t;
 
   t = kv_current_monotonic_time_ns();
   for ( i = 0; i < iters; i += 2 ) {
-    if ( ! ht.find( Int( kv_hash_uint( i ) ), pos ) ) {
-      fprintf( stderr, "not found %lu\n", (uint64_t) i );
+    if ( ! ht.find( Int( kv_hash_uint( (uint32_t) i ) ), pos ) ) {
+      fprintf( stderr, "not found %" PRIu64 "\n", (uint64_t) i );
     }
     else {
       ht.remove( pos );
@@ -109,8 +111,8 @@ do_test2( const char *kind )
 
   t = kv_current_monotonic_time_ns();
   for ( i = 1; i < iters; i += 2 ) {
-    if ( ! ht.find( Int( kv_hash_uint( i ) ), pos ) ) {
-      fprintf( stderr, "not found %lu\n", (uint64_t) i );
+    if ( ! ht.find( Int( kv_hash_uint( (uint32_t) i ) ), pos ) ) {
+      fprintf( stderr, "not found %" PRIu64 "\n", (uint64_t) i );
     }
     else {
       ht.remove( pos );
@@ -119,7 +121,7 @@ do_test2( const char *kind )
   odd_time = kv_current_monotonic_time_ns() - t;
 
   printf( "%s ", kind );
-  printf( "cnt %lu/%lu, ns per ins: %.2f, find %.2f, even %.2f, odd %.2f\n",
+  printf( "cnt %" PRIu64 "/%" PRIu64 ", ns per ins: %.2f, find %.2f, even %.2f, odd %.2f\n",
            iters, ht.elem_count,
            (double) ins_time / (double) iters,
            (double) find_time / (double) iters,
@@ -137,23 +139,23 @@ do_test3( const char *kind )
 
   t = kv_current_monotonic_time_ns();
   for ( i = 0; i < iters; i++ ) {
-    ht->upsert( Int( kv_hash_uint( i ) ) );
+    ht->upsert( Int( kv_hash_uint( (uint32_t) i ) ) );
     IntHashTabU<Int>::check_resize( ht );
   }
   ins_time = kv_current_monotonic_time_ns() - t;
 
   t = kv_current_monotonic_time_ns();
   for ( i = 0; i < iters; i++ ) {
-    if ( ! ht->find( Int( kv_hash_uint( i ) ), pos ) ) {
-      fprintf( stderr, "not found %lu\n", (uint64_t) i );
+    if ( ! ht->find( Int( kv_hash_uint( (uint32_t) i ) ), pos ) ) {
+      fprintf( stderr, "not found %" PRIu64 "\n", (uint64_t) i );
     }
   }
   find_time = kv_current_monotonic_time_ns() - t;
 
   t = kv_current_monotonic_time_ns();
   for ( i = 0; i < iters; i += 2 ) {
-    if ( ! ht->find( Int( kv_hash_uint( i ) ), pos ) ) {
-      fprintf( stderr, "not found %lu\n", (uint64_t) i );
+    if ( ! ht->find( Int( kv_hash_uint( (uint32_t) i ) ), pos ) ) {
+      fprintf( stderr, "not found %" PRIu64 "\n", (uint64_t) i );
     }
     else {
       ht->remove( pos );
@@ -164,8 +166,8 @@ do_test3( const char *kind )
 
   t = kv_current_monotonic_time_ns();
   for ( i = 1; i < iters; i += 2 ) {
-    if ( ! ht->find( Int( kv_hash_uint( i ) ), pos ) ) {
-      fprintf( stderr, "not found %lu\n", (uint64_t) i );
+    if ( ! ht->find( Int( kv_hash_uint( (uint32_t) i ) ), pos ) ) {
+      fprintf( stderr, "not found %" PRIu64 "\n", (uint64_t) i );
     }
     else {
       ht->remove( pos );
@@ -175,7 +177,7 @@ do_test3( const char *kind )
   odd_time = kv_current_monotonic_time_ns() - t;
 
   printf( "%s ", kind );
-  printf( "cnt %lu/%lu, ns per ins: %.2f, find %.2f, even %.2f, odd %.2f\n",
+  printf( "cnt %" PRIu64 "/%" PRIu64 ", ns per ins: %.2f, find %.2f, even %.2f, odd %.2f\n",
            iters, ht->elem_count,
            (double) ins_time / (double) iters,
            (double) find_time / (double) iters,

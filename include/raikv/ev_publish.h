@@ -67,14 +67,15 @@ struct EvPublish {
   uint8_t      * prefix;      /* the prefixes which match */
   uint8_t        prefix_cnt;  /* count of these */
 
-  EvPublish( const char *subj,  uint16_t subj_len,
-             const void *repl,  uint16_t repl_len,
-             const void *mesg,  uint32_t mesg_len,
+  EvPublish( const char *subj,  size_t subj_len,
+             const void *repl,  size_t repl_len,
+             const void *mesg,  size_t mesg_len,
              RoutePublish &sub_rt,  uint32_t src,  uint32_t hash,
              uint32_t msg_encoding,  uint8_t publish_type )
     : subject( subj ), reply( repl ), msg( mesg ),
-      sub_route( sub_rt ), subject_len( subj_len ), reply_len( repl_len ),
-      msg_len( mesg_len ), subj_hash( hash ), src_route( src ),
+      sub_route( sub_rt ), subject_len( (uint16_t) subj_len ),
+      reply_len( (uint16_t) repl_len ), msg_len( (uint32_t) mesg_len ),
+      subj_hash( hash ), src_route( src ),
       msg_enc( msg_encoding ), pub_type( publish_type ),
       hash( 0 ), prefix( 0 ), prefix_cnt( 0 ) {}
 

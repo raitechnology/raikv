@@ -11,7 +11,7 @@
 #include <raikv/prio_queue.h>
 #include <raikv/dlinklist.h>
 #include <raikv/route_ht.h>
-#include <raikv/kv_msg.h>
+//#include <raikv/kv_msg.h>
 #include <raikv/pattern_cvt.h>
 
 struct sockaddr;
@@ -155,7 +155,7 @@ struct RouteCache {
   static const uint32_t MAX_CACHE = 256 * 1024; /* max routes in cache */
   RouteSpace    spc;        /* cache space */
   RteCacheTab * ht;         /* hash into spc */
-  uint32_t      end,        /* end array spot */
+  size_t        end,        /* end array spot */
                 free,       /* free count for gc */
                 count,      /* count of elems <= MAX_CACHE */
                 busy,       /* busy, no realloc because of references */
@@ -181,7 +181,7 @@ struct RouteZip {
   void init( void ) noexcept;
   void reset( void ) noexcept;
 
-  uint32_t *make_code_ref_space( uint32_t ecnt,  uint32_t &off ) noexcept;
+  uint32_t *make_code_ref_space( uint32_t ecnt,  size_t &off ) noexcept;
   uint32_t make_code_ref( uint32_t *code,  uint32_t ecnt,
                           uint32_t rcnt ) noexcept;
   void gc_code_ref_space( void ) noexcept;
@@ -193,7 +193,7 @@ struct RouteDB {
   RouteCache    cache;               /* the route arrays indexed by ht */
   BloomList     bloom_list;
   uint32_t      bloom_pref_count[ MAX_RTE ];
-  uint32_t      entry_count;         /* counter of route/hashes indexed */
+  size_t        entry_count;         /* counter of route/hashes indexed */
   RouteZip      zip;
   UIntHashTab * rt_hash[ MAX_RTE ];  /* route hash -> code | ref hash */
   uint32_t      pre_seed[ MAX_PRE ]; /* hash seeds for each prefix */
@@ -472,7 +472,7 @@ struct BloomRef {
     if ( bits == NULL )
       return false;
     this->update_route( pref, bits, (BloomDetail *) details,
-                        detail_size / sizeof( BloomDetail ) );
+                        (uint32_t) ( detail_size / sizeof( BloomDetail ) ) );
     return true;
   }
   bool detail_matches( uint16_t prefix_len,  uint64_t mask, uint32_t hash,
@@ -616,8 +616,8 @@ struct RoutePublishCache {
                                            hash );
     /* prefix len 0 matches all */
     if ( x > 0 && keylen[ 0 ] == 0 ) {
-      rcount = db.get_route( subject, subject_len, 0, hash[ 0 ], routes,
-                             this->ref, subj_hash );
+      rcount = db.get_route( subject, (uint16_t) subject_len, 0, hash[ 0 ],
+                             routes, this->ref, subj_hash );
       if ( rcount > 0 )
         this->rpd[ this->n++ ].set( 0, rcount, hash[ 0 ], routes );
       k = 1;
@@ -626,14 +626,16 @@ struct RoutePublishCache {
     if ( k < x ) {
       kv_crc_c_array( (const void **) &key[ k ], &keylen[ k ], &hash[ k ], x-k);
       do {
-        rcount = db.get_route( subject, subject_len, keylen[ k ], hash[ k ],
-                               routes, this->ref, subj_hash );
+        rcount = db.get_route( subject, (uint16_t) subject_len,
+                               (uint16_t) keylen[ k ], hash[ k ], routes,
+                               this->ref, subj_hash );
         if ( rcount > 0 )
-          this->rpd[ this->n++ ].set( keylen[ k ], rcount, hash[ k ], routes );
+          this->rpd[ this->n++ ].set( (uint8_t) keylen[ k ], rcount, hash[ k ],
+                                      routes );
       } while ( ++k < x );
     }
   }
-
+#if 0
   RoutePublishCache( RouteDB &db,  const char *subject,
                      size_t subject_len,  uint32_t subj_hash,
                      uint8_t pref_cnt,  KvPrefHash *ph )
@@ -681,7 +683,7 @@ struct RoutePublishCache {
       } while ( ++k < x );
     }
   }
-
+#endif
   ~RoutePublishCache() {
     this->rdb.cache.busy -= this->ref;
   }
@@ -885,13 +887,13 @@ struct NotifySub {
   bool is_stop( void ) const {
     return this->sub_count == 0 && this->hash_collision == 0;
   }
-  NotifySub( const char *s,  uint16_t slen,
-             const char *r,  uint16_t rlen,
+  NotifySub( const char *s,  size_t slen,
+             const char *r,  size_t rlen,
              uint32_t hash,  uint32_t fd,
              bool coll,  char t,  void *source = NULL ) :
-    subject( s ), reply( r ), subject_len( slen ), reply_len( rlen ),
-    subj_hash( hash ), src_fd( fd ), sub_count( 0 ), src( source ),
-    hash_collision( coll ), src_type( t ) {}
+    subject( s ), reply( r ), subject_len( (uint16_t) slen ),
+    reply_len( (uint16_t) rlen ), subj_hash( hash ), src_fd( fd ),
+    sub_count( 0 ), src( source ), hash_collision( coll ), src_type( t ) {}
 
   NotifySub( const char *s,  uint16_t slen,
              uint32_t hash,  uint32_t fd,
@@ -915,21 +917,21 @@ struct NotifyPattern {
   char               src_type;
 
   NotifyPattern( const PatternCvt &c,
-                 const char *s,  uint16_t slen,
-                 const char *r,  uint16_t rlen,
+                 const char *s,  size_t slen,
+                 const char *r,  size_t rlen,
                  uint32_t hash,  uint32_t fd,
                  bool coll,  char t,  void *source = NULL ) :
-    cvt( c ), pattern( s ), reply( r ), pattern_len( slen ), reply_len( rlen ),
-    prefix_hash( hash ), src_fd( fd ), sub_count( 0 ), src( source ),
-    hash_collision( coll ), src_type( t ) {}
+    cvt( c ), pattern( s ), reply( r ), pattern_len( (uint16_t) slen ),
+    reply_len( (uint16_t) rlen ), prefix_hash( hash ), src_fd( fd ),
+    sub_count( 0 ), src( source ), hash_collision( coll ), src_type( t ) {}
 
   NotifyPattern( const PatternCvt &c,
-                 const char *s,  uint16_t slen,
+                 const char *s,  size_t slen,
                  uint32_t hash,  uint32_t fd,
                  bool coll,  char t,  void *source = NULL ) :
-    cvt( c ), pattern( s ), reply( 0 ), pattern_len( slen ), reply_len( 0 ),
-    prefix_hash( hash ), src_fd( fd ), sub_count( 0 ), src( source ),
-    hash_collision( coll ), src_type( t ) {}
+    cvt( c ), pattern( s ), reply( 0 ), pattern_len( (uint16_t) slen ),
+    reply_len( 0 ), prefix_hash( hash ), src_fd( fd ), sub_count( 0 ),
+    src( source ), hash_collision( coll ), src_type( t ) {}
 };
 
 struct RoutePublish;
@@ -976,7 +978,7 @@ struct RedisKeyspaceNotify : public RouteNotify {
                             RouteVec<RouteSub> &pat_db ) noexcept;
 };
 
-struct KvPrefHash;
+/*struct KvPrefHash;*/
 struct EvPoll;
 struct RoutePublish : public RouteDB {
   EvPoll  & poll;
@@ -1034,7 +1036,7 @@ struct RoutePublish : public RouteDB {
   }
 
   void add_pat( NotifyPattern &pat ) {
-    uint16_t prefix_len = pat.cvt.prefixlen;
+    uint16_t prefix_len = (uint16_t) pat.cvt.prefixlen;
     RouteRef rte( *this, this->zip.route_spc[ prefix_len ] );
     if ( pat.hash_collision == 0 )
       pat.sub_count = this->add_route( prefix_len, pat.prefix_hash, pat.src_fd,
@@ -1049,7 +1051,7 @@ struct RoutePublish : public RouteDB {
   }
 
   void del_pat( NotifyPattern &pat ) {
-    uint16_t prefix_len = pat.cvt.prefixlen;
+    uint16_t prefix_len = (uint16_t) pat.cvt.prefixlen;
     RouteRef rte( *this, this->zip.route_spc[ prefix_len ] );
     if ( pat.hash_collision == 0 )
       pat.sub_count = this->del_route( prefix_len, pat.prefix_hash, pat.src_fd,
@@ -1064,9 +1066,12 @@ struct RoutePublish : public RouteDB {
   }
 
   bool forward_msg( EvPublish &pub ) noexcept;
+  bool forward_with_cnt( EvPublish &pub,  uint32_t &rcnt ) noexcept;
   bool forward_except( EvPublish &pub,  const BitSpace &fdexcpt ) noexcept;
+#if 0
   bool forward_msg( EvPublish &pub,  uint32_t *rcount_total,  uint8_t pref_cnt,
                     KvPrefHash *ph ) noexcept;
+#endif
   bool forward_some( EvPublish &pub, uint32_t *routes, uint32_t rcnt ) noexcept;
   bool forward_not_fd( EvPublish &pub,  uint32_t not_fd ) noexcept;
   bool forward_not_fd2( EvPublish &pub,  uint32_t not_fd,

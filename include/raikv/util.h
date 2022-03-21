@@ -8,8 +8,9 @@ extern "C" {
 char *kv_timestamp( uint64_t ns,  int precision,  char *buf,  size_t len,
                     const char *fmt ); /* fmt=NULL sets default */
 uint64_t kv_get_rdtsc( void ); /* intel rdtsc */
+#if 0
 uint64_t kv_get_rdtscp( void ); /* intel rdtscp */
-
+#endif
 uint64_t kv_current_monotonic_time_ns( void ); /* nanosecs */
 uint64_t kv_current_monotonic_time_us( void ); /* microsecs */
 double kv_current_monotonic_time_s( void ); /* seconds + fraction (52b prec) */
@@ -33,13 +34,62 @@ typedef struct kv_signal_handler_s {
 } kv_signal_handler_t;
 
 void kv_sighndl_install( kv_signal_handler_t *sh );
+uint32_t getthrid( void );
+int pidexists( uint32_t pid );
 
+#ifdef _MSC_VER
+/* disable delete() constructor (4291), fopen deprecated (4996) */
+#pragma warning( disable : 4291 4996 )
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN 1
+#endif
+#include <intrin.h>
+#define kv_likely(x) (x)
+#define kv_unlikely(x) (x)
+#else
 #define kv_likely(x) (__builtin_expect((x),1))
 #define kv_unlikely(x) (__builtin_expect((x),0))
+#endif
+
 #define _U64( x, y ) ( ( ( (uint64_t) (uint32_t) x ) << 32 ) | \
                            (uint64_t) (uint32_t) y )
 #define kv_stringify(S) kv_str(S)
 #define kv_str(S) #S
+
+#ifdef _MSC_VER
+inline uint8_t
+kv_ctzl( uint64_t val )
+{
+  unsigned long z;
+  if ( _BitScanForward64( &z, val ) )
+    return (uint8_t) z;
+  return 64;
+}
+inline uint8_t
+kv_ctzw( uint32_t val )
+{
+  unsigned long z;
+  if ( _BitScanForward( &z, val ) )
+    return (uint8_t) z;
+  return 32;
+}
+inline uint8_t kv_clzl( uint64_t val ) { return (uint8_t) __lzcnt64( val ); }
+inline uint8_t kv_clzw( uint32_t val ) { return (uint8_t) __lzcnt( val ); }
+inline uint8_t kv_ffsl( uint64_t val ) { return val == 0 ? 0 : ( kv_ctzl( val ) + 1 ); }
+inline uint8_t kv_ffsw( uint32_t val ) { return val == 0 ? 0 : ( kv_ctzw( val ) + 1 ); }
+inline uint8_t kv_popcountl( uint64_t val ) { return (uint8_t) __popcnt64( val ); }
+inline uint8_t kv_popcountw( uint32_t val ) { return (uint8_t) __popcnt( val ); }
+#else
+inline uint8_t kv_ctzl( uint64_t val ) { return __builtin_ctzl( val ); }
+inline uint8_t kv_ctzw( uint32_t val ) { return __builtin_ctz( val ); }
+inline uint8_t kv_clzl( uint64_t val ) { return __builtin_clzl( val ); }
+inline uint8_t kv_clzw( uint32_t val ) { return __builtin_clz( val ); }
+inline uint8_t kv_ffsl( uint64_t val ) { return __builtin_ffsl( val ); }
+inline uint8_t kv_ffsw( uint32_t val ) { return __builtin_ffs( val ); }
+inline uint8_t kv_popcountl( uint64_t val ) { return __builtin_popcountl( val ); }
+inline uint8_t kv_popcountw( uint32_t val ) { return __builtin_popcount( val ); }
+#endif
+
 #ifdef __cplusplus
 }
 #endif
@@ -53,18 +103,27 @@ namespace kv {
 template <class Int> static inline Int align( Int sz,  Int a ) {
   return (Int) KV_ALIGN( (size_t) sz, (size_t) a );
 }
-template <class Int> static inline Int max( Int i,  Int j ) { return i>j?i:j; }
-template <class Int> static inline Int min( Int i,  Int j ) { return i<j?i:j; }
+template <class Int> static inline Int max_int( Int i,  Int j ) { return i>j?i:j; }
+template <class Int> static inline Int min_int( Int i,  Int j ) { return i<j?i:j; }
 template <class Int> static inline Int unaligned( const void *p ) {
   Int i; ::memcpy( &i, p, sizeof( Int ) ); return i;
 }
 
 static const size_t KV_CACHE_ALIGN = 64;
 static inline void *aligned_malloc( size_t sz ) {
-#ifdef _ISOC11_SOURCE
+#if defined( _MSC_VER )
+  return ::_aligned_malloc( sz, KV_CACHE_ALIGN );
+#elif defined( _ISOC11_SOURCE )
   return ::aligned_alloc( KV_CACHE_ALIGN, sz ); /* >= RH7 */
 #else
   return ::memalign( KV_CACHE_ALIGN, sz ); /* RH5, RH6.. */
+#endif
+}
+static inline void aligned_free( void *p ) {
+#if defined( _MSC_VER )
+  ::_aligned_free( p );
+#else
+  ::free( p ); /* libc allows this */
 #endif
 }
 
@@ -154,9 +213,11 @@ struct SignalHandler : public kv_signal_handler_s {
 /* call strftime() with nanosecond stamp and subsecond precision (3=ms) */
 char *timestamp( uint64_t ns,  int precision,  char *buf,  size_t len,
                  const char *fmt = NULL ) noexcept; /* fmt=NULL sets default */
-uint64_t get_rdtsc( void ) noexcept; /* intel rdtsc */
-uint64_t get_rdtscp( void ) noexcept; /* intel rdtscp */
 
+uint64_t get_rdtsc( void ) noexcept; /* intel rdtsc */
+#if 0
+uint64_t get_rdtscp( void ) noexcept; /* intel rdtscp */
+#endif
 uint64_t current_monotonic_time_ns( void ) noexcept; /* nanosecs */
 uint64_t current_monotonic_time_us( void ) noexcept; /* microsecs */
 double current_monotonic_time_s( void ) noexcept; /* s + fraction (52b prec) */
@@ -178,18 +239,18 @@ double current_realtime_coarse_s( void ) noexcept; /* s + fraction (52b pr) */
 char *mem_to_string( int64_t m,  char *b,  int64_t k = 1000 ) noexcept;
 
 /* via Andrei Alexandrescu */
-template <class UInt>
+template <class Int, class UInt>
 UInt neg( UInt v ) {
   static const int b = sizeof( v ) * 8 - 1; /* 31, 63 */
   if ( (UInt) v == ( (UInt) 1 << b ) )
     return ( (UInt) 1 << b );
-  return (UInt) -v;
+  return (UInt) -(Int) v;
 }
 inline uint64_t neg64( int64_t v ) {
-  return neg<uint64_t>( v );
+  return neg<int64_t, uint64_t>( v );
 }
 inline uint32_t neg32( int32_t v ) {
-  return neg<uint32_t>( v );
+  return neg<int32_t, uint32_t>( v );
 }
 template <class UInt>
 inline size_t uint_to_string( UInt v,  char *buf,  size_t len ) {
@@ -197,17 +258,17 @@ inline size_t uint_to_string( UInt v,  char *buf,  size_t len ) {
   for ( size_t pos = len; v >= 10; ) {
     const UInt q = v / 10,
                r = v % 10;
-    buf[ --pos ] = '0' + r;
+    buf[ --pos ] = '0' + (char) r;
     v = q;
   }
-  buf[ 0 ] = '0' + v;
+  buf[ 0 ] = '0' + (char) v;
   return len;
 }
 template <class Int, class UInt>
 size_t int_to_string( Int v,  char *buf,  size_t len ) {
   if ( v < 0 ) {
     len--; *buf++ = '-';
-    return 1 + uint_to_string<UInt>( neg<UInt>( v ), buf, len - 1 );
+    return 1 + uint_to_string<UInt>( neg<Int, UInt>( v ), buf, len - 1 );
   }
   return uint_to_string<UInt>( (UInt) v, buf, len );
 }

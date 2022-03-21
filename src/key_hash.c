@@ -37,7 +37,7 @@ kv_hash_uint2( uint32_t r, uint32_t i )
 }
 
 static inline uint32_t
-trail_crc_c( uint64_t r,  const uint8_t *s,  size_t sz )
+trail_crc_c( uint32_t r,  const uint8_t *s,  size_t sz )
 {
   if ( ( sz & 4 ) != 0 ) {
     r = _mm_crc32_u32( r, *(uint32_t *) s ); s+=4;
@@ -60,7 +60,7 @@ kv_crc_c( const void *p,  size_t sz,  uint32_t seed )
   while ( sz >= 8 ) {
     r = _mm_crc32_u64( r, *(uint64_t *) s ); s+=8; sz-=8;
   }
-  return trail_crc_c( r, s, sz );
+  return trail_crc_c( (uint32_t) r, s, sz );
 }
 
 void
@@ -81,8 +81,8 @@ kv_crc_c_2_diff( const void *p,   size_t sz,   uint32_t *seed,
     else if ( sz < 8 )
       break;
   }
-  *seed  = trail_crc_c( r,  s,  sz );
-  *seed2 = trail_crc_c( r2, s2, sz2 );
+  *seed  = trail_crc_c( (uint32_t) r,  s,  sz );
+  *seed2 = trail_crc_c( (uint32_t) r2, s2, sz2 );
 }
 
 void
@@ -119,10 +119,10 @@ kv_crc_c_4_diff( const void *p,   size_t sz,   uint32_t *seed,
       a |= sz4;
     }
   } while ( a >= 8 );
-  *seed  = trail_crc_c( r,  s,  sz );
-  *seed2 = trail_crc_c( r2, s2, sz2 );
-  *seed3 = trail_crc_c( r3, s3, sz3 );
-  *seed4 = trail_crc_c( r4, s4, sz4 );
+  *seed  = trail_crc_c( (uint32_t) r,  s,  sz );
+  *seed2 = trail_crc_c( (uint32_t) r2, s2, sz2 );
+  *seed3 = trail_crc_c( (uint32_t) r3, s3, sz3 );
+  *seed4 = trail_crc_c( (uint32_t) r4, s4, sz4 );
 }
 
 void
@@ -149,7 +149,7 @@ kv_crc_c_array( const void **p,   size_t *psz,   uint32_t *seed,
 
 #ifdef USE_KV_MURMUR_HASH
 static inline uint64_t
-MurmurHash64A ( const void * key, int len, uint64_t seed )
+MurmurHash64A ( const void * key, size_t len, uint64_t seed )
 {
   static const uint64_t m = _U64( 0xc6a4a793, 0x5bd1e995 );
   static const int r = 47;
@@ -895,7 +895,7 @@ static void spooky_hash128
     remainder = (length - ((const uint8_t *)endp-(const uint8_t *)message));
     memcpy(buf, endp, remainder);
     memset(((uint8_t *)buf)+remainder, 0, SC_BLOCKSIZE-remainder);
-    ((uint8_t *)buf)[SC_BLOCKSIZE-1] = remainder;
+    ((uint8_t *)buf)[SC_BLOCKSIZE-1] = (uint8_t) remainder;
 
     /* do some final mixing */
     end(&h0, &h1, &h2, &h3, &h4, &h5, &h6, &h7, &h8, &h9, &h10, &h11);
@@ -1026,23 +1026,29 @@ Meow_AESDEC_Memx2( __m128i R, const uint8_t *S )
   return Meow_AESDECx2( R, Q );
 }
 
-static const uint8_t MeowShiftAdjust[] __attribute__((__aligned__(64))) =
+#ifdef _MSC_VER
+#define ALIGN_ARR( A ) __declspec(align(64)) A
+#else
+#define ALIGN_ARR( A ) A __attribute__((__aligned__(64)))
+#endif
+
+static const uint8_t ALIGN_ARR( MeowShiftAdjust[] ) =
 {0,1,2,3,         4,5,6,7,
  8,9,10,11,       12,13,14,15,
  128,128,128,128, 128,128,128,128,
  128,128,128,128, 128,128,128,0};
-static const uint8_t MeowMaskLen[] __attribute__((__aligned__(64))) =
+static const uint8_t ALIGN_ARR( MeowMaskLen[] ) =
 {255,255,255,255, 255,255,255,255,
  255,255,255,255, 255,255,255,255,
  0,0,0,0,         0,0,0,0,
  0,0,0,0,         0,0,0,0};
-static const uint8_t MeowS0Init[] __attribute__((__aligned__(64))) =
+static const uint8_t ALIGN_ARR( MeowS0Init[] ) =
 { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9,10,11,12,13,14,15};
-static const uint8_t MeowS1Init[] __attribute__((__aligned__(64))) =
+static const uint8_t ALIGN_ARR( MeowS1Init[] ) =
 {16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31};
-static const uint8_t MeowS2Init[] __attribute__((__aligned__(64))) =
+static const uint8_t ALIGN_ARR( MeowS2Init[] ) =
 {32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47};
-static const uint8_t MeowS3Init[] __attribute__((__aligned__(64))) =
+static const uint8_t ALIGN_ARR( MeowS3Init[] ) =
 {48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63};
 
 /* Load trailing bytes into xmm reg,
@@ -1109,7 +1115,10 @@ Meow_AESDECx2_Partial( __m128i R, const uint8_t *S, uint32_t Len8,
 } while( 0 )
 
 #define Xor_Meow( S0, S1, S2, S3, Mixer ) do { \
-  S0 ^= Mixer; S1 ^= Mixer; S2 ^= Mixer; S3 ^= Mixer; \
+  S0 = _mm_xor_si128( S0, Mixer ); \
+  S1 = _mm_xor_si128( S1, Mixer ); \
+  S2 = _mm_xor_si128( S2, Mixer ); \
+  S3 = _mm_xor_si128( S3, Mixer ); \
 } while( 0 )
 
 #define Meow_Loop64( S0, S1, S2, S3, p, sz ) do { \
@@ -1375,7 +1384,7 @@ kv_hash_meow128_vec( const meow_vec_t *vec,  size_t vec_sz,
   __m128i Mixer = _mm_set_epi64x( *x2 + total_sz + 1, *x1 - total_sz );
 
   Xor_Meow( S0, S1, S2, S3, Mixer );
-  uint8_t block[ 64 ] __attribute__((__aligned__(64)));
+  uint8_t ALIGN_ARR( block[ 64 ] );
   size_t  off = 0;
   for ( i = 0; i < vec_sz; i++ ) {
     const uint8_t * src = (const uint8_t *) vec[ i ].p;
@@ -1546,7 +1555,7 @@ kv_hmac_meow_final( meow_ctx_t *m,  meow_block_t *b, uint64_t *k1,
     Meow_Loop( S0, S1, S2, S3, b->block, b->off );
   }
 
-  __m128i Mixer = _mm_set_epi64x( b->total_update_sz + 1, -b->total_update_sz );
+  __m128i Mixer = _mm_set_epi64x( b->total_update_sz + 1, -(int64_t) b->total_update_sz );
 
   Compress_Meow2( S2, S3, S0, S1, S2, Mixer ); /* S2 <- S3, S0 <- S1, S2<-M */
   Compress_Meow( S0, S2, S0, Mixer );    /* S0 <- S2, S0 <- Mixer */

@@ -1,9 +1,15 @@
 #include <stdio.h>
 #include <stdint.h>
+#define __STDC_FORMAT_MACROS
+#include <inttypes.h>
 #include <string.h>
 #include <stdlib.h>
+#ifndef _MSC_VER
 #include <unistd.h>
 #include <pthread.h>
+#else
+#include <raikv/win.h>
+#endif
 
 #include <raikv/shm_ht.h>
 #include <raikv/key_buf.h>
@@ -32,8 +38,8 @@ shm_close( void )
 {
   if ( ctx_id != MAX_CTX_ID ) {
     HashCounters & stat = map->stats[ dbx_id ];
-    printf( "rd %lu, wr %lu, "
-            "sp %lu, ch %lu\n",
+    printf( "rd %" PRIu64 ", wr %" PRIu64 ", "
+            "sp %" PRIu64 ", ch %" PRIu64 "\n",
             stat.rd, stat.wr, stat.spins, stat.chains );
     map->detach_ctx( ctx_id );
     ctx_id = MAX_CTX_ID;
@@ -192,16 +198,16 @@ main( int argc, char *argv[] )
         compute_key_count();
         if ( (int64_t) ( ctx.stat.add - ctx.stat.drop ) !=
              (int64_t) ( x_key_count - x_drops ) ) {
-          printf( "miscount count %lu key %s prev %s\n", count, buf, sav );
+          printf( "miscount count %" PRIu64 " key %s prev %s\n", count, buf, sav );
           printf( 
-              "add %lu drop %lu total %lu\n"
-              "seg %lu immed %lu no_val %lu key_count %lu drops %lu tot %lu\n",
+              "add %" PRIu64 " drop %" PRIu64 " total %" PRIu64 "\n"
+              "seg %" PRIu64 " immed %" PRIu64 " no_val %" PRIu64 " key_count %" PRIu64 " drops %" PRIu64 " tot %" PRIu64 "\n",
               prev_add, prev_drop, prev_add - prev_drop,
               prev_xseg, prev_ximm, prev_xnov, prev_xkcnt, prev_xdrop,
               prev_xkcnt - prev_xdrop );
           printf( 
-              "add %lu drop %lu total %lu\n"
-              "seg %lu immed %lu no_val %lu key_count %lu drops %lu tot %lu\n",
+              "add %" PRIu64 " drop %" PRIu64 " total %" PRIu64 "\n"
+              "seg %" PRIu64 " immed %" PRIu64 " no_val %" PRIu64 " key_count %" PRIu64 " drops %" PRIu64 " tot %" PRIu64 "\n",
               ctx.stat.add, ctx.stat.drop, ctx.stat.add - ctx.stat.drop,
               x_seg_values, x_immed_values, x_no_value, x_key_count, x_drops,
               x_key_count - x_drops );
@@ -216,8 +222,8 @@ main( int argc, char *argv[] )
 //            compute_key_count();
             HashCounters & stat = map->stats[ dbx_id ];
             printf( "%.1f msg/s %.1f bytes/s %.1f fail/s "
-                "add %lu drop %lu total %lu\n",
-         /* "seg %lu immed %lu no_val %lu key_count %lu drops %lu tot %lu\n",*/
+                "add %" PRIu64 " drop %" PRIu64 " total %" PRIu64 "\n",
+         /* "seg %" PRIu64 " immed %" PRIu64 " no_val %" PRIu64 " key_count %" PRIu64 " drops %" PRIu64 " tot %" PRIu64 "\n",*/
                 (double) ( count - last ) / ( (double) ( t2 - t1 ) / NANOSF ),
                 (double) ( totalb - lastb ) / ( (double) ( t2 - t1 ) / NANOSF ),
                 (double) ( allocfail - lastallfail ) /
@@ -233,7 +239,7 @@ main( int argc, char *argv[] )
         }
         if ( precount > 0 ) {
           KeyFragment &kb = kba[ i ];
-          kb.keylen = ::strlen( kb.u.buf );
+          kb.keylen = (uint16_t) ::strlen( kb.u.buf );
           while ( kb.keylen > 0 && kb.u.buf[ kb.keylen - 1 ] <= ' ' )
             kb.u.buf[ --kb.keylen ] = '\0';
           kb.u.buf[ kb.keylen++ ] = '\0';
@@ -291,7 +297,7 @@ main( int argc, char *argv[] )
     }
     if ( precount > 0 && i > 0 )
       loaded += do_load( kctx, mctx, i, use_pref, cur );
-    printf( "%lu msgs read, %lu msgs loaded, %lu alloc fail\n",
+    printf( "%" PRIu64 " msgs read, %" PRIu64 " msgs loaded, %" PRIu64 " alloc fail\n",
             count, loaded, allocfail );
     fclose( fp );
   }

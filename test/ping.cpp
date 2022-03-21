@@ -1,10 +1,14 @@
 #include <stdio.h>
 #include <stdint.h>
+#define __STDC_FORMAT_MACROS
+#include <inttypes.h>
 #include <string.h>
 #include <stdlib.h>
+#ifndef _MSC_VER
 #include <unistd.h>
-#include <pthread.h>
-
+#else
+#include <raikv/win.h>
+#endif
 #include <raikv/shm_ht.h>
 #include <raikv/key_buf.h>
 
@@ -32,8 +36,8 @@ shm_close( void )
 {
   if ( ctx_id != MAX_CTX_ID ) {
     HashCounters & stat = map->stats[ dbx_id ];
-    printf( "rd %lu, wr %lu, "
-            "sp %lu, ch %lu\n",
+    printf( "rd %" PRIu64 ", wr %" PRIu64 ", "
+            "sp %" PRIu64 ", ch %" PRIu64 "\n",
             stat.rd, stat.wr, stat.spins, stat.chains );
     map->detach_ctx( ctx_id );
     ctx_id = MAX_CTX_ID;
@@ -52,6 +56,7 @@ my_yield( void )
 void
 do_spin( uint64_t cnt )
 {
+#ifndef _MSC_VER
   __asm__ __volatile__(
        "xorq %%rcx, %%rcx\n\t"
     "1: addq $1, %%rcx\n\t"
@@ -60,7 +65,10 @@ do_spin( uint64_t cnt )
     :
     : "r" (cnt)
     : "%rcx" );
-
+#else
+  while ( cnt-- )
+    Sleep( 0 );
+#endif
 }
 
 struct PingRec {
@@ -117,7 +125,7 @@ main( int argc, char *argv[] )
     do_spin( spin_times * 100000 );
     t2 = current_monotonic_time_ns();
   } while ( t2 - t < 15 * 100000 );
-  printf( "do_spin ( %lu ) = 15ns\n", spin_times );
+  printf( "do_spin ( %" PRIu64 " ) = 15ns\n", spin_times );
 #endif
   shm_attach( mn );
   if ( map == NULL )
@@ -205,7 +213,7 @@ main( int argc, char *argv[] )
           }
           if ( t - last >= (uint64_t) 2000000000U ) {
             double mb = (double) mbar / (double) ( count - last_count );
-            printf( "ping %.1fcy mb=%.1f %lu\n",
+            printf( "ping %.1fcy mb=%.1f %" PRIu64 "\n",
                     (double) ( t - last ) / (double) ( count - last_count ),
                     mb, spin_times );
             last_count = count;
@@ -278,7 +286,7 @@ main( int argc, char *argv[] )
           }
           if ( t - last >= (uint64_t) 2000000000U ) {
             double mb = (double) mbar / (double) ( count - last_count );
-            printf( "pong %.1fcy mb=%.1f %lu\n",
+            printf( "pong %.1fcy mb=%.1f %" PRIu64 "\n",
                     (double) ( t - last ) / (double) ( count - last_count ),
                     mb, spin_times );
             last_count = count;
@@ -305,7 +313,7 @@ main( int argc, char *argv[] )
     }
   }
   shm_close();
-  printf( "count %lu, diff %.1f\n", count,
+  printf( "count %" PRIu64 ", diff %.1f\n", count,
           (double) nsdiff / (double) count );
   return 0;
 }

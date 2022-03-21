@@ -88,9 +88,14 @@ print_defines  = -DKV_VER=$(ver_build)
 server_defines = -DKV_VER=$(ver_build)
 
 libraikv_files := key_ctx ht_linear ht_cuckoo key_hash msg_ctx ht_stats \
-                  ht_init scratch_mem util rela_ts radix_sort print pipe_buf \
-		  ev_net route_db kv_pubsub kv_msg timer_queue stream_buf \
-		  bloom ev_unix ev_tcp ev_udp monitor logger
+                  ht_init scratch_mem util rela_ts radix_sort print \
+		  ev_net route_db timer_queue stream_buf \
+		  bloom monitor ev_tcp ev_udp ev_unix logger
+# unported := pipe_buf kv_pubsub kv_msg 
+libraikv_cfile := \
+          $(foreach file, $(libraikv_files), $(wildcard src/$(file).cpp)) \
+          $(foreach file, $(libraikv_files), $(wildcard src/$(file).c))
+libraikv_wfile := src/win.c
 libraikv_objs  := $(addprefix $(objd)/, $(addsuffix .o, $(libraikv_files)))
 libraikv_dbjs  := $(addprefix $(objd)/, $(addsuffix .fpic.o, $(libraikv_files)))
 libraikv_deps  := $(addprefix $(dependd)/, $(addsuffix .d, $(libraikv_files))) \
@@ -104,190 +109,315 @@ $(libd)/libraikv.so: $(libraikv_dbjs)
 all_libs    += $(libd)/libraikv.a $(libd)/libraikv.so
 all_depends += $(libraikv_deps)
 
-kv_test_objs = $(objd)/test.o
-kv_test_deps = $(dependd)/test.d
-kv_test_libs = $(libd)/libraikv.a
+kv_test_files := test
+kv_test_cfile := $(addprefix test/, $(addsuffix .cpp, $(kv_test_files)))
+kv_test_objs  := $(addprefix $(objd)/, $(addsuffix .o, $(kv_test_files)))
+kv_test_deps  := $(addprefix $(dependd)/, $(addsuffix .d, $(kv_test_files)))
+kv_test_libs  := $(libd)/libraikv.a
 #kv_test_lnk  = -lraikv
-kv_test_lnk  = $(kv_test_libs)
+kv_test_lnk   := $(kv_test_libs)
 
 $(bind)/kv_test: $(kv_test_objs) $(kv_test_libs)
+all_exes      += $(bind)/kv_test
+all_depends   += $(kv_test_deps)
 
-hash_test_defines  = -DKV_VER=$(ver_build)
-hash_test_objs = $(objd)/hash_test.o
-hash_test_deps = $(dependd)/hash_test.d
-hash_test_libs = $(libd)/libraikv.a
-hash_test_lnk  = $(hash_test_libs)
+hash_test_defines = -DKV_VER=$(ver_build)
+hash_test_files := hash_test
+hash_test_cfile := $(addprefix test/, $(addsuffix .cpp, $(hash_test_files)))
+hash_test_objs  := $(addprefix $(objd)/, $(addsuffix .o, $(hash_test_files)))
+hash_test_deps  := $(addprefix $(dependd)/, $(addsuffix .d, $(hash_test_files)))
+hash_test_libs  := $(libd)/libraikv.a
+hash_test_lnk   := $(hash_test_libs)
 
 $(bind)/hash_test: $(hash_test_objs) $(hash_test_libs)
+all_exes        += $(bind)/hash_test
+all_depends     += $(hash_test_deps)
 
-ping_objs = $(objd)/ping.o
-ping_deps = $(dependd)/ping.d
-ping_libs = $(libd)/libraikv.so
-ping_lnk  = -lraikv
+ping_files := ping
+ping_cfile := $(addprefix test/, $(addsuffix .cpp, $(ping_files)))
+ping_objs  := $(addprefix $(objd)/, $(addsuffix .o, $(ping_files)))
+ping_deps  := $(addprefix $(dependd)/, $(addsuffix .d, $(ping_files)))
+ping_libs  := $(libd)/libraikv.so
+ping_lnk   := -lraikv
 
 $(bind)/ping: $(ping_objs) $(ping_libs)
+all_exes        += $(bind)/ping
+all_depends     += $(ping_deps)
 
-kv_cli_objs = $(objd)/cli.o
-kv_cli_deps = $(dependd)/cli.d
-kv_cli_libs = $(libd)/libraikv.so
-kv_cli_lnk  = -lraikv
+kv_cli_files := cli
+kv_cli_cfile := $(addprefix test/, $(addsuffix .cpp, $(kv_cli_files)))
+kv_cli_objs  := $(addprefix $(objd)/, $(addsuffix .o, $(kv_cli_files)))
+kv_cli_deps  := $(addprefix $(dependd)/, $(addsuffix .d, $(kv_cli_files)))
+kv_cli_libs  := $(libd)/libraikv.so
+kv_cli_lnk   := -lraikv
 
 $(bind)/kv_cli: $(kv_cli_objs) $(kv_cli_libs)
+all_exes        += $(bind)/kv_cli
+all_depends     += $(kv_cli_deps)
 
-mcs_test_objs = $(objd)/mcs_test.o
-mcs_test_deps = $(dependd)/mcs_test.d
-mcs_test_libs = $(libd)/libraikv.so
-mcs_test_lnk  = -lraikv
+mcs_test_files := mcs_test
+mcs_test_cfile := $(addprefix test/, $(addsuffix .cpp, $(mcs_test_files)))
+mcs_test_objs  := $(addprefix $(objd)/, $(addsuffix .o, $(mcs_test_files)))
+mcs_test_deps  := $(addprefix $(dependd)/, $(addsuffix .d, $(mcs_test_files)))
+mcs_test_libs  := $(libd)/libraikv.so
+mcs_test_lnk   := -lraikv
 
 $(bind)/mcs_test: $(mcs_test_objs) $(mcs_test_libs)
+all_exes        += $(bind)/mcs_test
+all_depends     += $(mcs_test_deps)
 
-kv_server_objs = $(objd)/server.o
-kv_server_deps = $(dependd)/server.d
-kv_server_libs = $(libd)/libraikv.so
-kv_server_lnk  = -lraikv
+kv_server_files := server
+kv_server_cfile := $(addprefix test/, $(addsuffix .cpp, $(kv_server_files)))
+kv_server_objs  := $(addprefix $(objd)/, $(addsuffix .o, $(kv_server_files)))
+kv_server_deps  := $(addprefix $(dependd)/, $(addsuffix .d, $(kv_server_files)))
+kv_server_libs  := $(libd)/libraikv.so
+kv_server_lnk   := -lraikv
 
 $(bind)/kv_server: $(kv_server_objs) $(kv_server_libs)
+all_exes        += $(bind)/kv_server
+all_depends     += $(kv_server_deps)
 
-load_objs = $(objd)/load.o
-load_deps = $(dependd)/load.d
-load_libs = $(libd)/libraikv.so
-load_lnk  = -lraikv
+load_files := load
+load_cfile := $(addprefix test/, $(addsuffix .cpp, $(load_files)))
+load_objs  := $(addprefix $(objd)/, $(addsuffix .o, $(load_files)))
+load_deps  := $(addprefix $(dependd)/, $(addsuffix .d, $(load_files)))
+load_libs  := $(libd)/libraikv.so
+load_lnk   := -lraikv
 
 $(bind)/load: $(load_objs) $(load_libs)
+all_exes        += $(bind)/load
+all_depends     += $(load_deps)
 
-ctest_objs = $(objd)/ctest.o
-ctest_deps = $(dependd)/ctest.d
-ctest_libs = $(libd)/libraikv.so
-ctest_lnk  = -lraikv
+ctest_files := ctest
+ctest_cfile := $(addprefix test/, $(addsuffix .c, $(ctest_files)))
+ctest_objs  := $(addprefix $(objd)/, $(addsuffix .o, $(ctest_files)))
+ctest_deps  := $(addprefix $(dependd)/, $(addsuffix .d, $(ctest_files)))
+ctest_libs  := $(libd)/libraikv.so
+ctest_lnk   := -lraikv
 
 $(bind)/ctest: $(ctest_objs) $(ctest_libs)
+all_exes    += $(bind)/ctest
+all_depends += $(ctest_deps)
 
-rela_test_objs = $(objd)/rela_test.o
-rela_test_deps = $(dependd)/rela_test.d
-rela_test_libs = $(libd)/libraikv.so
-rela_test_lnk  = -lraikv
+rela_test_files := rela_test
+rela_test_cfile := $(addprefix test/, $(addsuffix .cpp, $(rela_test_files)))
+rela_test_objs  := $(addprefix $(objd)/, $(addsuffix .o, $(rela_test_files)))
+rela_test_deps  := $(addprefix $(dependd)/, $(addsuffix .d, $(rela_test_files)))
+rela_test_libs  := $(libd)/libraikv.so
+rela_test_lnk   := -lraikv
 
 $(bind)/rela_test: $(rela_test_objs) $(rela_test_libs)
+all_exes        += $(bind)/rela_test
+all_depends     += $(rela_test_deps)
 
-pq_test_objs = $(objd)/pq_test.o
-pq_test_deps = $(dependd)/pq_test.d
+pq_test_files := pq_test
+pq_test_cfile := $(addprefix test/, $(addsuffix .cpp, $(pq_test_files)))
+pq_test_objs  := $(addprefix $(objd)/, $(addsuffix .o, $(pq_test_files)))
+pq_test_deps  := $(addprefix $(dependd)/, $(addsuffix .d, $(pq_test_files)))
 
 $(bind)/pq_test: $(pq_test_objs) $(pq_test_libs)
+all_exes       += $(bind)/pq_test
+all_depends    += $(pq_test_deps)
 
-pubsub_objs = $(objd)/pubsub.o
-pubsub_deps = $(dependd)/pubsub.d
-pubsub_libs = $(libd)/libraikv.so
-pubsub_lnk  = -lraikv
+pubsub_files := pubsub
+pubsub_cfile := $(addprefix test/, $(addsuffix .cpp, $(pubsub_files)))
+pubsub_objs  := $(addprefix $(objd)/, $(addsuffix .o, $(pubsub_files)))
+pubsub_deps  := $(addprefix $(dependd)/, $(addsuffix .d, $(pubsub_files)))
+pubsub_libs  := $(libd)/libraikv.so
+pubsub_lnk   := -lraikv
 
 $(bind)/pubsub: $(pubsub_objs) $(pubsub_libs)
+all_exes     += $(bind)/pubsub
+all_depends  += $(pubsub_deps)
 
-pipe_test_objs = $(objd)/pipe_test.o
-pipe_test_deps = $(dependd)/pipe_test.d
-pipe_test_libs = $(libd)/libraikv.so
-pipe_test_lnk  = -lraikv
+pipe_test_files := pipe_test
+pipe_test_cfile := $(addprefix test/, $(addsuffix .cpp, $(pipe_test_files)))
+pipe_test_objs  := $(addprefix $(objd)/, $(addsuffix .o, $(pipe_test_files)))
+pipe_test_deps  := $(addprefix $(dependd)/, $(addsuffix .d, $(pipe_test_files)))
+pipe_test_libs  := $(libd)/libraikv.so
+pipe_test_lnk   := -lraikv
 
 $(bind)/pipe_test: $(pipe_test_objs) $(pipe_test_libs)
+#all_exes        += $(bind)/pipe_test
+#all_depends     += $(pipe_test_deps)
 
-zipf_test_objs = $(objd)/zipf_test.o
-zipf_test_deps = $(dependd)/zipf_test.d
-zipf_test_libs = $(libd)/libraikv.so
-zipf_test_lnk  = -lraikv
+zipf_test_files := zipf_test
+zipf_test_cfile := $(addprefix test/, $(addsuffix .cpp, $(zipf_test_files)))
+zipf_test_objs  := $(addprefix $(objd)/, $(addsuffix .o, $(zipf_test_files)))
+zipf_test_deps  := $(addprefix $(dependd)/, $(addsuffix .d, $(zipf_test_files)))
+zipf_test_libs  := $(libd)/libraikv.so
+zipf_test_lnk   := -lraikv
 
 $(bind)/zipf_test: $(zipf_test_objs) $(zipf_test_libs)
+all_exes        += $(bind)/zipf_test
+all_depends     += $(zipf_test_deps)
 
-test_rtht_objs = $(objd)/test_rtht.o
-test_rtht_deps = $(dependd)/test_rtht.d
-test_rtht_libs = $(libd)/libraikv.so
-test_rtht_lnk  = -lraikv
+test_rtht_files := test_rtht
+test_rtht_cfile := $(addprefix test/, $(addsuffix .cpp, $(test_rtht_files)))
+test_rtht_objs  := $(addprefix $(objd)/, $(addsuffix .o, $(test_rtht_files)))
+test_rtht_deps  := $(addprefix $(dependd)/, $(addsuffix .d, $(test_rtht_files)))
+test_rtht_libs  := $(libd)/libraikv.so
+test_rtht_lnk   := -lraikv
 
 $(bind)/test_rtht: $(test_rtht_objs) $(test_rtht_libs)
+all_exes        += $(bind)/test_rtht
+all_depends     += $(test_rtht_deps)
 
-test_cr_objs = $(objd)/test_cr.o
-test_cr_deps = $(dependd)/test_cr.d
-test_cr_libs = $(libd)/libraikv.so
-test_cr_lnk  = -lraikv
+test_cr_files := test_cr
+test_cr_cfile := $(addprefix test/, $(addsuffix .cpp, $(test_cr_files)))
+test_cr_objs  := $(addprefix $(objd)/, $(addsuffix .o, $(test_cr_files)))
+test_cr_deps  := $(addprefix $(dependd)/, $(addsuffix .d, $(test_cr_files)))
+test_cr_libs  := $(libd)/libraikv.so
+test_cr_lnk   := -lraikv
 
 $(bind)/test_cr: $(test_cr_objs) $(test_cr_libs)
+all_exes      += $(bind)/test_cr
+all_depends   += $(test_cr_deps)
 
-test_delta_objs = $(objd)/test_delta.o
-test_delta_deps = $(dependd)/test_delta.d
-test_delta_libs = $(libd)/libraikv.so
-test_delta_lnk  = -lraikv
+test_delta_files := test_delta
+test_delta_cfile := $(addprefix test/, $(addsuffix .cpp, $(test_delta_files)))
+test_delta_objs  := $(addprefix $(objd)/, $(addsuffix .o, $(test_delta_files)))
+test_delta_deps  := $(addprefix $(dependd)/, $(addsuffix .d, $(test_delta_files)))
+test_delta_libs  := $(libd)/libraikv.so
+test_delta_lnk   := -lraikv
 
 $(bind)/test_delta: $(test_delta_objs) $(test_delta_libs)
+all_exes         += $(bind)/test_delta
+all_depends      += $(test_delta_deps)
 
-test_routes_objs = $(objd)/test_routes.o 
-test_routes_deps = $(dependd)/test_routes.d
-test_routes_libs = $(libd)/libraikv.so
-test_routes_lnk  = -lraikv
+test_routes_files := test_routes
+test_routes_cfile := $(addprefix test/, $(addsuffix .cpp, $(test_routes_files)))
+test_routes_objs  := $(addprefix $(objd)/, $(addsuffix .o, $(test_routes_files)))
+test_routes_deps  := $(addprefix $(dependd)/, $(addsuffix .d, $(test_routes_files)))
+test_routes_libs  := $(libd)/libraikv.so
+test_routes_lnk   := -lraikv
 
 $(bind)/test_routes: $(test_routes_objs) $(test_routes_libs)
+all_exes          += $(bind)/test_routes
+all_depends       += $(test_routes_deps)
 
-test_wild_objs  := $(objd)/test_wild.o 
-test_wild_deps  := $(dependd)/test_wild.d
+test_wild_files := test_wild
+test_wild_cfile := $(addprefix test/, $(addsuffix .cpp, $(test_wild_files)))
+test_wild_objs  := $(addprefix $(objd)/, $(addsuffix .o, $(test_wild_files)))
+test_wild_deps  := $(addprefix $(dependd)/, $(addsuffix .d, $(test_wild_files)))
 test_wild_libs  := $(libd)/libraikv.so
 test_wild_lnk   := -lraikv -lpcre2-8
 
 $(bind)/test_wild: $(test_wild_objs) $(test_wild_libs)
+all_exes        += $(bind)/test_wild
+all_depends     += $(test_wild_deps)
 
-test_uintht_objs = $(objd)/test_uintht.o
-test_uintht_deps = $(dependd)/test_uintht.d
-test_uintht_libs = $(libd)/libraikv.so
-test_uintht_lnk  = -lraikv
+test_uintht_files := test_uintht
+test_uintht_cfile := $(addprefix test/, $(addsuffix .cpp, $(test_uintht_files)))
+test_uintht_objs  := $(addprefix $(objd)/, $(addsuffix .o, $(test_uintht_files)))
+test_uintht_deps  := $(addprefix $(dependd)/, $(addsuffix .d, $(test_uintht_files)))
+test_uintht_libs  := $(libd)/libraikv.so
+test_uintht_lnk   := -lraikv
 
 $(bind)/test_uintht: $(test_uintht_objs) $(test_uintht_libs)
+all_exes          += $(bind)/test_uintht
+all_depends       += $(test_uintht_deps)
 
-test_bitset_objs = $(objd)/test_bitset.o
-test_bitset_deps = $(dependd)/test_bitset.d
-test_bitset_libs = $(libd)/libraikv.so
-test_bitset_lnk  = -lraikv
+test_bitset_files := test_bitset
+test_bitset_cfile := $(addprefix test/, $(addsuffix .cpp, $(test_bitset_files)))
+test_bitset_objs  := $(addprefix $(objd)/, $(addsuffix .o, $(test_bitset_files)))
+test_bitset_deps  := $(addprefix $(dependd)/, $(addsuffix .d, $(test_bitset_files)))
+test_bitset_libs  := $(libd)/libraikv.so
+test_bitset_lnk   := -lraikv
 
 $(bind)/test_bitset: $(test_bitset_objs) $(test_bitset_libs)
+all_exes          += $(bind)/test_bitset
+all_depends       += $(test_bitset_deps)
 
-test_list_objs = $(objd)/test_list.o
-test_list_deps = $(dependd)/test_list.d
-test_list_libs = $(libd)/libraikv.so
-test_list_lnk  = -lraikv
+test_list_files := test_list
+test_list_cfile := $(addprefix test/, $(addsuffix .cpp, $(test_list_files)))
+test_list_objs  := $(addprefix $(objd)/, $(addsuffix .o, $(test_list_files)))
+test_list_deps  := $(addprefix $(dependd)/, $(addsuffix .d, $(test_list_files)))
+test_list_libs  := $(libd)/libraikv.so
+test_list_lnk   := -lraikv
 
 $(bind)/test_list: $(test_list_objs) $(test_list_libs)
+all_exes        += $(bind)/test_list
+all_depends     += $(test_list_deps)
 
-test_bloom_objs = $(objd)/test_bloom.o
-test_bloom_deps = $(dependd)/test_bloom.d
-test_bloom_libs = $(libd)/libraikv.so
-test_bloom_lnk  = -lraikv
+test_bloom_files := test_bloom
+test_bloom_cfile := $(addprefix test/, $(addsuffix .cpp, $(test_bloom_files)))
+test_bloom_objs  := $(addprefix $(objd)/, $(addsuffix .o, $(test_bloom_files)))
+test_bloom_deps  := $(addprefix $(dependd)/, $(addsuffix .d, $(test_bloom_files)))
+test_bloom_libs  := $(libd)/libraikv.so
+test_bloom_lnk   := -lraikv
 
 $(bind)/test_bloom: $(test_bloom_objs) $(test_bloom_libs)
+all_exes         += $(bind)/test_bloom
+all_depends      += $(test_bloom_deps)
 
-test_coll_objs = $(objd)/test_coll.o
-test_coll_deps = $(dependd)/test_coll.d
-test_coll_libs = $(libd)/libraikv.so
-test_coll_lnk  = -lraikv
+test_coll_files := test_coll
+test_coll_cfile := $(addprefix test/, $(addsuffix .cpp, $(test_coll_files)))
+test_coll_objs  := $(addprefix $(objd)/, $(addsuffix .o, $(test_coll_files)))
+test_coll_deps  := $(addprefix $(dependd)/, $(addsuffix .d, $(test_coll_files)))
+test_coll_libs  := $(libd)/libraikv.so
+test_coll_lnk   := -lraikv
 
 $(bind)/test_coll: $(test_coll_objs) $(test_coll_libs)
+all_exes        += $(bind)/test_coll
+all_depends     += $(test_coll_deps)
 
-test_min_objs = $(objd)/test_min.o
-test_min_deps = $(dependd)/test_min.d
-test_min_libs = $(libd)/libraikv.so
-test_min_lnk  = -lraikv
+test_min_files := test_min
+test_min_cfile := $(addprefix test/, $(addsuffix .cpp, $(test_min_files)))
+test_min_objs  := $(addprefix $(objd)/, $(addsuffix .o, $(test_min_files)))
+test_min_deps  := $(addprefix $(dependd)/, $(addsuffix .d, $(test_min_files)))
+test_min_libs  := $(libd)/libraikv.so
+test_min_lnk   := -lraikv
 
 $(bind)/test_min: $(test_min_objs) $(test_min_libs)
+all_exes       += $(bind)/test_min
+all_depends    += $(test_min_deps)
 
-all_exes    += $(bind)/kv_test $(bind)/hash_test $(bind)/ping \
-               $(bind)/kv_cli $(bind)/mcs_test $(bind)/kv_server \
-	       $(bind)/load $(bind)/rela_test $(bind)/ctest \
-	       $(bind)/pq_test $(bind)/pubsub $(bind)/pipe_test \
-	       $(bind)/zipf_test $(bind)/test_rtht $(bind)/test_cr \
-	       $(bind)/test_delta $(bind)/test_routes $(bind)/test_wild \
-	       $(bind)/test_uintht $(bind)/test_bitset $(bind)/test_list \
-	       $(bind)/test_bloom $(bind)/test_coll $(bind)/test_min
-all_depends += $(kv_test_deps) $(hash_test_deps) $(ping_deps) \
-               $(kv_cli_deps) $(mcs_test_deps) $(kv_server_deps) \
-	       $(load_deps) $(rela_test_deps) $(ctest_deps) \
-	       $(pq_test_deps) $(pubsub_deps) $(pipe_test_deps) \
-	       $(zipf_test_dpes) $(test_rtht_deps) $(test_cr_deps) \
-	       $(test_delta_deps) $(test_routes_deps) $(test_wild_deps) \
-	       $(test_uintht_deps) $(test_bitset_deps) $(test_list_deps) \
-	       $(test_bloom_deps) $(test_coll_deps) $(test_min_deps)
+test_timer_files := test_timer
+test_timer_cfile := $(addprefix test/, $(addsuffix .cpp, $(test_timer_files)))
+test_timer_objs  := $(addprefix $(objd)/, $(addsuffix .o, $(test_timer_files)))
+test_timer_deps  := $(addprefix $(dependd)/, $(addsuffix .d, $(test_timer_files)))
+test_timer_libs  := $(libd)/libraikv.so
+test_timer_lnk   := -lraikv
+
+$(bind)/test_timer: $(test_timer_objs) $(test_timer_libs)
+all_exes         += $(bind)/test_timer
+all_depends      += $(test_timer_deps)
+
+all_dirs := $(bind) $(libd) $(objd) $(dependd)
+
+test_tcp_files := test_tcp
+test_tcp_cfile := $(addprefix test/, $(addsuffix .cpp, $(test_tcp_files)))
+test_tcp_objs  := $(addprefix $(objd)/, $(addsuffix .o, $(test_tcp_files)))
+test_tcp_deps  := $(addprefix $(dependd)/, $(addsuffix .d, $(test_tcp_files)))
+test_tcp_libs  := $(libd)/libraikv.so
+test_tcp_lnk   := -lraikv
+
+$(bind)/test_tcp: $(test_tcp_objs) $(test_tcp_libs)
+all_exes         += $(bind)/test_tcp
+all_depends      += $(test_tcp_deps)
+
+test_udp_files := test_udp
+test_udp_cfile := $(addprefix test/, $(addsuffix .cpp, $(test_udp_files)))
+test_udp_objs  := $(addprefix $(objd)/, $(addsuffix .o, $(test_udp_files)))
+test_udp_deps  := $(addprefix $(dependd)/, $(addsuffix .d, $(test_udp_files)))
+test_udp_libs  := $(libd)/libraikv.so
+test_udp_lnk   := -lraikv
+
+$(bind)/test_udp: $(test_udp_objs) $(test_udp_libs)
+all_exes         += $(bind)/test_udp
+all_depends      += $(test_udp_deps)
+
+test_log_files := test_log
+test_log_cfile := $(addprefix test/, $(addsuffix .cpp, $(test_log_files)))
+test_log_objs  := $(addprefix $(objd)/, $(addsuffix .o, $(test_log_files)))
+test_log_deps  := $(addprefix $(dependd)/, $(addsuffix .d, $(test_log_files)))
+test_log_libs  := $(libd)/libraikv.so
+test_log_lnk   := -lraikv
+
+$(bind)/test_log: $(test_log_objs) $(test_log_libs)
+all_exes         += $(bind)/test_log
+all_depends      += $(test_log_deps)
 
 all_dirs := $(bind) $(libd) $(objd) $(dependd)
 
@@ -306,7 +436,77 @@ endif
 
 # the default targets
 .PHONY: all
-all: $(all_libs) $(all_dlls) $(all_exes) $(all_doc)
+all: $(all_libs) $(all_dlls) $(all_exes) $(all_doc) cmake
+
+.PHONY: cmake
+cmake: CMakeLists.txt
+
+.ONESHELL: CMakeLists.txt
+CMakeLists.txt: .copr/Makefile
+	@cat <<'EOF' > $@
+	cmake_minimum_required (VERSION 3.9.0)
+	if (POLICY CMP0111)
+	  cmake_policy(SET CMP0111 OLD)
+	endif ()
+	project (raikv)
+	set (CMAKE_VERBOSE_MAKEFILE ON)
+	if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
+	  include_directories (include pcre2/build)
+	  add_definitions(/DPCRE2_STATIC)
+	  if ($$<CONFIG:Release>)
+	    add_compile_options (/arch:AVX2 /GL /std:c11)
+	  else ()
+	    add_compile_options (/arch:AVX2 /std:c11)
+	  endif ()
+	  set (kv_sources $(libraikv_cfile) $(libraikv_wfile))
+	else ()
+	  include_directories (include)
+	  set (kv_sources $(libraikv_cfile))
+	  add_compile_options ($(cflags))
+	endif ()
+	add_library (raikv STATIC $${kv_sources})
+	if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
+	  link_libraries (raikv ws2_32)
+	else ()
+	  link_libraries (raikv -lpthread -lrt)
+	endif ()
+	add_definitions(-DKV_VER=$(ver_build))
+	add_executable (kv_test $(kv_test_cfile))
+	add_executable (hash_test $(hash_test_cfile))
+	add_executable (ping $(ping_cfile))
+	add_executable (kv_cli $(kv_cli_cfile))
+	add_executable (mcs_test $(mcs_test_cfile))
+	add_executable (kv_server $(kv_server_cfile))
+	add_executable (load $(load_cfile))
+	add_executable (ctest $(ctest_cfile))
+	add_executable (rela_test $(rela_test_cfile))
+	add_executable (pq_test $(pq_test_cfile))
+	add_executable (pubsub $(pubsub_cfile))
+	add_executable (zipf_test $(zipf_test_cfile))
+	add_executable (test_rtht $(test_rtht_cfile))
+	add_executable (test_cr $(test_cr_cfile))
+	add_executable (test_delta $(test_delta_cfile))
+	add_executable (test_routes $(test_routes_cfile))
+	add_executable (test_wild $(test_wild_cfile))
+	if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
+	  add_library(pcre2-8 STATIC IMPORTED)
+	  set_property(TARGET pcre2-8 PROPERTY IMPORTED_LOCATION_DEBUG ../pcre2/build/Debug/pcre2-8-staticd.lib)
+	  set_property(TARGET pcre2-8 PROPERTY IMPORTED_LOCATION_RELEASE ../pcre2/build/Release/pcre2-8-static.lib)
+	  target_link_libraries (test_wild pcre2-8)
+	else ()
+	  target_link_libraries (test_wild -lpcre2-8)
+	endif ()
+	add_executable (test_uintht $(test_uintht_cfile))
+	add_executable (test_bitset $(test_bitset_cfile))
+	add_executable (test_list $(test_list_cfile))
+	add_executable (test_bloom $(test_bloom_cfile))
+	add_executable (test_coll $(test_coll_cfile))
+	add_executable (test_min $(test_min_cfile))
+	add_executable (test_timer $(test_timer_cfile))
+	add_executable (test_tcp $(test_tcp_cfile))
+	add_executable (test_udp $(test_udp_cfile))
+	add_executable (test_log $(test_log_cfile))
+	EOF
 
 # create directories
 $(dependd):

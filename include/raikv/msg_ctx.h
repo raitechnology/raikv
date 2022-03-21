@@ -369,10 +369,10 @@ struct MsgCtx {
                             size_t j,  size_t cnt,  const uint32_t algn_shft ) {
     for ( size_t k = 0; k < cnt; k++ ) {
       ValueGeom geom;
-      from->get_next( i++, geom, algn_shft );
+      from->get_next( (uint8_t) i++, geom, algn_shft );
       if ( geom.size == 0 )
         break;
-      to->set_next( j++, geom, algn_shft );
+      to->set_next( (uint8_t) j++, geom, algn_shft );
     }
     return j;
   }

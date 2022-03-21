@@ -7,6 +7,11 @@
 /*#define EV_NET_DBG*/
 #include <raikv/ev_dbg.h>
 
+extern "C" {
+struct epoll_event;
+struct mmsghdr;
+}
+
 namespace rai {
 namespace kv {
 
@@ -41,7 +46,7 @@ enum EvSockOpts {
   OPT_TCP_NODELAY = 4,  /* set TCP_NODELAY true */
   OPT_AF_INET     = 8,  /* use ip4 stack */
   OPT_AF_INET6    = 16, /* use ip6 stack */
-  OPT_KEEPALIVE   = 32, /* set kSO_KEEPALIVE true */
+  OPT_KEEPALIVE   = 32, /* set SO_KEEPALIVE true */
   OPT_LINGER      = 64, /* set SO_LINGER true, 10 secs */
   OPT_READ_HI     = 128,/* set EV_READ_HI when read event occurs on poll */
   OPT_NO_POLL     = 256,/* do not add fd to poll */
@@ -66,7 +71,8 @@ enum EvSockFlags {
   IN_EVENT_QUEUE = 4, /* in event queue for dispatch of an event */
   IN_WRITE_QUEUE = 8, /* in write queue, stuck in epoll for write */
   IN_EPOLL_READ  = 16,/* in epoll set waiting for read (normal) */
-  IN_EPOLL_WRITE = 32 /* in epoll set waiting for write (if blocked) */
+  IN_EPOLL_WRITE = 32,/* in epoll set waiting for write (if blocked) */
+  IN_SOCK_MEM    = 64 /* alloced from sock mem */
 };
 
 enum EvSockErr {
@@ -87,6 +93,7 @@ enum EvSockErr {
   EV_ERR_SOCKET        = 14, /* failed to create socket */
   EV_ERR_LAST          = 15 /* extend errors after LAST */
 };
+bool ev_would_block( int err ) noexcept;
 
 enum EvSubState {
   EV_SUBSCRIBED     = 1,
@@ -141,6 +148,9 @@ struct EvSocket : public PeerData /* fd and address of peer */EV_DBG_INHERIT {
   bool in_list( EvSockFlags l ) const {
     return this->test_flags( l, IN_ACTIVE_LIST | IN_FREE_LIST );
   }
+  bool in_sock_mem( void ) const {
+    return ( this->sock_flags & IN_SOCK_MEM ) != 0;
+  }
   void set_list( EvSockFlags l ) {
     this->sock_flags &= ~( IN_ACTIVE_LIST | IN_FREE_LIST );
     this->sock_flags |= l;
@@ -166,7 +176,7 @@ struct EvSocket : public PeerData /* fd and address of peer */EV_DBG_INHERIT {
 
   /* priority queue states */
   EvState get_dispatch_state( void ) const {
-    return (EvState) ( __builtin_ffs( this->sock_state ) - 1 );
+    return (EvState) ( kv_ffsw( this->sock_state ) - 1 );
   }
   /* priority queue test, ordered by first bit set (EV_WRITE > EV_READ).
    * a sock with EV_READ bit set will have a higher priority than one with
@@ -244,8 +254,8 @@ struct EvSocket : public PeerData /* fd and address of peer */EV_DBG_INHERIT {
 
 struct EvPoll {
   static bool is_event_greater( EvSocket *s1,  EvSocket *s2 ) {
-    int x1 = __builtin_ffs( s1->sock_state ),
-        x2 = __builtin_ffs( s2->sock_state );
+    int x1 = kv_ffsw( s1->sock_state ),
+        x2 = kv_ffsw( s2->sock_state );
     /* prio_cnt is incremented forever, it makes queue fair */
     return x1 > x2 || ( x1 == x2 && s1->prio_cnt > s2->prio_cnt );
   }
@@ -289,6 +299,7 @@ struct EvPoll {
   RedisKeyspaceNotify * keyspace;        /* update sub_route.key_flags */
   uint64_t              prio_tick,       /* priority queue ticker */
                         wr_timeout_ns,   /* timeout writes in EV_WRITE_POLL */
+                        conn_timeout_ns, /* timeout writes in EV_WRITE_POLL */
                         so_keepalive_ns, /* keep alive ping timeout */
                         next_id,         /* unique id for connection */
                         now_ns,          /* updated by current_coarse_ns() */
@@ -316,63 +327,45 @@ struct EvPoll {
   kv::DLinkList<EvSocket> active_list;    /* active socks in poll */
   kv::DLinkList<EvSocket> free_list[ 256 ];     /* socks for accept */
   const char            * sock_type_str[ 256 ]; /* name of sock_type */
+  void                  * sock_mem;
+  size_t                  sock_mem_left;
 
   void * operator new( size_t, void *ptr ) { return ptr; }
   void operator delete( void *ptr ) { ::free( ptr ); }
   /* 16 seconds */
-  static const uint64_t DEFAULT_NS_TIMEOUT = (uint64_t) 16 * 1000 * 1000 * 1000;
+  static const uint64_t DEFAULT_NS_TIMEOUT = (uint64_t) 16 * 1000 * 1000 * 1000,
+                        DEFAULT_NS_CONNECT_TIMEOUT =  1000 * 1000 * 1000;
 
   EvPoll()
     : sock( 0 ), ev( 0 ), map( 0 ), prefetch_queue( 0 ),
       pubsub( 0 ), keyspace( 0 ), prio_tick( 0 ),
       wr_timeout_ns( DEFAULT_NS_TIMEOUT ),
+      conn_timeout_ns( DEFAULT_NS_CONNECT_TIMEOUT ),
       so_keepalive_ns( DEFAULT_NS_TIMEOUT ),
       next_id( 0 ), now_ns( 0 ), init_ns( 0 ), ctx_id( kv::MAX_CTX_ID ),
       dbx_id( kv::MAX_STAT_ID ), fdcnt( 0 ), wr_count( 0 ), maxfd( 0 ),
       nfds( 0 ), efd( -1 ), null_fd( -1 ), quit( 0 ), prefetch_pending( 0 ),
-      sub_route( *this ) /*, single_thread( false )*/ {
+      sub_route( *this ), sock_mem( 0 ), sock_mem_left( 0 ) {
     ::memset( this->sock_type_str, 0, sizeof( this->sock_type_str ) );
   }
   /*bool single_thread; (if kv single threaded) */
   /* alloc ALLOC_INCR(64) elems of the above list elems at a time, aligned 64 */
-  template<class T>
-  T *get_free_list( const uint8_t sock_type ) {
+  template<class T, class... Ts>
+  T *get_free_list( const uint8_t sock_type,  Ts... args ) {
     T *c = (T *) this->free_list[ sock_type ].hd;
-    if ( c == NULL ) {
-      size_t sz  = kv::align<size_t>( sizeof( T ), 64 );
-      void * m   = aligned_malloc( sz * EvPoll::ALLOC_INCR );
-      char * end = &((char *) m)[ sz * EvPoll::ALLOC_INCR ];
-      if ( m == NULL )
-        return NULL;
-      while ( (char *) m < end ) {
-        end = &end[ -sz ];
-        c = new ( end ) T( *this, sock_type );
-        this->push_free_list( c );
-      }
-    }
-    this->pop_free_list( c );
+    if ( c != NULL )
+      this->pop_free_list( c );
+    void * p = ( c == NULL ? this->alloc_sock( sizeof( T ) ) : (void *) c );
+    if ( p == NULL ) return NULL;
+    c = new ( p ) T( *this, sock_type, args... );
+    c->sock_flags |= IN_SOCK_MEM;
     return c;
   }
-  template<class T, class S>
-  T *get_free_list2( const uint8_t sock_type,  S &stats ) {
-    T *c = (T *) this->free_list[ sock_type ].hd;
-    if ( c == NULL ) {
-      size_t sz  = kv::align<size_t>( sizeof( T ), 64 );
-      void * m   = aligned_malloc( sz * EvPoll::ALLOC_INCR );
-      char * end = &((char *) m)[ sz * EvPoll::ALLOC_INCR ];
-      if ( m == NULL )
-        return NULL;
-      while ( (char *) m < end ) {
-        end = &end[ -sz ];
-        c = new ( end ) T( *this, sock_type, stats );
-        this->push_free_list( c );
-      }
-    }
-    this->pop_free_list( c );
-    return c;
-  }
+  void *alloc_sock( size_t sz ) noexcept;
+
   void push_free_list( EvSocket *s ) {
-    if ( ! s->in_list( IN_FREE_LIST ) ) {
+    if ( s->sock_type != 0 && ! s->in_list( IN_FREE_LIST ) &&
+         s->in_sock_mem() ) {
       s->set_list( IN_FREE_LIST );
       this->free_list[ s->sock_type ].push_hd( s );
     }
@@ -442,6 +435,7 @@ struct EvListen : public EvSocket {
   virtual int client_list( char *buf,  size_t buflen ) noexcept;
   virtual bool match( PeerMatchArgs &ka ) noexcept;
   virtual void client_stats( PeerStats &ps ) noexcept;
+  virtual void reset_read_poll( void ) noexcept;
 };
 
 struct EvConnection : public EvSocket, public StreamBuf {
@@ -453,8 +447,11 @@ struct EvConnection : public EvSocket, public StreamBuf {
            recv_highwater, /* recv_highwater: switch to low priority read */
            send_highwater; /* send_highwater: switch to high priority write */
   EvConnectionNotify * notify;
+#ifndef _MSC_VER
   char     recv_buf[ RCV_BUFSIZE ] __attribute__((__aligned__( 64 )));
-
+#else
+  __declspec(align(64)) char recv_buf[ RCV_BUFSIZE ];
+#endif
   EvConnection( EvPoll &p, const uint8_t t, EvConnectionNotify *n = NULL )
       : EvSocket( p, t, EV_CONNECTION_BASE ) {
     this->off    = 0;
@@ -532,9 +529,9 @@ struct EvUdp : public EvSocket, public StreamBuf {
     this->out_nmsgs = this->in_size = 0;
   }
   bool alloc_mmsg( void ) noexcept;
-  ssize_t discard_pkt( void ) noexcept;
-  int listen( const char *ip,  int port,  int opts,  const char *k ) noexcept;
-  int connect( const char *ip,  int port,  int opts ) noexcept;
+  int discard_pkt( void ) noexcept;
+  int listen2( const char *ip,  int port,  int opts,  const char *k ) noexcept;
+  int connect( const char *ip,  int port,  int opts,  const char *k ) noexcept;
 
   void release_buffers( void ) { /* release all buffs */
     this->clear_buffers();

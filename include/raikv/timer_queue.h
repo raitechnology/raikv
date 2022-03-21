@@ -1,6 +1,9 @@
 #ifndef __rai_raikv__timer_queue_h__
 #define __rai_raikv__timer_queue_h__
 
+#ifndef _MSC_VER
+#define HAVE_TIMERFD
+#endif
 #include <raikv/ev_net.h>
 
 namespace rai {
@@ -62,14 +65,36 @@ struct EvTimerQueue : public EvSocket {
                      uint64_t event_id ) noexcept;
   void repost( void ) noexcept;
   bool set_timer( void ) noexcept;
-
-  uint64_t busy_delta( uint64_t curr_ns ) {
+#ifndef HAVE_TIMERFD
+  /* limit how long to set poll timer, only necessary when no timerfd */
+  bool is_timer_ready( uint64_t &us ) {
     if ( this->delta > 0 ) {
+      uint64_t expires_ns = this->delta + this->epoch,
+               curr_ns    = current_monotonic_time_ns(),
+               us_left;
+      if ( curr_ns >= expires_ns ) {
+        us = 0;
+        return true;
+      }
+      if ( us != 0 ) {
+        us_left = ( expires_ns - curr_ns ) / 1000;
+        if ( us < 0 || us_left < (uint64_t) us ) {
+          if ( (us = (int) us_left) == 0 )
+            us = 1;
+        }
+      }
+    }
+    return false;
+  }
+#endif
+  /* limit how long to dispatch poll events */
+  uint64_t busy_delta( uint64_t curr_ns ) {
+    if ( this->sock_state == 0 && this->delta > 0 ) {
       uint64_t d = this->delta, sav = curr_ns;
       curr_ns -= this->real;
       /* coarse real time expires, adjust monotonic time */
       if ( d <= curr_ns ) {
-        uint64_t mon_ns = kv::current_monotonic_time_ns();
+        uint64_t mon_ns = current_monotonic_time_ns();
         if ( mon_ns >= this->epoch + d )
           return 0;
         this->real -= ( this->epoch + d ) - mon_ns;
@@ -81,10 +106,9 @@ struct EvTimerQueue : public EvSocket {
     }
     return MAX_DELTA;
   }
-
-  virtual void write( void ) noexcept final;
-  virtual void read( void ) noexcept final;
-  virtual void process( void ) noexcept final;
+  virtual void write( void ) noexcept final;   /* no write method */
+  virtual void read( void ) noexcept final;    /* read empties timerfd */
+  virtual void process( void ) noexcept final; /* execute timer callbacks */
   virtual void release( void ) noexcept final;
 };
 

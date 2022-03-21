@@ -1,5 +1,7 @@
 #include <stdio.h>
 #include <stdint.h>
+#define __STDC_FORMAT_MACROS
+#include <inttypes.h>
 #include <string.h>
 #include <stdlib.h>
 #include <raikv/bit_set.h>
@@ -94,14 +96,14 @@ main( void )
     }
     for ( size_t i = 0; i < 100000; i++ ) {
       if ( ival.get( i ) != ( i % mask ) ) {
-        printf( "bits %u offset %lu not correct: %lu\n", b, i,
+        printf( "bits %u offset %" PRIu64 " not correct: %" PRIu64 "\n", b, i,
                 ival.get( i ) );
         fail = 1;
       }
     }
     /*printf( "bits: %u\n", b );
     for ( size_t i = 0; i < 100; i++ ) {
-      printf( "index = %lu, size = %lu\n", i, ival.index_word_size( i + 1 ) );
+      printf( "index = %" PRIu64 ", size = %" PRIu64 "\n", i, ival.index_word_size( i + 1 ) );
     }*/
   }
   uint64_t n[ 2 ] = { 0, 0 };

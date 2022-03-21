@@ -2,6 +2,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#define __STDC_FORMAT_MACROS
+#include <inttypes.h>
 #include <raikv/route_db.h>
 #include <raikv/util.h>
 #include <raikv/bit_set.h>
@@ -15,7 +17,7 @@ void print_routedb( RouteDB &rte )
   for ( size_t k = 0; k <= MAX_PRE; k++ ) {
     UIntHashTab * xht = rte.rt_hash[ k ];
     if ( xht->elem_count > 0 ) {
-      printf( "rt[%lu] %lu/%lu :\n", k, xht->elem_count, xht->tab_size() );
+      printf( "rt[%" PRIu64 "] %" PRIu64 "/%" PRIu64 " :\n", k, xht->elem_count, xht->tab_size() );
       if ( xht->first( i ) ) {
         do {
           RouteRef ref( rte, rte.zip.route_spc[ 0 ] );
@@ -23,7 +25,7 @@ void print_routedb( RouteDB &rte )
                    v = xht->tab[ i ].val,
                    cnt;
           cnt = ref.decompress( v, 0 );
-          printf( "[%lu][%x] %x(%s) ", i, h, v,
+          printf( "[%" PRIu64 "][%x] %x(%s) ", i, h, v,
                   DeltaCoder::is_not_encoded( v )?"str":"enc");
           printf( "[ " );
           for ( uint32_t j = 0; j < cnt; j++ )
@@ -39,7 +41,7 @@ void print_routedb( RouteDB &rte )
       uint32_t  h = rte.zip.zht->tab[ i ].hash,
                 v = rte.zip.zht->tab[ i ].val;
       CodeRef * p = (CodeRef *) (void *) &rte.zip.code_buf.ptr[ v ];
-      printf( "[%lu][%x] hash:%x off:%u ref:%u ecnt:%u rcnt:%u\n", i, h,
+      printf( "[%" PRIu64 "][%x] hash:%x off:%u ref:%u ecnt:%u rcnt:%u\n", i, h,
               p->hash, v, p->ref, p->ecnt, p->rcnt );
     } while ( rte.zip.zht->next( i ) );
   }
@@ -57,19 +59,19 @@ void print_routedb( RouteDB &rte )
         printf( "!! codec not equal!!\n" );
       delete bits;
     }
-    printf( "b[%u] %lu/%lu,cnt=%lu,resz=%lu,code=%u\n",
+    printf( "b[%u] %" PRIu64 "/%" PRIu64 ",cnt=%" PRIu64 ",resz=%" PRIu64 ",code=%u\n",
             b->r, b->bloom[ 0 ]->bits->pop_count(),
             b->bloom[ 0 ]->bits->width * 8,
             b->bloom[ 0 ]->bits->count,
             b->bloom[ 0 ]->bits->resize_count, c.code_sz * 4 );
   }
-  printf( "code_end %lu, code_size %lu, code_free %lu\n",
+  printf( "code_end %" PRIu64 ", code_size %" PRIu64 ", code_free %" PRIu64 "\n",
           rte.zip.code_end, rte.zip.code_buf.size, rte.zip.code_free );
-  printf( "code_spc_size %lu, route_ref_size %lu\n",
+  printf( "code_spc_size %" PRIu64 ", route_ref_size %" PRIu64 "\n",
           rte.zip.zroute_spc.size, rte.zip.route_spc[ 64 ].size );
-  printf( "zht %lu/%lu\n", rte.zip.zht->elem_count, rte.zip.zht->tab_size() );
-  printf( "cache_elems %u cache_free %u\n", rte.cache.end, rte.cache.free );
-  printf( "entry_count %u cache_count %u\n", rte.entry_count, rte.cache.count);
+  printf( "zht %" PRIu64 "/%" PRIu64 "\n", rte.zip.zht->elem_count, rte.zip.zht->tab_size() );
+  printf( "cache_elems %" PRIu64 " cache_free %" PRIu64 "\n", rte.cache.end, rte.cache.free );
+  printf( "entry_count %" PRIu64 " cache_count %" PRIu64 "\n", rte.entry_count, rte.cache.count);
 }
 
 int
@@ -90,7 +92,7 @@ split_args( char *start,  char *end,  char **args,  size_t *len,
     if ( ++p == end || *p <= ' ' ) {
       len[ n ] = p - args[ n ];
       if ( ++n == maxargs )
-        return n;
+        return (int) n;
       while ( p < end && *p <= ' ' )
         p++;
       if ( p == end )
@@ -98,7 +100,7 @@ split_args( char *start,  char *end,  char **args,  size_t *len,
       args[ n ] = p;
     }
   }
-  return n;
+  return (int) n;
 }
 
 bool
@@ -289,7 +291,7 @@ TestDB::generate_routes( size_t count ) noexcept
     uint32_t j   = val % SUB;
     val >>= 16;
     val  %= RTE;
-    if ( ! this->rdb[ j ].test_set( val ) )
+    if ( ! this->rdb[ j ].test_set( (uint32_t) val ) )
       this->cnt[ j ]++;
   }
 }
@@ -365,10 +367,10 @@ TestDB::remove_random( size_t count ) noexcept
     val >>= 16;
     h     = hash_int( j + 1 );
     val  %= RTE;
-    k     = rte.del_sub_route( h, val );
+    k     = rte.del_sub_route( h, (uint32_t) val );
     if ( k != this->cnt[ j ] ) {
       this->sub_count--;
-      if ( ! this->rdb[ j ].test_clear( val ) )
+      if ( ! this->rdb[ j ].test_clear( (uint32_t) val ) )
         printf( "mismatch %u, k %u != cnt %u\n", i, k, this->cnt[ j ] );
       else
         this->cnt[ j ]--;

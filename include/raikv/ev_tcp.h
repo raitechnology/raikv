@@ -10,9 +10,10 @@ struct EvTcpListen : public EvListen {
   EvTcpListen( EvPoll &p,  const char *lname,  const char *name )
     : EvListen( p, lname, name ) {}
   virtual int listen( const char *ip,  int port,  int opts ) noexcept;
-  int listen( const char *ip,  int port,  int opts,  const char *k ) noexcept;
+  virtual int listen2( const char *ip,  int port,  int opts,
+                       const char *k ) noexcept;
   virtual bool accept( void ) noexcept { return false; }
-  static void set_sock_opts( EvPoll &p,  int sock,  int opts );
+  virtual bool accept2( EvConnection &c,  const char *k ) noexcept;
 };
 
 namespace EvTcpConnection {

@@ -1,8 +1,9 @@
 #include <stdio.h>
+#define __STDC_FORMAT_MACROS
 #include <stdint.h>
+#include <inttypes.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
 
 #include <raikv/shm_ht.h>
 #include <raikv/key_buf.h>
@@ -308,7 +309,7 @@ cmd_error:;
              k = base64_to_bin( buf, j, tmp2 );
       if ( i > KV_BASE64_BIN_SIZE( j ) ||
            i != k || ::memcmp( tmp, tmp2, i ) != 0 ) {
-        printf( "%lu (%lu geq %lu) -> %lu -> %lu (%lu %lu eq %d)\n",
+        printf( "%" PRIu64 " (%" PRIu64 " geq %" PRIu64 ") -> %" PRIu64 " -> %" PRIu64 " (%" PRIu64 " %" PRIu64 " eq %d)\n",
                 i, i, KV_BASE64_BIN_SIZE( j ), j,
                 k, i, k, ::memcmp( tmp, tmp2, i ) == 0 );
       }
@@ -401,7 +402,7 @@ cmd_error:;
     if ( x[ n+1 ] != w[ n+8+1 ] ) printf( "lrg same failed 3\n" );
   }
   for ( n = 0; n < 128; n++ )
-    buf[ n ] = n;
+    buf[ n ] = (char) n;
   for ( n = 0; n < 128; n++ ) {
     x[ 0 ] = 10101; x[ 1 ] = 20202;
     y[ 0 ] = 10101; y[ 1 ] = 20202;
@@ -411,7 +412,7 @@ cmd_error:;
     kv_hash_meow128_2_diff_length( &buf[ 0 ], n, &buf[ n ], 128 - n, d );
     if ( x[ 0 ] != d[ 0 ] || x[ 1 ] != d[ 1 ] ||
          y[ 0 ] != d[ 2 ] || y[ 1 ] != d[ 3 ] ) {
-      printf( "part2 diff %lu\n", n );
+      printf( "part2 diff %" PRIu64 "\n", n );
     }
   }
   for ( n = 0; n < 128; n++ ) {
@@ -434,14 +435,14 @@ cmd_error:;
              y[ 0 ] != d[ 2 ] || y[ 1 ] != d[ 3 ] ||
              z[ 0 ] != d[ 4 ] || z[ 1 ] != d[ 5 ] ||
              u[ 0 ] != d[ 6 ] || u[ 1 ] != d[ 7 ] ) {
-          printf( "part4 diff %lu %lu %lu\n", n, m, o );
+          printf( "part4 diff %" PRIu64 " %" PRIu64 " %" PRIu64 "\n", n, m, o );
         }
       }
     }
   }
 #endif
   printf( "hash=%s with keylen=%u\n", name, keylen );
-  printf( "timing iteration count = %lu\n\n", TEST_COUNT );
+  printf( "timing iteration count = %" PRIu64 "\n\n", TEST_COUNT );
 
   for ( keycount = 16; keycount <= 1024 * 1024; keycount *= 2 ) {
     KeyBufAligned * kb = KeyBufAligned::new_array( NULL, keycount );
@@ -451,7 +452,7 @@ cmd_error:;
     k = 0;
     for ( i = 0; i < keycount; i++ ) {
       kb[ i ].zero();
-      fill->nextKey( kb[ i ], keylen );
+      fill->nextKey( kb[ i ], (uint8_t) keylen );
       k += kb[ i ].kb.keylen;
     }
     if ( crc_hash ) {
@@ -753,13 +754,13 @@ cmd_error:;
       map[ x ]++;
     }
 
-    printf( "%lu keys, %.1f length, ", keycount,
+    printf( "%" PRIu64 " keys, %.1f length, ", keycount,
             (double) k / (double) keycount );
     printf( "hash = %.1fns %.1f/s\n", t2 / (double) TEST_COUNT * 1000000000.0,
             (double) TEST_COUNT / t2 );
     for ( j = 0; j < MAP_COUNT; j++ ) {
       if ( map[ j ] != 0 )
-        printf( "[%lu]: %.1f%% ", j,
+        printf( "[%" PRIu64 "]: %.1f%% ", j,
                 (double) map[ j ] * 100.0 / 
                 (double) ht_size );
     }

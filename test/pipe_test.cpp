@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdint.h>
+#include <inttypes.h>
 #include <string.h>
 #include <stdlib.h>
 
@@ -60,7 +61,7 @@ main( int argc, char ** )
       if ( i >= LOOP_CNT )
         x.t = (uint64_t) -1;
     }
-    printf( "i %ld avg %lu, min %lu, max %lu\n", i, sum / LOOP_CNT,
+    printf( "i %" PRId64 " avg %" PRIu64 ", min %" PRIu64 ", max %" PRIu64 "\n", i, sum / LOOP_CNT,
              min_val, max_val );
   }
   else {
@@ -72,7 +73,7 @@ main( int argc, char ** )
       if ( y.t == (uint64_t) -1 )
         break;
     }
-    printf( "i %ld\n", i );
+    printf( "i %" PRId64 "\n", i );
   }
   ping->close();
   pong->close();

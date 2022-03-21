@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#ifndef _MSC_VER
 #include <unistd.h>
 #include <fcntl.h>
 #include <errno.h>
@@ -9,14 +10,24 @@
 #include <sys/stat.h>
 #include <sys/socket.h>
 #include <sys/un.h>
+#endif
 #include <raikv/ev_unix.h>
 
 using namespace rai;
 using namespace kv;
 
 int
-EvUnixListen::listen( const char *path,  int opts,  const char *k ) noexcept
+EvUnixListen::listen( const char *path,  int opts ) noexcept
 {
+  return this->listen2( path, opts, "unix_listen" );
+}
+
+int
+EvUnixListen::listen2( const char *path,  int opts,  const char *k ) noexcept
+{
+#ifdef _MSC_VER
+  return -1;
+#else
   static int on = 1;
   struct sockaddr_un sunaddr;
   struct stat statbuf;
@@ -48,8 +59,8 @@ EvUnixListen::listen( const char *path,  int opts,  const char *k ) noexcept
       perror( "error: listen" );
     goto fail;
   }
-  this->PeerData::init_peer( sock, (struct sockaddr *) &sunaddr, k );
   ::fcntl( sock, F_SETFL, O_NONBLOCK | ::fcntl( sock, F_GETFL ) );
+  this->PeerData::init_peer( sock, (struct sockaddr *) &sunaddr, k );
   if ( (status = this->poll.add_sock( this )) < 0 )
     goto fail;
   return 0;
@@ -57,12 +68,44 @@ fail:;
   ::close( sock );
   this->fd = -1;
   return status;
+#endif
+}
+
+bool
+EvUnixListen::accept2( EvConnection &c,  const char *k ) noexcept
+{
+#ifndef _MSC_VER
+  struct sockaddr_un sunaddr;
+  socklen_t addrlen = sizeof( sunaddr );
+  int sock = ::accept( this->fd, (struct sockaddr *) &sunaddr, &addrlen );
+  if ( sock < 0 ) {
+    if ( errno != EINTR ) {
+      if ( errno != EAGAIN )
+        perror( "accept" );
+      this->pop3( EV_READ, EV_READ_LO, EV_READ_HI );
+    }
+    goto fail;
+  }
+  ::fcntl( sock, F_SETFL, O_NONBLOCK | ::fcntl( sock, F_GETFL ) );
+  this->PeerData::init_peer( sock, (struct sockaddr *) &sunaddr, k );
+  if ( this->poll.add_sock( &c ) < 0 ) {
+    ::close( sock );
+    goto fail;
+  }
+  return true;
+fail:;
+#endif
+  this->poll.push_free_list( &c );
+  return false;
 }
 
 int
 EvUnixConnection::connect( EvConnection &conn,  const char *path,
-                           int opts ) noexcept
+                           int opts,  const char *k ) noexcept
 {
+#ifdef _MSC_VER
+  return -1;
+#else
   struct sockaddr_un sunaddr;
   int sock, status = 0;
 
@@ -80,12 +123,13 @@ EvUnixConnection::connect( EvConnection &conn,  const char *path,
     goto fail;
   }
   ::fcntl( sock, F_SETFL, O_NONBLOCK | ::fcntl( sock, F_GETFL ) );
-  conn.PeerData::init_peer( sock, (struct sockaddr *) &sunaddr, "unix_client");
+  conn.PeerData::init_peer( sock, (struct sockaddr *) &sunaddr, k );
   if ( (status = conn.poll.add_sock( &conn )) < 0 ) {
   fail:;
     conn.fd = -1;
     ::close( sock );
   }
   return status;
+#endif
 }
 

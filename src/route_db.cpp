@@ -24,7 +24,7 @@ RoutePDB::get_service( const char *svc,  uint32_t num ) noexcept
     s[ len ] = '\0';
   }
   RouteLoc loc;
-  RouteService * rt = this->svc_db.upsert( h, s, len, loc );
+  RouteService * rt = this->svc_db.upsert( h, s, (uint16_t) len, loc );
   if ( loc.is_new ) {
     void * m = aligned_malloc( sizeof( RoutePublish ) );
     rt->sub_route = new ( m ) RoutePublish( this->poll, s );
@@ -110,9 +110,9 @@ RouteZip::reset( void ) noexcept
 }
 
 uint32_t *
-RouteZip::make_code_ref_space( uint32_t ecnt,  uint32_t &off ) noexcept
+RouteZip::make_code_ref_space( uint32_t ecnt,  size_t &off ) noexcept
 {
-  uint32_t i = CodeRef::alloc_words( ecnt );
+  size_t i = CodeRef::alloc_words( ecnt );
   this->code_buf.make( this->code_end + i );
   off = this->code_end;
   this->code_end += i;
@@ -123,12 +123,13 @@ uint32_t
 RouteZip::make_code_ref( uint32_t *code,  uint32_t ecnt,
                          uint32_t rcnt ) noexcept
 {
-  uint32_t seed, h, off;
-  size_t   pos;
+  uint32_t seed, h, x;
+  size_t   off, pos;
   for ( seed = 0; ; seed++ ) {
     h = CodeRef::hash_code( code, ecnt, seed );
-    if ( ! this->zht->find( h, pos, off ) )
+    if ( ! this->zht->find( h, pos, x ) )
       break;
+    off = x;
     CodeRef *p = (CodeRef *) (void *) &this->code_buf.ptr[ off ];
     if ( p->equals( code, ecnt ) ) {
       if ( p->ref++ == 0 ) /* previously free, now used */
@@ -138,7 +139,7 @@ RouteZip::make_code_ref( uint32_t *code,  uint32_t ecnt,
   }
   uint32_t * spc = this->make_code_ref_space( ecnt, off );
   new ( spc ) CodeRef( code, ecnt, rcnt, h );
-  this->zht->set( h, pos, off );
+  this->zht->set( h, pos, (uint32_t) off );
   UIntHashTab::check_resize( this->zht );
   return h; /* unique route code */
 }
@@ -152,7 +153,7 @@ RouteZip::gc_code_ref_space( void ) noexcept
   /* remove from zht */
   for ( i = 0; i < this->code_end; i += e ) {
     p = (CodeRef *) (void *) &this->code_buf.ptr[ i ];
-    e = p->word_size();
+    e = (uint32_t) p->word_size();
     if ( this->zht->find( p->hash, pos, k ) ) {
       if ( p->ref == 0 )
         this->zht->remove( pos );
@@ -1085,7 +1086,7 @@ BloomDetail::from_pattern( const PatternCvt &cvt ) noexcept
     this->detail_type = SHARD_MATCH;
   }
   else if ( cvt.suffixlen != 0 ) {
-    this->u.suffix.len  = cvt.suffixlen;
+    this->u.suffix.len  = (uint16_t) cvt.suffixlen;
     this->u.suffix.hash = kv_crc_c( cvt.suffix, cvt.suffixlen, 0 );
     this->detail_type = SUFFIX_MATCH;
   }
@@ -1113,7 +1114,7 @@ RouteDB::cache_save( uint16_t prefix_len,  uint32_t hash,
   }
   else {
     ptr = this->cache.spc.ptr; /* no realloc until ! busy */
-    uint32_t n = this->cache.end + rcnt;
+    size_t n = this->cache.end + rcnt;
     if ( n > this->cache.spc.size ) {
       this->cache.need = n - this->cache.spc.size;
       if ( this->cache.need < 1024 )
@@ -1122,7 +1123,7 @@ RouteDB::cache_save( uint16_t prefix_len,  uint32_t hash,
     }
   }
   val.rcnt = rcnt;
-  val.off  = this->cache.end;
+  val.off  = (uint32_t) this->cache.end;
   this->cache.end += rcnt;
   ::memcpy( &ptr[ val.off ], routes, sizeof( routes[ 0 ] ) * rcnt );
 

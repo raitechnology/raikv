@@ -45,8 +45,8 @@ struct KeyBufT : public KeyFragment {
     if ( len > MAX_BUF_SIZE )
       len = MAX_BUF_SIZE;
     ::memcpy( this->u.buf, p, len ); /* if p == null then len = 0 */
-    this->keylen = len;
-    return len;
+    this->keylen = (uint16_t) len;
+    return (uint16_t) len;
   }
   size_t get( void *p,  size_t len ) const {
     if ( len > this->keylen )

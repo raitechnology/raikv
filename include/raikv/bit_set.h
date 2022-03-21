@@ -64,7 +64,7 @@ struct BitSetT {
       else {
         if ( ( x & 1 ) != 0 )
           return true;
-        b += __builtin_ffsl( x ) - 1;
+        b += kv_ffsl( x ) - 1;
         return true;
       }
     }
@@ -81,7 +81,7 @@ struct BitSetT {
       }
       else {
         if ( ( x & 1 ) == 0 )
-          b += __builtin_ffsl( x ) - 1;
+          b += kv_ffsl( x ) - 1;
         break;
       }
     }
@@ -94,7 +94,7 @@ struct BitSetT {
       T x = this->ptr[ off ];
       if ( x != 0 ) {
         uint32_t n = cnt;
-        cnt += __builtin_popcountl( x );
+        cnt += kv_popcountl( x );
         if ( cnt > pos ) {
           b    = off * WORD_BITS;
           pos -= n;
@@ -116,7 +116,7 @@ struct BitSetT {
     uint32_t cnt = 0;
     for ( uint32_t off = 0; off * WORD_BITS < max_bit; off++ )
       if ( this->ptr[ off ] != 0 )
-        cnt += __builtin_popcountl( this->ptr[ off ] );
+        cnt += kv_popcountl( this->ptr[ off ] );
     return cnt;
   }
   void zero( uint32_t max_bit ) {
@@ -188,11 +188,11 @@ struct BitSpace : public ArraySpace<uint64_t, 2> {
     size_t cnt = 0;
     for ( size_t i = 0; i < this->size; i++ )
       if ( this->ptr[ i ] != 0 )
-        cnt += __builtin_popcountl( this->ptr[ i ] );
+        cnt += kv_popcountl( this->ptr[ i ] );
     return cnt;
   }
   void and_bits( const BitSpace &b1,  const BitSpace &b2 ) {
-    size_t min_sz = min<size_t>( b1.size, b2.size );
+    size_t min_sz = min_int<size_t>( b1.size, b2.size );
     this->make( min_sz, false );
     for ( size_t i = 0; i < min_sz; i++ )
       this->ptr[ i ] = b1.ptr[ i ] & b2.ptr[ i ];
@@ -201,8 +201,8 @@ struct BitSpace : public ArraySpace<uint64_t, 2> {
                 ( this->size - min_sz ) * sizeof( this->ptr[ 0 ] ) );
   }
   void or_bits( const BitSpace &b1,  const BitSpace &b2 ) {
-    size_t min_sz = min<size_t>( b1.size, b2.size ),
-           max_sz = max<size_t>( b1.size, b2.size ), i;
+    size_t min_sz = min_int<size_t>( b1.size, b2.size ),
+           max_sz = max_int<size_t>( b1.size, b2.size ), i;
     this->make( max_sz, false );
     for ( i = 0; i < min_sz; i++ )
       this->ptr[ i ] = b1.ptr[ i ] | b2.ptr[ i ];
@@ -212,8 +212,8 @@ struct BitSpace : public ArraySpace<uint64_t, 2> {
       this->ptr[ i ] = b2.ptr[ i ];
   }
   void xor_bits( const BitSpace &b1,  const BitSpace &b2 ) {
-    size_t min_sz = min<size_t>( b1.size, b2.size ),
-           max_sz = max<size_t>( b1.size, b2.size ), i;
+    size_t min_sz = min_int<size_t>( b1.size, b2.size ),
+           max_sz = max_int<size_t>( b1.size, b2.size ), i;
     this->make( max_sz, false );
     for ( i = 0; i < min_sz; i++ )
       this->ptr[ i ] = b1.ptr[ i ] ^ b2.ptr[ i ];
@@ -245,7 +245,7 @@ struct BitSpace : public ArraySpace<uint64_t, 2> {
       else {
         if ( ( x & 1 ) != 0 )
           return true;
-        b += __builtin_ffsl( x ) - 1;
+        b += kv_ffsl( x ) - 1;
         return true;
       }
     }
@@ -265,7 +265,7 @@ struct BitSpace : public ArraySpace<uint64_t, 2> {
       if ( x != 0 ) {
         if ( ( x & 1 ) != 0 )
           return true;
-        b += __builtin_ffsl( x ) - 1;
+        b += kv_ffsl( x ) - 1;
         return true;
       }
       if ( ++off == this->size ) {
@@ -278,8 +278,8 @@ struct BitSpace : public ArraySpace<uint64_t, 2> {
   }
 #endif
   bool operator==( const BitSpace &x ) const {
-    size_t min_sz = min<size_t>( x.size, this->size ),
-           max_sz = max<size_t>( x.size, this->size ), i;
+    size_t min_sz = min_int<size_t>( x.size, this->size ),
+           max_sz = max_int<size_t>( x.size, this->size ), i;
     for ( i = 0; i < min_sz; i++ ) {
       if ( x.ptr[ i ] != this->ptr[ i ] )
         return false;
@@ -308,7 +308,7 @@ struct BitIter64 {
     if ( ( x & 1 ) == 0 ) {
       if ( x == 0 )
         return false;
-      this->i += __builtin_ffsl( x ) - 1;
+      this->i += kv_ffsl( x ) - 1;
     }
     return true;
   }

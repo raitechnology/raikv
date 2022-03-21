@@ -51,8 +51,8 @@ RelativeStamp::set( uint64_t base,  uint64_t clock,  uint64_t exp,
     }
   }
 
-  this->set_expires( secs, exp_shift );
-  this->set_update( ns, upd_shift );
+  this->set_expires( secs, (uint32_t) exp_shift );
+  this->set_update( ns, (uint32_t) upd_shift );
 }
 
 void

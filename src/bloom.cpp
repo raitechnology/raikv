@@ -155,7 +155,7 @@ BloomCodec::encode_bloom( const BloomBits &bits ) noexcept
     uint32_t values[ MAX_VALUES ], nvals = 0;
     if ( bits.first( k ) ) {
       do {
-        values[ nvals++ ] = k;
+        values[ nvals++ ] = (uint32_t) k;
         if ( nvals == MAX_VALUES )
           this->encode_delta( values, nvals );
       } while ( bits.next( k ) );
@@ -168,7 +168,7 @@ BloomCodec::encode_bloom( const BloomBits &bits ) noexcept
     uint32_t *out = this->make( this->code_sz + bits.width / 4 );
     out = &out[ this->code_sz ];
     ::memcpy( out, bits.bits, bits.width );
-    this->code_sz += bits.width / 4;
+    this->code_sz += (uint32_t) ( bits.width / 4 );
   }
 }
 
@@ -185,7 +185,7 @@ BloomCodec::encode_ht( const BloomBits &bits ) noexcept
 
   for ( int i = 0; i < 4; i++ ) {
     UIntHashTab & ht = *bits.ht[ i ];
-    elem_count = ht.elem_count;
+    elem_count = (uint32_t) ht.elem_count;
     if ( elem_count == 0 )
       continue;
 
@@ -251,7 +251,7 @@ BloomCodec::encode_details( const void *details,  size_t details_size ) noexcept
   code[ i ] = (uint32_t) details_size;
   if ( details_size > 0 )
     ::memcpy( &code[ i + 1 ], details, details_size );
-  this->code_sz += ( details_size + 3 ) / 4 + 1;
+  this->code_sz += (uint32_t) ( ( details_size + 3 ) / 4 + 1 );
 }
 
 void
@@ -308,7 +308,7 @@ BloomCodec::decode_details( const uint32_t *code,  uint32_t off,  size_t len,
     return 0;
   details = ::malloc( details_size );
   ::memcpy( details, &code[ off + 1 ], details_size );
-  return off + ( details_size + 3 ) / 4 + 1;
+  return off + (uint32_t) ( ( details_size + 3 ) / 4 + 1 );
 }
 
 BloomBits *

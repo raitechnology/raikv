@@ -1,6 +1,8 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>
+#define __STDC_FORMAT_MACROS
+#include <inttypes.h>
 #include <stdlib.h>
 #include <raikv/util.h>
 #include <raikv/key_hash.h>
@@ -14,6 +16,7 @@ using namespace rai;
 using namespace kv;
 
 enum reg_kind { IS_GLOB, IS_NATS };
+int use_jit = 0;
 
 static int
 do_match( reg_kind t,  const char **pat,  size_t pc,
@@ -33,7 +36,7 @@ do_match( reg_kind t,  const char **pat,  size_t pc,
       rc = cvt.convert_glob( pat[ i ], ::strlen( pat[ i ] ) );
     else
       rc = cvt.convert_rv( pat[ i ], ::strlen( pat[ i ] ) );
-    printf( "\n(%s) \"%s\" : \"%.*s\" -> \"%.*s\" (%lu) \"%.*s\" (%lu)",
+    printf( "\n(%s) \"%s\" : \"%.*s\" -> \"%.*s\" (%" PRIu64 ") \"%.*s\" (%" PRIu64 ")",
             ( t == IS_GLOB ? "glob" : "rv" ), pat[ i ],
             (int) cvt.off, cvt.out, (int) cvt.prefixlen, pat[ i ],
             cvt.prefixlen, (int) cvt.suffixlen, cvt.suffix, cvt.suffixlen );
@@ -47,12 +50,16 @@ do_match( reg_kind t,  const char **pat,  size_t pc,
       continue;
     }
     re = pcre2_compile( (uint8_t *) cvt.out, cvt.off, 0, &error, &erroff, 0 );
-    if ( re != NULL )
+    if ( use_jit && re != NULL )
       rj = pcre2_jit_compile( re, PCRE2_JIT_COMPLETE );
     if ( re == NULL || rj != 0 ) {
-      printf( "re failed\n" );
-      fail++;
-      continue;
+      if ( rj != 0 )
+        printf( "jit not compiled\n" );
+      else {
+        printf( "re failed\n" );
+        fail++;
+        continue;
+      }
     }
     md = pcre2_match_data_create_from_pattern( re, NULL );
     if ( md == NULL ) {
@@ -65,12 +72,16 @@ do_match( reg_kind t,  const char **pat,  size_t pc,
     uint64_t t1 = kv_get_rdtsc();
     for ( int k = 0; k < 10000; k++ ) {
       for ( size_t j = 0; j < mc; j++ ) {
-        rc = pcre2_jit_match( re, (const uint8_t *) match[ j ],
-                              ::strlen( match[ j ] ), 0, 0, md, 0 );
+        if ( use_jit )
+          rc = pcre2_jit_match( re, (const uint8_t *) match[ j ],
+                                ::strlen( match[ j ] ), 0, 0, md, 0 );
+        else
+          rc = pcre2_match( re, (const uint8_t *) match[ j ],
+                            ::strlen( match[ j ] ), 0, 0, md, 0 );
         if ( k == 9999 ) {
           if ( j == 0 ) {
             uint64_t t2 = kv_get_rdtsc();
-            printf( "avg %lu cycles\n", ( t2 - t1 ) / ( 9999 * mc ) );
+            printf( "avg %" PRIu64 " cycles\n", ( t2 - t1 ) / ( 9999 * mc ) );
           }
           printf( "%s == %s   %s", pat[ i ], match[ j ], rc == 1 ? "(yes)" : "(no)" );
           if ( rc != mat[ i * mc + j ] ) {
@@ -86,7 +97,7 @@ do_match( reg_kind t,  const char **pat,  size_t pc,
     pcre2_code_free( re );
 
     rc = cvt2.pcre_prefix( cvt.out, cvt.off );
-    printf( "\"%.*s\" -> \"%.*s\" (%lu)\n", (int) cvt.off, cvt.out,
+    printf( "\"%.*s\" -> \"%.*s\" (%" PRIu64 ")\n", (int) cvt.off, cvt.out,
             (int) cvt2.off, cvt2.out, cvt2.off );
     if ( rc != 0 ) {
       printf( "prefix failed\n" );

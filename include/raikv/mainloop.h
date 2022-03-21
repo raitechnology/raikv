@@ -2,7 +2,7 @@
 #define __rai_raikv__mainloop_h__
 
 #include <raikv/ev_net.h>
-#include <raikv/kv_pubsub.h>
+/*#include <raikv/kv_pubsub.h>*/
 
 namespace rai {
 namespace kv {
@@ -199,19 +199,26 @@ struct MainLoop {
       fprintf( stderr, "unable to init poll\n" );
       return false;
     }
+#if 0
     if ( this->poll.pubsub != NULL ) {
       if ( this->r.busy_poll )
         this->poll.pubsub->idle_push( EV_BUSY_POLL );
       if ( ! this->r.use_sigusr )
         this->poll.pubsub->flags &= ~KV_DO_NOTIFY;
     }
+#endif
     return true;
   }
+#ifdef _MSC_VER
+  void idle( void ) { Sleep( 1 ); }
+#else
+  void idle( void ) { usleep( 1 ); }
+#endif
   /* mainloop runner */
   void run( void ) {
     int idle_cnt = 0;
     while ( this->r.thr_start < this->thr_num ) /* wait for my turn */
-      usleep( 1 );
+      idle();
     if ( this->r.thr_error == 0 && this->poll_init() &&
          this->initialize( this ) ) {
       this->r.thr_start++;
@@ -248,10 +255,12 @@ struct MainLoop {
 
 template <class MAIN_LOOP_ARGS, class MAIN_LOOP>
 struct Runner {
-  static const int MAX_THREADS = KV_MAX_CTX_ID;
+  static const size_t MAX_THREADS = KV_MAX_CTX_ID;
 
   MAIN_LOOP * children[ MAX_THREADS ];
+#ifndef _MSC_VER
   pthread_t   tid[ MAX_THREADS ];
+#endif
   size_t      num_thr;
 
   /* pthread spawner */
@@ -275,6 +284,7 @@ struct Runner {
       r.sighndl.install(); /* catch sig int */
       this->children[ 0 ]->run();
     }
+#ifndef _MSC_VER
     else {
       shm.detach(); /* each child will attach */
       signal( SIGUSR2, SIG_IGN );
@@ -292,6 +302,7 @@ struct Runner {
         pthread_join( this->tid[ i ], nullptr );
     }
     shm.detach();
+#endif
     printf( "\nbye\n" );
   }
 };

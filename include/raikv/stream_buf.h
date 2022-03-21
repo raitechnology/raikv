@@ -1,7 +1,19 @@
 #ifndef __rai_raikv__stream_buf_h__
 #define __rai_raikv__stream_buf_h__
 
+#ifndef _MSC_VER
 #include <sys/uio.h>
+#else
+#ifndef kv_iovec_defined
+#define kv_iovec_defined
+extern "C" {
+struct iovec {
+  void * iov_base;
+  size_t iov_len;
+};
+}
+#endif
+#endif
 #include <raikv/work.h>
 
 namespace rai {

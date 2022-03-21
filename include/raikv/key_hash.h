@@ -60,6 +60,18 @@ void kv_hash_meow128( const void *p, size_t sz, uint64_t *h1, uint64_t *h2 );
 #endif
 
 #ifdef USE_KV_MEOW_HASH
+
+#ifdef _MSC_VER
+typedef __declspec(align(64)) struct {
+  uint64_t ctx[ 8 ];
+} meow_ctx_t;
+
+typedef __declspec(align(64)) struct {
+  uint8_t block[ 64 ];
+  size_t  off, total_update_sz;
+} meow_block_t;
+
+#else
 typedef struct {
   uint64_t ctx[ 8 ];
 } meow_ctx_t __attribute__((__aligned__(64)));
@@ -68,6 +80,7 @@ typedef struct {
   uint8_t block[ 64 ];
   size_t  off, total_update_sz;
 } meow_block_t __attribute__((__aligned__(64)));
+#endif
 
 typedef struct {
   const void *p;

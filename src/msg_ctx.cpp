@@ -51,7 +51,7 @@ MsgCtx::prefetch_segment( uint64_t /*size*/ ) noexcept
   static const int locality = 1; /* 0 is non, 1 is low, 2 is moderate, 3 high*/
   /* isn't really effective, since the streamers may be activated by alloc() */
   if ( this->prefetch_ptr != NULL ) {
-    __builtin_prefetch( this->prefetch_ptr, rw, locality );
+    kv_prefetch( this->prefetch_ptr, rw, locality );
 #if 0
     uint8_t * p = (uint8_t *) this->prefetch_ptr,
             * e = &p[ size < 128 ? size : 128 ];
@@ -189,7 +189,7 @@ struct GCRunCtx {
             uint16_t msg_chain_size = 0;
             uint64_t msg_serial     = mv_kctx.geom.serial;
             if ( msgptr.check_seal( mv_hash, mv_hash2, msg_serial,
-                                    msgsize, msg_chain_size ) &&
+                                    (uint32_t) msgsize, msg_chain_size ) &&
                  mv_kctx.geom.segment == this->seg_num &&
                  mv_kctx.geom.offset == this->i ) {
 #if 0
@@ -212,8 +212,8 @@ struct GCRunCtx {
               do_mv_msg = 1;
             }
             else if ( mv_kctx.entry->test( FL_MSG_LIST ) &&
-                      msgptr.check_seal_msg_list( mv_hash, mv_hash2,
-                                                  msg_serial, msgsize,
+                      msgptr.check_seal_msg_list( mv_hash, mv_hash2, msg_serial,
+                                                  (uint32_t) msgsize,
                                                   msg_chain_size ) ) {
               bool      seg_is_locked = false;
               uint16_t  seg_num2 = mv_kctx.geom.segment;
@@ -247,14 +247,14 @@ struct GCRunCtx {
                                   &refseg[ mv_kctx.geom.offset ];
                 uint16_t ref_chains;
                 if ( ref_msg.check_seal( mv_hash, mv_hash2, mv_kctx.geom.serial,
-                                         mv_kctx.geom.size, ref_chains ) ) {
+                                 (uint32_t) mv_kctx.geom.size, ref_chains ) ) {
                   if ( ref_chains >= msg_chain_size + 1 ) {
                     uint16_t k = ref_chains - ( msg_chain_size + 1 );
                     ValueGeom ref_geom;
                     /* unsealing ref_msg may not matter if reader has a copy
                      * already, it may find the chained msg is mutated and then
                      * retry */
-                    ref_msg.get_next( k, ref_geom, this->algn_shft );
+                    ref_msg.get_next( (uint8_t) k, ref_geom, this->algn_shft );
                     /* link to cur msg */
                     if ( ref_geom.segment == this->seg_num &&
                          ref_geom.offset == this->i &&
@@ -262,7 +262,7 @@ struct GCRunCtx {
                       stats.chains++;
                       do_mv_msg = 2;
                       ref_geom.offset = this->j;
-                      ref_msg.set_next( k, ref_geom, this->algn_shft );
+                      ref_msg.set_next( (uint8_t) k, ref_geom, this->algn_shft );
                     }
                   }
                 }
@@ -296,7 +296,7 @@ struct GCRunCtx {
               this->frag = (MsgHdr *) (void *) &segptr[ this->j ];
               this->frag_start = this->j;
               this->frag_size  = this->i - this->j;
-              this->frag->size = this->frag_size;
+              this->frag->size = (uint32_t) this->frag_size;
               this->frag->msg_size = 0;
               this->frag->release();
               success = true;
@@ -329,7 +329,7 @@ struct GCRunCtx {
       /* defragment zombies */
       if ( this->frag != NULL &&
            this->frag_start + this->frag_size == this->i ) {
-        this->frag->size += msgsize;
+        this->frag->size += (uint32_t) msgsize;
         this->frag_size += msgsize;
       }
       else {
@@ -350,8 +350,8 @@ MsgCtx::alloc_segment( void *res,  uint64_t size,
   if ( this->ht.hdr.ht_read_only )
     return KEY_HT_FULL;
 
-  const uint32_t hdr_size  = MsgHdr::hdr_size( *this->kbuf ),
-                 algn_shft = this->ht.hdr.seg_align_shift;
+  const uint64_t hdr_size  = MsgHdr::hdr_size( *this->kbuf );
+  const uint32_t algn_shft = this->ht.hdr.seg_align_shift;
   const uint64_t seg_algn  = this->ht.hdr.seg_align(),
                  seg_size  = this->ht.hdr.seg_size();
   const uint16_t nsegs     = this->ht.hdr.nsegs;
@@ -359,8 +359,8 @@ MsgCtx::alloc_segment( void *res,  uint64_t size,
   if ( nsegs == 0 )
     return KEY_TOO_BIG;
   /* find free space in a segment to put put key + data */
-  const uint64_t alloc_size = MsgHdr::alloc_size( hdr_size, size, seg_algn,
-                                                  chain_size );
+  const uint64_t alloc_size = MsgHdr::alloc_size( (uint32_t) hdr_size, size,
+                                                  seg_algn, chain_size );
   if ( alloc_size > seg_size )
     return KEY_TOO_BIG;
 
@@ -389,7 +389,7 @@ MsgCtx::alloc_segment( void *res,  uint64_t size,
         hd = tl;        /* nothing free, need to find space  */
       /* run gc, try to make space for allocation */
       if ( hd - tl < alloc_size ) {
-        GCRunCtx gcrun( *this, seg, segptr, seg_size, seg_algn,
+        GCRunCtx gcrun( *this, seg, segptr, seg_size, (uint32_t) seg_algn,
                         this->geom.segment, hd, tl );
         GCStats stats;
         stats.zero();
@@ -405,16 +405,16 @@ MsgCtx::alloc_segment( void *res,  uint64_t size,
       if ( hd - tl >= alloc_size ) {
         if ( hd - tl > alloc_size ) {
           MsgHdr &frag  = *(MsgHdr *) (void *) &segptr[ tl + alloc_size ];
-          frag.size     = hd - ( tl + alloc_size );
+          frag.size     = (uint32_t) ( hd - ( tl + alloc_size ) );
           frag.msg_size = 0;
           frag.release();
         }
         /* region is free, use it */
         this->geom.offset = tl;
         this->msg = (MsgHdr *) (void *) &segptr[ tl ];
-        this->msg->init( FL_SEGMENT_VALUE, this->key, this->key2, alloc_size,
-                         size );
-        *(void **) res = this->msg->copy_key( *this->kbuf, hdr_size );
+        this->msg->init( FL_SEGMENT_VALUE, this->key, this->key2,
+                         (uint32_t) alloc_size, (uint32_t) size );
+        *(void **) res = this->msg->copy_key( *this->kbuf, (uint32_t) hdr_size);
         tl += alloc_size;
         if ( tl < seg_size ) /* in case app wants to prefetch for allocations */
           this->prefetch_ptr = &segptr[ tl ];
@@ -439,7 +439,7 @@ MsgCtx::alloc_segment( void *res,  uint64_t size,
     uint16_t seg_num = (uint16_t) ( this->ht.ctx[ ctx_id ].rng.next() % nsegs );
     this->ht.ctx[ ctx_id ].seg_num = seg_num;
     this->geom.segment = seg_num;
-    if ( spins >= nsegs / 4 ) {
+    if ( spins >= (uint32_t) nsegs / 4 ) {
       this->ht.update_load();
       kv_sync_pause();
     }

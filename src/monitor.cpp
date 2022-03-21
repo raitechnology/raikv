@@ -2,8 +2,14 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#define __STDC_FORMAT_MACROS
+#include <inttypes.h>
+#ifndef _MSC_VER
 #include <unistd.h>
 #include <signal.h>
+#else
+#include <windows.h>
+#endif
 #include <fcntl.h>
 #include <math.h>
 #include <errno.h>
@@ -63,7 +69,7 @@ Monitor::print_stats( void )
       fputs( print_map_geom( &this->map, MAX_CTX_ID ), stdout );
       for ( uint32_t db = 0; db < DB_COUNT; db++ ) {
         if ( this->map.hdr.test_db_opened( db ) ) {
-          printf( "db[ %u ].entry_cnt:%s %lu\n", db,
+          printf( "db[ %u ].entry_cnt:%s %" PRIu64 "\n", db,
                   ( ( db < 10 ) ? "   " : ( ( db < 100 ) ? "  " : " " ) ),
                   this->hts.db_stats[ db ].last.add -
                   this->hts.db_stats[ db ].last.drop );
@@ -120,7 +126,7 @@ Monitor::print_ops( void )
          mstring( (double) ops.spins / ival, buf4, 1000 ),
          (uint32_t) ( this->map.hdr.ht_load * 100.0 + 0.5 ),
          (uint32_t) ( this->map.hdr.value_load * 100.0 + 0.5 ),
-         mstring( tot.add - tot.drop, buf5, 1000 ),
+         mstring( (double) ( tot.add - tot.drop ), buf5, 1000 ),
          mstring( (double) chg.move_msgs / ival, buf6, 1000 ),
          mstring( (double) ops.drop / ival, buf7, 1000 ),
          mstring( (double) ops.hit / ival, buf8, 1000 ),
@@ -135,12 +141,22 @@ Monitor::check_broken_locks( void )
     uint32_t pid = this->map.ctx[ ctx_id ].ctx_pid;
     if ( pid == 0 || this->map.ctx[ ctx_id ].ctx_id == KV_NO_CTX_ID )
       continue;
+#ifndef _MSC_VER
     if ( ::kill( pid, 0 ) == 0 )
       continue;
     if ( errno == EPERM )
       continue;
     printf( "ctx %u: pid %u = kill errno %d/%s\n",
             ctx_id, pid, errno, strerror( errno ) );
+#else
+    HANDLE process = OpenProcess( SYNCHRONIZE, FALSE, pid );
+    DWORD  ret     = WaitForSingleObject( process, 0 );
+    CloseHandle( process );
+    if ( ret == WAIT_TIMEOUT )
+      continue;
+    printf( "ctx %u: pid %u = wait status %d\n",
+            ctx_id, pid, ret );
+#endif
 
     uint64_t used, recovered = 0;
     if ( (used = this->map.ctx[ ctx_id ].mcs_used) != 0 ) {
@@ -151,7 +167,7 @@ Monitor::check_broken_locks( void )
         ThrMCSLock &mcs = this->map.ctx[ ctx_id ].get_mcs_lock( mcs_id );
         MCSStatus status;
         printf(
-        "ctx %u: pid %u, mcs %u, val 0x%lx, lock 0x%lx, next 0x%lx, link %lu\n",
+        "ctx %u: pid %u, mcs %u, val 0x%" PRIx64 ", lock 0x%" PRIx64 ", next 0x%" PRIx64 ", link %" PRIu64 "\n",
                  ctx_id, pid, id, mcs.val.load(), mcs.lock.load(),
                  mcs.next.load(), mcs.lock_id );
         if ( mcs.lock_id != 0 ) {

@@ -3,24 +3,35 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <stdarg.h>
-#include <unistd.h>
+#define __STDC_FORMAT_MACROS
+#include <inttypes.h>
 #include <fcntl.h>
 #include <errno.h>
+#ifndef _MSC_VER
+#include <unistd.h>
 #include <sys/epoll.h>
 #include <sys/socket.h>
 #include <netinet/tcp.h>
 #include <netdb.h>
 #include <arpa/inet.h>
 #include <sys/un.h>
+#else
+#include <raikv/win.h>
+#endif
 #include <raikv/ev_net.h>
 #include <raikv/ev_key.h>
 #include <raikv/ev_publish.h>
-#include <raikv/kv_pubsub.h>
+/*#include <raikv/kv_pubsub.h>*/
 #include <raikv/timer_queue.h>
 #include <raikv/pattern_cvt.h>
 
 using namespace rai;
 using namespace kv;
+
+bool rai::kv::ev_would_block( int err ) noexcept {
+  return ( err == EINTR || err == EAGAIN || err == EWOULDBLOCK ||
+           err == EINPROGRESS );
+}
 
 RoutePDB::RoutePDB( EvPoll &p ) noexcept
   : RoutePublish( p, "default" ), timer( p.timer ) {}
@@ -29,6 +40,7 @@ uint8_t
 EvPoll::register_type( const char *s ) noexcept
 {
   uint8_t t = (uint8_t) kv_crc_c( s, ::strlen( s ), 0 );
+  if ( t == 0 ) t = 1;
   for ( int i = 0; i < 256; i++ ) {
     const char *x = this->sock_type_str[ t ];
     if ( x == NULL ) {
@@ -37,7 +49,10 @@ EvPoll::register_type( const char *s ) noexcept
     }
     if ( ::strcmp( x, s ) == 0 )
       return t;
-    t++;
+    if ( t == 0xff )
+      t = 1;
+    else
+      t++;
   }
   /* should be unique */
   fprintf( stderr, "No types left %s\n", s );
@@ -66,7 +81,7 @@ EvPoll::init( int numfds,  bool prefetch/*,  bool single*/ ) noexcept
     return -1;
   }
   this->nfds = n;
-  this->ev   = (struct epoll_event *) aligned_malloc( sz );
+  this->ev   = (struct epoll_event *) ::malloc( sz );
   if ( this->ev == NULL ) {
     perror( "malloc" );
     return -1;
@@ -74,9 +89,11 @@ EvPoll::init( int numfds,  bool prefetch/*,  bool single*/ ) noexcept
   this->timer.queue = EvTimerQueue::create_timer_queue( *this );
   if ( this->timer.queue == NULL )
     return -1;
+#if 0
   void * p = ::malloc( sizeof( DbgRouteNotify ) );
   RouteNotify *x = new ( p ) DbgRouteNotify( this->sub_route );
   this->sub_route.add_route_notify( *x );
+#endif
   return 0;
 }
 
@@ -87,10 +104,12 @@ EvPoll::init_shm( EvShm &shm ) noexcept
   this->ctx_id = shm.ctx_id;
   this->dbx_id = shm.dbx_id;
   if ( this->map != NULL && ! this->map->hdr.ht_read_only ) {
+#if 0
     if ( (this->pubsub = KvPubSub::create( *this, 254 )) == NULL ) {
       fprintf( stderr, "Unable to open kv pub sub\n" );
       return -1;
     }
+#endif
     void * p = ::malloc( sizeof( RedisKeyspaceNotify ) );
     if ( p == NULL ) {
       perror( "malloc" );
@@ -118,7 +137,8 @@ EvPoll::add_write_poll( EvSocket *s ) noexcept
     return;
   }
   this->wr_count++;
-  if ( this->wr_timeout_ns != 0 )
+  if ( this->wr_timeout_ns != 0 ||
+       ( this->conn_timeout_ns != 0 && s->bytes_sent + s->bytes_recv == 0 ) )
     this->push_write_queue( s );
 }
 
@@ -147,7 +167,16 @@ EvPoll::wait( int ms ) noexcept
   EvSocket *s;
   int n, m = 0;
   EvState do_event;
+#ifndef HAVE_TIMERFD
+  uint64_t us = ms * 1000;
+  if ( this->timer.queue->is_timer_ready( us ) ) {
+    this->timer.queue->idle_push( EV_PROCESS );
+    return 1;
+  }
+  n = ::wp_epoll_wait( this->efd, this->ev, this->nfds, us );
+#else
   n = ::epoll_wait( this->efd, this->ev, this->nfds, ms );
+#endif
   if ( n < 0 ) {
     if ( errno == EINTR )
       return 0;
@@ -168,10 +197,21 @@ EvPoll::wait( int ms ) noexcept
     else {
       if ( ( this->ev[ i ].events & EPOLLIN ) != 0 )
         do_event = EV_READ;
-      else if ( ( this->ev[ i ].events & EPOLLERR ) != 0 )
-        do_event = EV_CLOSE;
+      else if ( ( this->ev[ i ].events & ( EPOLLERR | EPOLLHUP ) ) != 0 ) {
+        /* should make this a state, happens with udp connect fails *
+        int err = 0;
+        socklen_t errlen = sizeof( err );
+        if ( ::getsockopt( this->ev[ i ].data.fd, SOL_SOCKET, SO_ERROR,
+                           &err, &errlen ) == 0 ) {
+          printf( "so_err %d/%s\n", err, strerror( err ) );
+        }
+        if ( s->sock_base == EV_UDP_BASE )
+          goto skip_event;
+        else */
+        do_event = EV_READ;
+      }
       else
-        do_event = EV_READ; /* go through normal shutdown, flushing write */
+        do_event = EV_READ;
     }
     if ( do_event == EV_READ ) {
       if ( s->test_opts( OPT_READ_HI ) )
@@ -191,7 +231,10 @@ EvPoll::wait( int ms ) noexcept
       if ( ns <= s->PeerData::active_ns ) /* XXX should use monotonic time */
         break;
       uint64_t delta = ns - s->PeerData::active_ns;
-      if ( delta > this->wr_timeout_ns ) {
+      /* XXX this may hold the connect timeouts longer than they should */
+      if ( delta > this->wr_timeout_ns ||
+           ( delta > this->conn_timeout_ns &&
+             s->bytes_sent + s->bytes_recv == 0 ) ) {
         this->remove_write_poll( s );
         this->idle_close( s, delta );
         m++;
@@ -210,11 +253,15 @@ EvPoll::wait( int ms ) noexcept
 int
 EvPoll::get_null_fd( void ) noexcept
 {
+#ifndef _MSC_VER
   if ( this->null_fd < 0 ) {
     this->null_fd = ::open( "/dev/null", O_RDWR | O_NONBLOCK );
     return this->null_fd;
   }
   return ::dup( this->null_fd );
+#else
+  return ::wp_make_null_fd();
+#endif
 }
 /* enable epolling of sock fd */
 int
@@ -291,7 +338,13 @@ EvPoll::remove_sock( EvSocket *s ) noexcept
   }
   /* close if wants */
   if ( ! s->test_opts( OPT_NO_CLOSE ) && s->fd != this->null_fd ) {
-    if ( ::close( s->fd ) != 0 )
+    int status;
+#ifndef _MSC_VER
+    status = ::close( s->fd );
+#else
+    status = ::wp_close_fd( s->fd );
+#endif
+    if ( status != 0 )
       s->set_sock_err( EV_ERR_CLOSE, errno );
   }
   if ( s->in_list( IN_ACTIVE_LIST ) ) {
@@ -307,11 +360,34 @@ EvPoll::remove_sock( EvSocket *s ) noexcept
 void
 EvPoll::idle_close( EvSocket *s,  uint64_t ns ) noexcept
 {
-  s->set_sock_err( EV_ERR_WRITE_TIMEOUT, ns / 1000000000ULL );
+  s->set_sock_err( EV_ERR_WRITE_TIMEOUT, (uint16_t) ( ns / 1000000000ULL ) );
   /* log closed fd */
   this->remove_write_queue( s );
   s->popall();
   s->idle_push( EV_CLOSE );
+}
+
+void *
+EvPoll::alloc_sock( size_t sz ) noexcept
+{
+  size_t    need = kv::align<size_t>( sz, 64 );
+  uint8_t * p    = (uint8_t *) this->sock_mem;;
+
+  if ( need > this->sock_mem_left ) {
+    if ( need > 128 * 1024 )
+      return aligned_malloc( need );
+    this->sock_mem = aligned_malloc( 1024 * 1024 );
+    if ( this->sock_mem == NULL ) {
+      this->sock_mem_left = 0;
+      ::perror( "alloc_sock: no mem" );
+      return NULL;
+    }
+    this->sock_mem_left = 1024 * 1024;
+    p = (uint8_t *) this->sock_mem;
+  }
+  this->sock_mem = &p[ need ];
+  this->sock_mem_left -= need;
+  return p;
 }
 
 const char *
@@ -341,7 +417,7 @@ EvStateDbg::print_dbg( void )
     if ( this->current.cnt[ i ] != this->last.cnt[ i ] ) {
       uint64_t diff = this->current.cnt[ i ] - this->last.cnt[ i ];
       this->last.cnt[ i ] = this->current.cnt[ i ];
-      printf( "%s %s: %lu\n",
+      printf( "%s %s: %" PRIu64 "\n",
         sock.kind, EvSocket::state_string( (EvState) i ), diff );
     }
   }
@@ -354,6 +430,8 @@ EvSocket::type_string( void ) noexcept
   const char *x = this->poll.sock_type_str[ this->sock_type ];
   if ( x != NULL )
     return x;
+  if ( this->sock_type == 0 )
+    return "ev_socket_0";
   return "ev_socket";
 }
 
@@ -414,6 +492,19 @@ EvListen::read( void ) noexcept
 void EvListen::write( void ) noexcept {}   /* nothing to write */
 void EvListen::process( void ) noexcept {} /* nothing to process */
 void EvListen::release( void ) noexcept {} /* no buffers */
+
+void
+EvListen::reset_read_poll( void ) noexcept
+{
+  this->pop3( EV_READ, EV_READ_LO, EV_READ_HI );
+#ifdef _MSC_VER
+  /* reset EPOLLET */
+  struct epoll_event event;
+  event.data.fd = this->fd;
+  event.events  = EPOLLIN | EPOLLRDHUP | EPOLLET;
+  ::epoll_ctl( this->poll.efd, EPOLL_CTL_MOD, this->fd, &event );
+#endif
+}
 
 void
 EvPoll::drain_prefetch( void ) noexcept
@@ -582,7 +673,8 @@ EvPoll::dispatch( void ) noexcept
         s->popall();
         this->remove_sock( s );
         s->process_close();
-        break;
+        this->push_free_list( s );
+        goto next_tick; /* sock is no longer valid */
       case EV_BUSY_POLL:
         ret |= BUSY_POLL;
         if ( ! s->busy_poll() ) { /* if no progress made */
@@ -763,7 +855,7 @@ publish_multi_64( EvPublish &pub,  RoutePublishData *rpd,  uint8_t n,
     if ( bits == 0 )
       return flow_good; /* if no routes left */
 
-    min_route = __builtin_ffsl( bits ) - 1;
+    min_route = kv_ffsl( bits ) - 1;
     bits     &= ~( (uint64_t) 1 << min_route );
     cnt       = 0;
     for ( i = 0; i < n; i++ ) {
@@ -916,12 +1008,21 @@ RoutePublish::forward_msg( EvPublish &pub ) noexcept
   return forward_message<ForwardAll>( pub, *this, fwd );
 }
 bool
+RoutePublish::forward_with_cnt( EvPublish &pub,  uint32_t &rcnt ) noexcept
+{
+  ForwardAll fwd( *this );
+  bool b = forward_message<ForwardAll>( pub, *this, fwd );
+  rcnt = fwd.total;
+  return b;
+}
+bool
 RoutePublish::forward_except( EvPublish &pub,
                               const BitSpace &fdexcept ) noexcept
 {
   ForwardExcept fwd( *this, fdexcept );
   return forward_message<ForwardExcept>( pub, *this, fwd );
 }
+#if 0
 /* match subject against route db and forward msg to fds subscribed, route
  * db contains both exact matches and wildcard prefix matches */
 bool
@@ -947,6 +1048,7 @@ RoutePublish::forward_msg( EvPublish &pub,  uint32_t *rcount_total,
     *rcount_total = fwd.total;
   return b;
 }
+#endif
 /* publish to some destination */
 bool
 RoutePublish::forward_some( EvPublish &pub,  uint32_t *routes,
@@ -1004,7 +1106,7 @@ RoutePublish::forward_set( EvPublish &pub,  const BitSpace &fdset ) noexcept
   pub.prefix_cnt = 1;
 
   for ( size_t i = 0; i < fdset.size; i++ ) {
-    uint32_t fd   = i * fdset.WORD_BITS;
+    uint32_t fd   = (uint32_t) ( i * fdset.WORD_BITS );
     uint64_t word = fdset.ptr[ i ];
     for ( ; word != 0; fd++ ) {
       if ( ( word & 1 ) != 0 ) {
@@ -1041,7 +1143,7 @@ RoutePublish::forward_set_not_fd( EvPublish &pub,  const BitSpace &fdset,
   pub.prefix_cnt = 1;
 
   for ( size_t i = 0; i < fdset.size; i++ ) {
-    uint32_t fd   = i * fdset.WORD_BITS;
+    uint32_t fd   = (uint32_t) ( i * fdset.WORD_BITS );
     uint64_t word = fdset.ptr[ i ];
     for ( ; word != 0; fd++ ) {
       if ( ( word & 1 ) != 0 && fd != not_fd ) {
@@ -1096,9 +1198,9 @@ RoutePublish::forward_to( EvPublish &pub,  uint32_t fd ) noexcept
   if ( k < x ) {
     kv_crc_c_array( (const void **) &key[ k ], &keylen[ k ], &hash[ k ], x-k );
     do {
-      if ( this->is_member( keylen[ k ], hash[ k ], fd ) ) {
+      if ( this->is_member( (uint16_t) keylen[ k ], hash[ k ], fd ) ) {
         phash[ n ]  = hash[ k ];
-        prefix[ n ] = keylen[ k ];
+        prefix[ n ] = (uint8_t) keylen[ k ];
         n++;
       }
     } while ( ++k < x );
@@ -1415,7 +1517,7 @@ PeerAddrStr::set_addr( const sockaddr *sa ) noexcept
         len = uint64_to_string( ntohs( in_port ), &t[ 1 ] );
         t   = &t[ 1 + len ];
         break;
-
+#ifndef _MSC_VER
       case AF_LOCAL:
         len = ::strnlen( ((struct sockaddr_un *) sa)->sun_path,
                          sizeof( ((struct sockaddr_un *) sa)->sun_path ) );
@@ -1424,7 +1526,7 @@ PeerAddrStr::set_addr( const sockaddr *sa ) noexcept
         ::memcpy( s, ((struct sockaddr_un *) sa)->sun_path, len );
         t = &s[ len ];
         break;
-
+#endif
       default:
         break;
     }
@@ -1459,7 +1561,7 @@ EvSocket::client_list( char *buf,  size_t buflen ) noexcept
    * qbuf, obl=output buf len, oll=outut list len, omem=output mem usage,
    * events=sock rd/wr, cmd=last cmd issued */
   return ::snprintf( buf, buflen,
-    "id=%lu addr=%.*s fd=%d name=%.*s kind=%s age=%ld idle=%ld ",
+    "id=%" PRIu64 " addr=%.*s fd=%d name=%.*s kind=%s age=%" PRId64 " idle=%" PRId64 " ",
     this->PeerData::id,
     (int) this->PeerData::get_peer_address_strlen(),
     this->PeerData::peer_address.buf,
@@ -1473,6 +1575,9 @@ EvSocket::client_list( char *buf,  size_t buflen ) noexcept
 bool
 EvSocket::client_match( PeerData &pd,  PeerMatchArgs *ka,  ... ) noexcept
 {
+#ifdef _MSC_VER
+#define strncasecmp _strnicmp
+#endif
   /* match filters, if any don't match return false */
   if ( ka->id != 0 )
     if ( (uint64_t) ka->id != pd.id ) /* match id */
@@ -1540,7 +1645,7 @@ EvConnection::client_list( char *buf,  size_t buflen ) noexcept
   int i = this->EvSocket::client_list( buf, buflen );
   if ( i >= 0 ) {
     i += ::snprintf( &buf[ i ], buflen - (size_t) i,
-      "rbuf=%u rsz=%u imsg=%lu br=%lu wbuf=%lu wsz=%lu omsg=%lu bs=%lu ",
+      "rbuf=%u rsz=%u imsg=%" PRIu64 " br=%" PRIu64 " wbuf=%" PRIu64 " wsz=%" PRIu64 " omsg=%" PRIu64 " bs=%" PRIu64 " ",
       this->len - this->off, this->recv_size, this->msgs_recv, this->bytes_recv,
       this->wr_pending,
       this->tmp.fast_len + this->tmp.block_cnt * this->tmp.alloc_size,
@@ -1580,7 +1685,7 @@ EvListen::client_list( char *buf,  size_t buflen ) noexcept
   int i = this->EvSocket::client_list( buf, buflen );
   if ( i >= 0 ) {
     i += ::snprintf( &buf[ i ], buflen - (size_t) i,
-                     "acpt=%lu ",
+                     "acpt=%" PRIu64 " ",
                      this->accept_cnt );
   }
   return i;
@@ -1604,7 +1709,7 @@ EvUdp::client_list( char *buf,  size_t buflen ) noexcept
   int i = this->EvSocket::client_list( buf, buflen );
   if ( i >= 0 ) {
     i += ::snprintf( &buf[ i ], buflen - (size_t) i,
-                     "imsg=%lu omsg=%lu br=%lu bs=%lu ",
+                     "imsg=%" PRIu64 " omsg=%" PRIu64 " br=%" PRIu64 " bs=%" PRIu64 " ",
                      this->msgs_recv, this->msgs_sent,
                      this->bytes_recv, this->bytes_sent );
   }
@@ -1650,10 +1755,16 @@ EvConnection::read( void ) noexcept
   this->adjust_recv();
   for (;;) {
     if ( this->len < this->recv_size ) {
-      ssize_t nbytes = ::read( this->fd, &this->recv[ this->len ],
-                               this->recv_size - this->len );
+      ssize_t nbytes;
+#ifndef _MSC_VER
+      nbytes = ::read( this->fd, &this->recv[ this->len ],
+                       this->recv_size - this->len );
+#else
+      nbytes = ::wp_read( this->fd, &this->recv[ this->len ],
+                          this->recv_size - this->len );
+#endif
       if ( nbytes > 0 ) {
-        this->len += nbytes;
+        this->len += (uint32_t) nbytes;
         this->bytes_recv += nbytes;
         this->push( EV_PROCESS );
         /* if buf almost full, switch to low priority read */
@@ -1665,16 +1776,21 @@ EvConnection::read( void ) noexcept
       }
       /* wait for epoll() to set EV_READ again */
       this->pop3( EV_READ, EV_READ_LO, EV_READ_HI );
+#ifdef _MSC_VER
+      /* reset EPOLLET */
+      struct epoll_event event;
+      event.data.fd = this->fd;
+      event.events  = EPOLLIN | EPOLLRDHUP | EPOLLET;
+      ::epoll_ctl( this->poll.efd, EPOLL_CTL_MOD, this->fd, &event );
+#endif
       if ( nbytes < 0 ) {
-        if ( errno != EINTR ) {
-          if ( errno != EAGAIN ) {
-            if ( errno != ECONNRESET )
-              this->set_sock_err( EV_ERR_BAD_READ, errno );
-            else
-              this->set_sock_err( EV_ERR_READ_RESET, errno );
-            this->popall();
-            this->push( EV_CLOSE );
-          }
+        if ( ! ev_would_block( errno ) ) {
+          if ( errno != ECONNRESET )
+            this->set_sock_err( EV_ERR_BAD_READ, errno );
+          else
+            this->set_sock_err( EV_ERR_READ_RESET, errno );
+          this->popall();
+          this->push( EV_CLOSE );
         }
       }
       else if ( nbytes == 0 )
@@ -1700,7 +1816,7 @@ EvConnection::resize_recv_buf( void ) noexcept
   size_t newsz = this->recv_size * 2;
   if ( newsz != (size_t) (uint32_t) newsz )
     return false;
-  void * ex_recv_buf = aligned_malloc( newsz );
+  void * ex_recv_buf = ::malloc( newsz );
   if ( ex_recv_buf == NULL )
     return false;
   ::memcpy( ex_recv_buf, &this->recv[ this->off ], this->len );
@@ -1709,16 +1825,13 @@ EvConnection::resize_recv_buf( void ) noexcept
   if ( this->recv != this->recv_buf )
     ::free( this->recv );
   this->recv = (char *) ex_recv_buf;
-  this->recv_size = newsz;
+  this->recv_size = (uint32_t) newsz;
   return true;
 }
 /* write data to sock fd */
 void
 EvConnection::write( void ) noexcept
 {
-  struct msghdr h;
-  ssize_t nbytes;
-  size_t nb = 0;
   StreamBuf & strm = *this;
   if ( strm.sz > 0 )
     strm.flush();
@@ -1727,6 +1840,11 @@ EvConnection::write( void ) noexcept
     this->push( EV_READ_LO );
     return;
   }
+
+  ssize_t nbytes;
+  size_t  nb = 0;
+#ifndef _MSC_VER
+  struct msghdr h;
   ::memset( &h, 0, sizeof( h ) );
   h.msg_iov    = &strm.iov[ strm.woff ];
   h.msg_iovlen = strm.idx - strm.woff;
@@ -1742,6 +1860,10 @@ EvConnection::write( void ) noexcept
       nbytes = ::sendmsg( this->fd, &h, MSG_NOSIGNAL );
     }
   }
+#else
+  nbytes = ::wp_send( this->fd, &strm.iov[ strm.woff ],
+                      strm.idx - strm.woff );
+#endif
   if ( nbytes > 0 ) {
     strm.wr_pending -= nbytes;
     this->bytes_sent += nbytes;
@@ -1753,8 +1875,9 @@ EvConnection::write( void ) noexcept
     }
     else {
       for (;;) {
-        if ( (size_t) nbytes >= strm.iov[ strm.woff ].iov_len ) {
-          nbytes -= strm.iov[ strm.woff ].iov_len;
+        size_t iov_len = strm.iov[ strm.woff ].iov_len;
+        if ( (size_t) nbytes >= iov_len ) {
+          nbytes -= iov_len;
           strm.woff++;
           if ( nbytes == 0 )
             break;
@@ -1769,16 +1892,26 @@ EvConnection::write( void ) noexcept
     }
     return;
   }
-  if ( nbytes == 0 || ( nbytes < 0 && errno != EAGAIN && errno != EINTR ) ) {
-    if ( nbytes < 0 && errno != ECONNRESET && errno != EPIPE )
-      this->set_sock_err( EV_ERR_BAD_WRITE, errno );
-    else
-      this->set_sock_err( EV_ERR_WRITE_RESET, errno );
-    this->popall();
-    this->push( EV_CLOSE );
+  if ( nbytes == 0 || ( nbytes < 0 && ! ev_would_block( errno ) ) ) {
+    if ( nbytes < 0 && errno == ENOTCONN && this->bytes_sent == 0 ) {
+      this->push( EV_WRITE_HI );
+      this->push( EV_WRITE_POLL );
+      return;
+    }
+    else {
+      if ( nbytes < 0 && errno != ECONNRESET && errno != EPIPE )
+        this->set_sock_err( EV_ERR_BAD_WRITE, errno );
+      else
+        this->set_sock_err( EV_ERR_WRITE_RESET, errno );
+      this->popall();
+      this->push( EV_CLOSE );
+      return;
+    }
   }
   if ( this->test( EV_WRITE_HI ) )
     this->push( EV_WRITE_POLL );
+  else
+    this->push( EV_WRITE_HI );
 }
 /* use mmsg for udp sockets */
 bool
@@ -1834,7 +1967,7 @@ EvUdp::alloc_mmsg( void ) noexcept
   return true;
 }
 
-ssize_t
+int
 EvUdp::discard_pkt( void ) noexcept
 {
   uint8_t buf[ 64 * 1024 +
@@ -1854,11 +1987,15 @@ EvUdp::discard_pkt( void ) noexcept
   hdr.msg_control    = NULL;
   hdr.msg_controllen = 0;
   hdr.msg_flags      = 0;
+#ifndef _MSC_VER
   nbytes = ::recvmsg( this->fd, &hdr, 0 );
+#else
+  nbytes = ::wp_recvmsg( this->fd, &hdr );
+#endif
   if ( nbytes > 0 )
-    fprintf( stderr, "Discard %ld bytes in_nmsgs %u in_size %u\n",
-             (long) nbytes, this->in_nmsgs, this->in_size );
-  return nbytes;
+    fprintf( stderr, "Discard %u bytes in_nmsgs %u in_size %u\n",
+             (uint32_t) nbytes, this->in_nmsgs, this->in_size );
+  return (int) nbytes;
 }
 
 /* read udp packets */
@@ -1871,7 +2008,7 @@ EvUdp::read( void ) noexcept
   if ( this->in_nmsgs == this->in_size && ! this->alloc_mmsg() ) {
     nbytes = this->discard_pkt();
   }
-#ifndef NO_RECVMMSG
+#if ! defined( NO_RECVMMSG ) && ! defined( _MSC_VER )
   else if ( this->in_nmsgs + 1 < this->in_size ) {
     nmsgs = ::recvmmsg( this->fd, &this->in_mhdr[ this->in_nmsgs ],
                         this->in_size - this->in_nmsgs, 0, NULL );
@@ -1886,10 +2023,15 @@ EvUdp::read( void ) noexcept
 #else
   else {
     while ( this->in_nmsgs + nmsgs < this->in_size ) {
+#ifndef _MSC_VER
       nbytes = ::recvmsg( this->fd,
                           &this->in_mhdr[ this->in_nmsgs + nmsgs ].msg_hdr, 0 );
+#else
+      nbytes = ::wp_recvmsg( this->fd,
+                             &this->in_mhdr[ this->in_nmsgs + nmsgs ].msg_hdr );
+#endif
       if ( nbytes > 0 ) {
-        this->in_mhdr[ this->in_nmsgs + nmsgs ].msg_len = nbytes;
+        this->in_mhdr[ this->in_nmsgs + nmsgs ].msg_len = (uint32_t) nbytes;
         nmsgs++;
         continue;
       }
@@ -1910,8 +2052,15 @@ EvUdp::read( void ) noexcept
   this->in_nsize = 1;
   /* wait for epoll() to set EV_READ again */
   this->pop3( EV_READ, EV_READ_LO, EV_READ_HI );
+#ifdef _MSC_VER
+  /* reset EPOLLET */
+  struct epoll_event event;
+  event.data.fd = this->fd;
+  event.events  = EPOLLIN | EPOLLRDHUP | EPOLLET;
+  ::epoll_ctl( this->poll.efd, EPOLL_CTL_MOD, this->fd, &event );
+#endif
   if ( ( nmsgs < 0 || nbytes < 0 ) && errno != EINTR ) {
-    if ( errno != EAGAIN ) {
+    if ( ! ev_would_block( errno ) ) {
       if ( errno != ECONNRESET )
         this->set_sock_err( EV_ERR_BAD_READ, errno );
       else
@@ -1926,7 +2075,7 @@ void
 EvUdp::write( void ) noexcept
 {
   int nmsgs = 0;
-#ifndef NO_SENDMMSG
+#if ! defined( NO_SENDMMSG ) && ! defined( _MSC_VER )
   if ( this->out_nmsgs > 1 ) {
     nmsgs = ::sendmmsg( this->fd, this->out_mhdr, this->out_nmsgs, 0 );
     if ( nmsgs > 0 ) {
@@ -1937,29 +2086,25 @@ EvUdp::write( void ) noexcept
       return;
     }
   }
-  else {
-    ssize_t nbytes = ::sendmsg( this->fd, &this->out_mhdr[ 0 ].msg_hdr, 0 );
-    if ( nbytes > 0 ) {
-      this->bytes_sent += nbytes;
-      this->clear_buffers();
-      this->pop3( EV_WRITE, EV_WRITE_HI, EV_WRITE_POLL );
-      return;
-    }
-    if ( nbytes < 0 )
-      nmsgs = -1;
-  }
-#else
-  for ( uint32_t i = 0; i < this->out_nmsgs; i++ ) {
-    ssize_t nbytes = ::sendmsg( this->fd, &this->out_mhdr[ i ].msg_hdr, 0 );
-    if ( nbytes > 0 )
-      this->bytes_sent += nbytes;
-    if ( nbytes < 0 ) {
-      nmsgs = -1;
-      break;
-    }
-  }
+  else
 #endif
-  if ( nmsgs < 0 && errno != EAGAIN && errno != EINTR ) {
+  {
+    for ( uint32_t i = 0; i < this->out_nmsgs; i++ ) {
+      ssize_t nbytes;
+#ifndef _MSC_VER
+      nbytes = ::sendmsg( this->fd, &this->out_mhdr[ i ].msg_hdr, 0 );
+#else
+      nbytes = ::wp_sendmsg( this->fd, &this->out_mhdr[ i ].msg_hdr );
+#endif
+      if ( nbytes > 0 )
+        this->bytes_sent += nbytes;
+      if ( nbytes < 0 ) {
+        nmsgs = -1; /* check errno below */
+        break;
+      }
+    }
+  }
+  if ( nmsgs < 0 && ! ev_would_block( errno ) ) {
     if ( errno != ECONNRESET && errno != EPIPE )
       this->set_sock_err( EV_ERR_BAD_WRITE, errno );
     else
@@ -1968,6 +2113,7 @@ EvUdp::write( void ) noexcept
     this->popall();
     this->push( EV_CLOSE );
   }
+  /* if msgs were unsent, this drops them */
   this->clear_buffers();
   this->pop3( EV_WRITE, EV_WRITE_HI, EV_WRITE_POLL );
 }
@@ -2081,8 +2227,8 @@ EvSocket::idle_push( EvState s ) noexcept
     }
     /* check if added state requires queue to be rearranged */
     else {
-      int x1 = __builtin_ffs( this->sock_state ),
-          x2 = __builtin_ffs( this->sock_state | ( 1 << s ) );
+      int x1 = kv_ffsw( this->sock_state ),
+          x2 = kv_ffsw( this->sock_state | ( 1 << s ) );
       /* new state has higher priority than current state, reorder queue */
       if ( x1 > x2 ) {
         if ( this->in_queue( IN_EVENT_QUEUE ) ) {

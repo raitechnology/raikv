@@ -149,8 +149,8 @@ struct RouteHT {
              new_off;
     Data   * data = (Data *) (void *) &this->block[ BLOCK_SIZE - off ],
            * new_data;
-    uint16_t nz   = intsize( new_sz ),
-             dz   = intsize( data->len );
+    uint16_t nz   = (uint16_t) intsize( new_sz ),
+             dz   = (uint16_t) intsize( data->len );
     bool     mark;
 
     if ( off == this->free_off ) { /* adjust free off if at the end */
@@ -302,7 +302,7 @@ struct RouteHT {
     uint16_t j, off;
 
     this->rem_count++;
-    this->rem_size += intsize( data->len );
+    this->rem_size += (uint16_t) intsize( data->len );
     mark_removed( data );
     this->entry[ i ].off = 0;
     for (;;) {
@@ -339,7 +339,7 @@ struct RouteHT {
       if ( off == 0 )
         return NULL;
       Data   * data = (Data *) (void *) &this->block[ BLOCK_SIZE - off ];
-      off -= intsize( data->len );
+      off -= (uint16_t) intsize( data->len );
       if ( ! is_removed( data ) )
         return data;
     }
@@ -352,7 +352,7 @@ struct RouteHT {
     while ( this->entry[ i ].off != 0 )
       i = ( i + 1 ) % HT_SIZE;
     sz = intsize( data->len );
-    this->free_off += sz;
+    this->free_off += (uint16_t) sz;
     this->count++;
     this->entry[ i ].off  = this->free_off;
     this->entry[ i ].half = (uint16_t) data->hash;
@@ -545,6 +545,9 @@ struct RouteVec {
     return false;
   }
   /* add new data, may be duplicate */
+  Data *insert( uint32_t h,  const void *s,  size_t l,  RouteLoc &loc ) {
+    return this->insert( h, s, (uint16_t) l, loc );
+  }
   Data *insert( uint32_t h,  const void *s,  uint16_t l,  RouteLoc &loc ) {
     if ( ! this->bsearch_init( loc, h ) )
       return NULL;
@@ -553,11 +556,17 @@ struct RouteVec {
     return this->vec[ loc.i ]->insert( h, s, l, loc.j );
   }
   /* add new data */
+  Data *insert( uint32_t h,  const void *s,  size_t l ) {
+    return this->insert( h, s, (uint16_t) l );
+  }
   Data *insert( uint32_t h,  const void *s,  uint16_t l ) {
     RouteLoc loc;
     return this->insert( h, s, l, loc );
   }
   /* insert or find data if present */
+  Data *upsert( uint32_t h,  const void *s,  size_t l,  RouteLoc &loc ) {
+    return this->upsert( h, s, (uint16_t) l, loc );
+  }
   Data *upsert( uint32_t h,  const void *s,  uint16_t l,  RouteLoc &loc ) {
     Data * data;
     if ( ! this->bsearch_init( loc, h ) )
@@ -569,6 +578,10 @@ struct RouteVec {
     if ( ! this->fits( loc, h, l ) )
       this->vec[ loc.i ]->locate( h, s, l, loc.j );
     return this->vec[ loc.i ]->inplace( h, s, l, loc.j );
+  }
+  Data *upsert2( uint32_t h,  const void *s,  size_t l,  RouteLoc &loc,
+                 uint32_t &hcnt ) {
+    return this->upsert2( h, s, (uint16_t) l, loc, hcnt );
   }
   Data *upsert2( uint32_t h,  const void *s,  uint16_t l,  RouteLoc &loc,
                  uint32_t &hcnt ) {
@@ -585,14 +598,20 @@ struct RouteVec {
     return this->vec[ loc.i ]->inplace( h, s, l, loc.j );
   }
   /* insert if not present */
+  Data *upsert( uint32_t h,  const void *s,  size_t l ) {
+    return this->upsert( h, s, (uint16_t) l );
+  }
   Data *upsert( uint32_t h,  const void *s,  uint16_t l ) {
     RouteLoc loc;
     return this->upsert( h, s, l, loc );
   }
   /* resize a data element */
+  Data *resize( uint32_t h,  const void *s,  size_t old_len,
+                size_t new_len,  RouteLoc &loc ) {
+    return this->resize( h, s, (uint16_t) old_len, (uint16_t) new_len, loc );
+  }
   Data *resize( uint32_t h,  const void *s,  uint16_t old_len,
-                uint16_t new_len,  RouteLoc &loc )
-  {
+                uint16_t new_len,  RouteLoc &loc ) {
     Data *data = this->vec[ loc.i ]->resize( loc.j, new_len );
     if ( data != NULL )
       return data;
@@ -612,6 +631,9 @@ struct RouteVec {
     return this->vec[ loc.i ]->resize( loc.j, new_len );
   }
   /* find data by hash and value, fill in location */
+  Data *find( uint32_t h,  const void *s,  size_t l,  RouteLoc &loc ) const {
+    return this->find( h, s, (uint16_t) l, loc );
+  }
   Data *find( uint32_t h,  const void *s,  uint16_t l,  RouteLoc &loc ) const {
     loc.init();
     if ( this->vec_size == 0 )
@@ -621,9 +643,16 @@ struct RouteVec {
     return this->vec[ loc.i ]->locate( h, s, l, loc.j );
   }
   /* find a data by hash and value */
+  Data *find( uint32_t h,  const void *s,  size_t l ) const {
+    return this->find( h, s, (uint16_t) l );
+  }
   Data *find( uint32_t h,  const void *s,  uint16_t l ) const {
     RouteLoc loc;
     return this->find( h, s, l, loc );
+  }
+  Data *find2( uint32_t h,  const void *s,  size_t l,  RouteLoc &loc,
+               uint32_t &hcnt ) const {
+    return this->find2( h, s, (uint16_t) l, loc, hcnt );
   }
   Data *find2( uint32_t h,  const void *s,  uint16_t l,  RouteLoc &loc,
                uint32_t &hcnt ) const {
@@ -689,6 +718,9 @@ struct RouteVec {
     return true;
   }
   /* find data by hash, value and remove if found */
+  bool remove( uint32_t h,  const void *s,  size_t l ) {
+    return this->remove( h, s, (uint16_t) l );
+  }
   bool remove( uint32_t h,  const void *s,  uint16_t l ) {
     Data   * data;
     uint32_t i = 0;

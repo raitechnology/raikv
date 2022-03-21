@@ -1,9 +1,14 @@
 #include <stdio.h>
 #include <stdint.h>
+#define __STDC_FORMAT_MACROS
+#include <inttypes.h>
 #include <string.h>
 #include <stdlib.h>
+#ifndef _MSC_VER
 #include <unistd.h>
-#include <pthread.h>
+#else
+#include <raikv/win.h>
+#endif
 #include <raikv/shm_ht.h>
 #include <raikv/key_buf.h>
 
@@ -31,8 +36,8 @@ shm_close( void )
 {
   if ( ctx_id != MAX_CTX_ID ) {
     HashCounters & stat = map->stats[ dbx_id ];
-    printf( "rd %lu, wr %lu, "
-            "sp %lu, ch %lu\n",
+    printf( "rd %" PRIu64 ", wr %" PRIu64 ", "
+            "sp %" PRIu64 ", ch %" PRIu64 "\n",
             stat.rd, stat.wr, stat.spins, stat.chains );
     map->detach_ctx( ctx_id );
     ctx_id = MAX_CTX_ID;
@@ -54,7 +59,7 @@ main( int argc, char *argv[] )
 {
   SignalHandler sighndl;
   bool do_publish = false;
-  int count = 0, begin = 0;
+  size_t count = 0, begin = 0;
 
   /* [sysv2m:shm.test] [file] [cnt] [pre] */
   const char * mn = get_arg( argc, argv, 1, "-m", KV_DEFAULT_SHM ),
@@ -110,7 +115,7 @@ main( int argc, char *argv[] )
   KeyStatus   status;
 
   kb.zero();
-  kb.keylen = ::strlen( su ) + 1;
+  kb.keylen = (uint16_t) ( ::strlen( su ) + 1 );
   if ( kb.keylen > MAX_KEY_SIZE - 2 )
     kb.keylen = MAX_KEY_SIZE - 2;
   ::memcpy( kb.u.buf, su, kb.keylen );
@@ -193,7 +198,7 @@ main( int argc, char *argv[] )
         break;
     }
     if ( sum > 0 ) {
-      printf( "%lu (%lu) m (%lu) %lu -> %lu\n",
+      printf( "%" PRIu64 " (%" PRIu64 ") m (%" PRIu64 ") %" PRIu64 " -> %" PRIu64 "\n",
               sum/sum_count, sum_count, m/sum_count, first, last );
     }
   }

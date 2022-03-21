@@ -87,7 +87,7 @@ struct ScratchMem {
   void              * closure;
 
   void * operator new( size_t, void *ptr ) { return ptr; }
-  void operator delete( void *ptr ) { ::free( ptr ); }
+  void operator delete( void *ptr ) { aligned_free( ptr ); }
   static ScratchMem *create( void ) {
     return reinterpret_cast<ScratchMem *>(
       kv_create_ctx_alloc( 8 * 1024, 0, 0, 0 ) );
@@ -147,9 +147,15 @@ struct ScratchMem {
   static void release( void *p ) noexcept; /* release ptr returned by alloc() */
 };
 
+#ifdef _MSC_VER
+__declspec(align(64)) struct BufAlign64 {
+  uint8_t line[ 64 ];
+};
+#else
 struct BufAlign64 {
   uint8_t line[ 64 ];
 } __attribute__((__aligned__(64)));
+#endif
 
 template <size_t fast_size>
 struct WorkAllocT : public ScratchMem {

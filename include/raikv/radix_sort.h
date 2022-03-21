@@ -104,7 +104,7 @@ struct RadixSort {
     if ( (shift = this->bit_count) == 0 )
       mask = 0;
     else /* mask is the most significant bit currently being sorted */
-      mask = 1 << ( shift - 1 );
+      mask = (KeyType) 1 << ( shift - 1 );
     /* off is the current offset into this->vals[] being sorted */
     off   = 0;
     /* count is the length of elements currently sorted starting from off */
@@ -293,7 +293,7 @@ struct RadixSort {
       if ( shift == 0 )
         mask = 0;
       else /* mask is the most significant bit currently being sorted */
-        mask = 1 << ( shift - 1 );
+        mask = (KeyType) 1 << ( shift - 1 );
     }
   }
 };

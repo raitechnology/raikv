@@ -2,10 +2,14 @@
 #include <stdint.h>
 #include <string.h>
 #include <stdlib.h>
-#include <unistd.h>
 #include <errno.h>
+#ifndef _MSC_VER
+#include <unistd.h>
 #include <sys/time.h>
 #include <sys/timerfd.h>
+#else
+#include <raikv/win.h>
+#endif
 #include <raikv/timer_queue.h>
 #include <raikv/util.h>
 
@@ -17,7 +21,11 @@ EvTimerQueue::EvTimerQueue( EvPoll &p )
               last( 0 ), epoch( 0 ), delta( 0 ), real( 0 ),
               cb( 0 ), cb_sz( 0 ), cb_used( 0 )
 {
+#ifdef HAVE_TIMERFD
   this->sock_opts = OPT_READ_HI;
+#else
+  this->sock_opts = OPT_NO_POLL;
+#endif
 }
 
 bool
@@ -31,7 +39,11 @@ EvTimerQueue::create_timer_queue( EvPoll &p ) noexcept
 {
   int tfd;
 
+#ifdef HAVE_TIMERFD
   tfd = ::timerfd_create( CLOCK_MONOTONIC, TFD_NONBLOCK );
+#else
+  tfd = p.get_null_fd();
+#endif
   if ( tfd == -1 ) {
     perror( "timerfd_create() failed" );
     return NULL;
@@ -40,7 +52,12 @@ EvTimerQueue::create_timer_queue( EvPoll &p ) noexcept
   void * m = aligned_malloc( sizeof( EvTimerQueue ) );
   if ( m == NULL ) {
     perror( "alloc timer queue" );
+  fini:;
+#ifdef HAVE_TIMERFD
     ::close( tfd );
+#else
+    ::wp_close_fd( tfd );
+#endif
     return NULL;
   }
   EvTimerQueue * q = new ( m ) EvTimerQueue( p );
@@ -51,8 +68,7 @@ EvTimerQueue::create_timer_queue( EvPoll &p ) noexcept
   q->real   = p.current_coarse_ns();
   if ( p.add_sock( q ) < 0 ) {
     printf( "failed to add timer %d\n", tfd );
-    ::close( tfd );
-    return NULL;
+    goto fini;
   }
   return q;
 }
@@ -143,30 +159,31 @@ EvTimerQueue::repost( void ) noexcept
 void
 EvTimerQueue::read( void ) noexcept
 {
+#ifdef HAVE_TIMERFD
   uint8_t buf[ 1024 ];
   ssize_t n;
   for (;;) {
     n = ::read( this->fd, buf, sizeof( buf ) );
-    if ( n < 0 ) {
-      if ( errno != EINTR ) {
-        if ( errno != EAGAIN ) {
-          perror( "raed timer" );
-          this->popall();
-          this->push( EV_CLOSE );
-        }
-        else {
-          this->pop3( EV_READ, EV_READ_LO, EV_READ_HI );
-          this->push( EV_PROCESS );
-        }
-      }
+    if ( n < 0 )
       break;
+  }
+  if ( errno != EINTR ) {
+    if ( errno != EAGAIN ) {
+      perror( "raed timer" );
+      this->popall();
+      this->push( EV_CLOSE );
+      return;
     }
   }
+#endif
+  this->pop3( EV_READ, EV_READ_LO, EV_READ_HI );
+  this->push( EV_PROCESS );
 }
 
 bool
 EvTimerQueue::set_timer( void ) noexcept
 {
+#ifdef HAVE_TIMERFD
   struct itimerspec ts;
   ts.it_interval.tv_sec = 0;
   ts.it_interval.tv_nsec = 0;
@@ -177,6 +194,7 @@ EvTimerQueue::set_timer( void ) noexcept
     perror( "set timer" );
     return false;
   }
+#endif
   return true;
 }
 

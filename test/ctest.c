@@ -1,11 +1,17 @@
 #include <stdio.h>
 #include <stdlib.h>
-#include <unistd.h>
-#include <pthread.h>
 #include <stdint.h>
+#define __STDC_FORMAT_MACROS
+#include <inttypes.h>
 #include <string.h>
 #include <ctype.h>
-
+#ifndef _MSC_VER
+#include <unistd.h>
+#include <fcntl.h>
+#include <pthread.h>
+#else
+#include <raikv/win.h>
+#endif
 #include <raikv/shm_ht.h>
 #include <raikv/radix_sort.h>
 
@@ -62,8 +68,8 @@ cmp_frag_hash( const void *p1,  const void *p2 )
 uint32_t
 next_pos( void )
 {
-  static uint32_t val;
-  return kv_sync_add( &val, 1 );
+  static kv_atom_uint32_t val;
+  return kv_sync_add32( &val, 1 );
 }
 
 void
@@ -82,7 +88,7 @@ process_key_frags( thr_data_t *t )
 
   /*qsort( t->xh, i, sizeof( t->xh[ 0 ] ), cmp_frag_hash );*/
   /* kv_ht_sort_t is generic version of xh_t */
-  kv_ht_radix_sort( (kv_ht_sort_t *) (void *) t->xh, i, ht );
+  kv_ht_radix_sort( (kv_ht_sort_t *) (void *) t->xh, (uint32_t) i, ht );
 
   if ( testing == 1 ) {
     t->frag_count = 0;
@@ -106,8 +112,8 @@ process_key_frags( thr_data_t *t )
       if ( t->xh[ i ].hash != 0 ) {
         kv_set_key( t->ctx[ j ], t->xh[ i ].frag );
         kv_set_hash( t->ctx[ j ], t->xh[ i ].hash, t->xh[ i ].hash2 );
-        kv_prefetch( t->ctx[ j ], 0 );
-        src[ j ] = i;
+        kv_key_prefetch( t->ctx[ j ], 0 );
+        src[ j ] = (uint32_t) i;
         j++;
       }
       else {
@@ -158,10 +164,9 @@ process_key_frags( thr_data_t *t )
   t->frag_count = 0;
 }
 
-void *
-thr_process( void *data )
+void
+process_data( thr_data_t *t )
 {
-  thr_data_t    * t = (thr_data_t *) data;
   kv_key_frag_t * frag;
   char          * in,
                 * out,
@@ -206,15 +211,16 @@ thr_process( void *data )
           if ( i < MAX_TOKEN_SIZE ) {
             if ( t->frag_count == sizeof( t->xh ) / sizeof( t->xh[ 0 ] ) )
               process_key_frags( t );
-            frag = kv_make_key_frag( i + 1, end - out, in, &out );
+            frag = kv_make_key_frag( (uint16_t)( i + 1 ), end - out, in, &out );
             if ( frag == NULL ) {
               process_key_frags( t );
               in   = t->buf;
               out  = t->buf;
-              frag = kv_make_key_frag( i + 1, end - out, in, &out );
+              frag = kv_make_key_frag( (uint16_t)( i + 1 ), end - out, in,
+                                       &out );
             }
             w = p - i;
-            kv_set_key_frag_string( frag, w, i );
+            kv_set_key_frag_string( frag, w, (uint16_t) i );
             t->xh[ t->frag_count++ ].frag = frag;
             t->count++;
             in = out;
@@ -231,7 +237,6 @@ thr_process( void *data )
   }
   kv_detach_ctx( ht, t->ctx_id );
   t->running = 0;
-  return NULL;
 }
 
 void
@@ -249,38 +254,90 @@ create_thr_data( uint16_t num_thr )
   }
 }
 
+#ifndef _MSC_VER
+void *
+pthr_process( void *p )
+{
+  process_data( (thr_data_t *) p );
+  return NULL;
+}
+#else
+DWORD WINAPI
+win_process( void *p )
+{
+  process_data( (thr_data_t *) p );
+  return 0;
+}
+#endif
+
 void
 start_threads( uint32_t num_thr )
 {
-  pthread_t thrid;
   uint32_t i;
-  for ( i = 0; i < num_thr; i++ ) {
-    pthread_create( &thrid, NULL, thr_process, thr[ i ] );
-  }
+#ifndef _MSC_VER
+  pthread_t thrid;
+  for ( i = 0; i < num_thr; i++ )
+    pthread_create( &thrid, NULL, pthr_process, thr[ i ] );
+#else
+  for ( i = 0; i < num_thr; i++ )
+    CreateThread( NULL, 0, win_process, thr[ i ], 0, NULL );
+#endif
 }
 
 void
-process_input_data( uint32_t num_thr )
+process_input_data( const char *fn,  uint32_t num_thr )
 {
   ssize_t x = 0, n = 0;
   uint32_t i;
+#ifndef _MSC_VER
+  int fd = ( fn == NULL ? 0 : open( fn, O_RDONLY ) );
+  if ( fd < 0 ) {
+    perror( fn );
+    return;
+  }
+#else
+  HANDLE fd;
+  DWORD  nbytes;
+  if ( fn == NULL )
+    fd = GetStdHandle( STD_INPUT_HANDLE );
+  else
+    fd = CreateFileA( fn, GENERIC_READ, 0, NULL, OPEN_EXISTING,
+                      FILE_ATTRIBUTE_NORMAL, NULL );
+  if ( fd == INVALID_HANDLE_VALUE) {
+    fprintf(stderr, "%s: Error %u", fn, GetLastError() );
+    return;
+  }
+#endif
   create_thr_data( num_thr );
   start_threads( num_thr );
 
   for ( i = 0; i < num_thr; i++ ) {
-    n = read( 0, thr[ i ]->str, sizeof( thr[ i ]->str ) );
+#ifndef _MSC_VER
+    n = read( fd, thr[ i ]->str, sizeof( thr[ i ]->str ) );
+#else
+    n = 0;
+    if ( ReadFile( fd, thr[ i ]->str, sizeof( thr[ i ]->str ), &nbytes, NULL ) )
+      n = nbytes;
+#endif
     if ( n <= 0 )
       break;
-    kv_sync_add( &thr[ i ]->ready, n );
+    kv_sync_add64( &thr[ i ]->ready, n );
   }
 
   while ( n > 0 ) {
     for ( i = 0; i < num_thr; i++ ) {
       if ( thr[ i ]->ready == thr[ i ]->consumed ) {
-        n = read( 0, thr[ i ]->str, sizeof( thr[ i ]->str ) );
+#ifndef _MSC_VER
+        n = read( fd, thr[ i ]->str, sizeof( thr[ i ]->str ) );
+#else
+        n = 0;
+        if ( ReadFile( fd, thr[ i ]->str, sizeof( thr[ i ]->str ), &nbytes,
+                       NULL ) )
+          n = nbytes;
+#endif
         if ( n <= 0 )
           break;
-        kv_sync_add( &thr[ i ]->ready, n );
+        kv_sync_add64( &thr[ i ]->ready, n );
       }
     }
     kv_sync_pause();
@@ -291,31 +348,36 @@ process_input_data( uint32_t num_thr )
     for ( i = 0; i < num_thr; i++ ) {
       x += thr[ i ]->running;
       if ( thr[ i ]->running )
-        kv_sync_xchg( &thr[ i ]->done, 1 );
+        kv_sync_xchg8( &thr[ i ]->done, 1 );
     }
     kv_sync_pause();
   } while ( x > 0 );
 
   for ( i = 0; i < num_thr; i++ ) {
     int j;
-    printf( "[%d] %lu words, %lu bytes, %lu dup -- ",
+    printf( "[%d] %" PRIu64 " words, %" PRIu64 " bytes, %" PRIu64 " dup -- ",
             i, thr[ i ]->count, thr[ i ]->consumed, thr[ i ]->dup_count );
     for ( j = 0; j < KEY_MAX_STATUS; j++ ) {
       if ( thr[ i ]->status_cnt[ j ] != 0 ) {
         const char *s = kv_key_status_string( (kv_key_status_t) j );
-        printf( "%s:%lu ", &s[ 4 ], thr[ i ]->status_cnt[ j ] );
+        printf( "%s:%" PRIu64 " ", &s[ 4 ], thr[ i ]->status_cnt[ j ] );
       }
     }
     printf( "\n" );
   }
+#ifndef _MSC_VER
+  if ( fn != NULL )
+    close( fd );
+#else
+  if ( fn != NULL )
+    CloseHandle( fd );
+#endif
 }
 
 static const char *
-get_arg( int argc, char *argv[], int n, int b, const char *f, const char *def )
+get_arg( int argc, char *argv[], int b, const char *f, const char *def )
 {
   int i;
-  if ( n > 0 && argc > n && argv[ 1 ][ 0 ] != '-' )
-    return argv[ n ];
   for ( i = 1; i < argc - b; i++ )
     if ( strcmp( f, argv[ i ] ) == 0 )
       return argv[ i + b ];
@@ -329,25 +391,25 @@ main( int argc,  char *argv[] )
   uint32_t num_thr = 8;
 
   /* [sysv2m:shm.test] [4] [0] [0] */
-  const char * mn = get_arg( argc, argv, 1, 1, "-m", KV_DEFAULT_SHM ),
-             * nt = get_arg( argc, argv, 2, 1, "-t", "8" ),
-             * db = get_arg( argc, argv, 3, 1, "-d", "0" ),
-             * te = get_arg( argc, argv, 4, 1, "-x", "0" ),
-             * he = get_arg( argc, argv, 0, 0, "-h", 0 );
+  const char * mn = get_arg( argc, argv, 1, "-m", KV_DEFAULT_SHM ),
+             * nt = get_arg( argc, argv, 1, "-t", "8" ),
+             * db = get_arg( argc, argv, 1, "-d", "0" ),
+             * te = get_arg( argc, argv, 1, "-x", "0" ),
+             * fn = get_arg( argc, argv, 1, "-f", NULL ),
+             * he = get_arg( argc, argv, 0, "-h", 0 );
 
   if ( he != NULL ) {
   cmd_error:;
     fprintf( stderr, "raikv version: %s\n", kv_stringify( KV_VER ) );
     fprintf( stderr,
-  "%s [-m map] [-t num-thr] [-d db-num] [-x testing]\n"
-  "  -m map     = name of map file (prefix w/ file:, sysv:, posix:)\n"
-  "  -t num-thr = number of worker threads to utilize\n"
-  "  -d db-num  = database number to use\n"
-  "  -x testing = debug testing\n",
-             argv[ 0 ] );
+  "%s [-m map] [-t num-thr] [-d db-num] [-f file] [-x testing]\n"
+  "  -m map      = name of map file (prefix w/ file:, sysv:, posix:)\n"
+  "  -t num-thr  = number of worker threads to utilize\n"
+  "  -d db-num   = database number to use\n"
+  "  -f filename = filename to read\n"
+  "  -x testing  = debug testing\n", argv[ 0 ] );
     return 1;
   }
-
   testing = atoi( te );
   db_num = (uint8_t) atoi( db );
   if ( (num_thr = atoi( nt )) == 0 )
@@ -357,9 +419,7 @@ main( int argc,  char *argv[] )
   if ( ht == NULL )
     perror( mn );
   fputs( kv_print_map_geom( ht, KV_MAX_CTX_ID, NULL, 0 ), stdout );
-
-  process_input_data( num_thr );
-
+  process_input_data( fn, num_thr );
   kv_close_map( ht );
   return 0;
 }

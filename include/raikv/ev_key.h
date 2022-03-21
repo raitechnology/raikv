@@ -110,7 +110,7 @@ struct EvKeyCtx {
       *p++ = *k++;
     } while ( k < e );
     this->kbuf.u.buf[ keystrlen ] = '\0'; /* keys terminate with nul char */
-    this->kbuf.keylen = keystrlen + 1;
+    this->kbuf.keylen = (uint16_t) ( keystrlen + 1 );
   }
   static size_t size( size_t keystrlen ) {
     /* alloc size of *this (kbuf has 4 bytes pad) */

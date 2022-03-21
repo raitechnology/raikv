@@ -1,5 +1,7 @@
 #include <stdio.h>
 #include <stdint.h>
+#define __STDC_FORMAT_MACROS
+#include <inttypes.h>
 #include <string.h>
 #include <stdlib.h>
 #include <math.h>
@@ -26,7 +28,7 @@ main( void )
   }
   /*t = kv_current_monotonic_time_s() - t;*/
   for ( i = 0; i < 1000; i++ )
-    printf( "%d %lu %lu\n", i, j += sum[ i ], sum[ i ] );
+    printf( "%d %" PRIu64 " %" PRIu64 "\n", i, j += sum[ i ], sum[ i ] );
   /*&printf( "%.3f\n", t * 100.0 );*/
 
   return 0;

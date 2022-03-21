@@ -1,12 +1,17 @@
 #include <stdio.h>
 #include <stdint.h>
+#define __STDC_FORMAT_MACROS
+#include <inttypes.h>
 #include <string.h>
 #include <stdlib.h>
 #include <stdarg.h>
-#include <unistd.h>
 #include <ctype.h>
-#include <pthread.h>
+#ifndef _MSC_VER
+#include <unistd.h>
 #include <signal.h>
+#else
+#include <raikv/win.h>
+#endif
 #include <errno.h>
 
 #define SPRINTF_RELA_TIME
@@ -31,8 +36,10 @@ FILE *outfp[ 3 ] = { stdout, NULL, NULL };
 int  topfp = 0;
 bool quiet;
 
+#ifndef _MSC_VER
 static int xprintf( const char *format, ... )
   __attribute__((format(printf,1,2)));
+#endif
 
 static int
 xputs( const char *s )
@@ -86,7 +93,8 @@ shm_attach( const char *mn )
 {
   map = HashTab::attach_map( mn, 0, geom );
   if ( map != NULL ) {
-    ctx_id = map->attach_ctx( my_pid = ::getpid() );
+    my_pid = ::getpid();
+    ctx_id = map->attach_ctx( my_pid );
     dbx_id = map->attach_db( ctx_id, db_num );
     fputs( print_map_geom( map, ctx_id ), stdout );
   }
@@ -111,9 +119,7 @@ fix_locks( void )
     uint32_t pid = map->ctx[ c ].ctx_pid;
     if ( pid == 0 || map->ctx[ c ].ctx_id == KV_NO_CTX_ID )
       continue;
-    if ( ::kill( pid, 0 ) == 0 )
-      continue;
-    if ( errno == EPERM )
+    if ( pidexists( pid ) != 0 )
       continue;
 
     uint64_t used, recovered = 0;
@@ -127,7 +133,7 @@ fix_locks( void )
       ThrMCSLock &mcs = map->ctx[ c ].get_mcs_lock( mcs_id );
       MCSStatus status;
       xprintf(
-      "ctx %u: pid %u, mcs %u, val 0x%lx, lock 0x%lx, next 0x%lx, link %lu\n",
+      "ctx %u: pid %u, mcs %u, val 0x%" PRIx64 ", lock 0x%" PRIx64 ", next 0x%" PRIx64 ", link %" PRIu64 "\n",
                c, pid, id, mcs.val.load(), mcs.lock.load(), mcs.next.load(),
                mcs.lock_id );
       if ( mcs.lock_id != 0 ) {
@@ -175,16 +181,14 @@ print_stats( uint32_t c )
     if ( pid != 0 ) {
       if ( map->ctx[ c ].ctx_id != KV_NO_CTX_ID ) {
         alive = 1;
-        if ( ::kill( pid, 0 ) == 0 )
+        if ( pidexists( pid ) == 1 )
           alive = 2;
-        else if ( errno == EPERM )
-          alive = 3;
       }
     }
-    xprintf( "ctx %u%c:  pid %u, read %lu, write %lu, spin %lu, chains %lu, "
-            "add %lu, drop %lu, expire %lu, htevict %lu, afail %lu, hit %lu, "
-            "miss %lu, cuckacq %lu, cuckfet %lu, cuckmov %lu, cuckret %lu "
-            "cuckmax %lu\n",
+    xprintf( "ctx %u%c:  pid %u, read %" PRIu64 ", write %" PRIu64 ", spin %" PRIu64 ", chains %" PRIu64 ", "
+            "add %" PRIu64 ", drop %" PRIu64 ", expire %" PRIu64 ", htevict %" PRIu64 ", afail %" PRIu64 ", hit %" PRIu64 ", "
+            "miss %" PRIu64 ", cuckacq %" PRIu64 ", cuckfet %" PRIu64 ", cuckmov %" PRIu64 ", cuckret %" PRIu64 " "
+            "cuckmax %" PRIu64 "\n",
         c, ( c == ctx_id ? '*' :
              ( alive == 2 ? '+' : ( alive == 1 ? '?' : '/' ) ) ),
         pid, tot.rd, tot.wr, tot.spins, tot.chains, tot.add, tot.drop,
@@ -230,7 +234,7 @@ struct HexDump {
       k >>= 4;
     }
   }
-  uint32_t fill_line( const void *ptr,  uint64_t off,  uint64_t len ) {
+  size_t fill_line( const void *ptr,  size_t off,  size_t len ) {
     while ( off < len && this->boff < 16 ) {
       uint8_t b = ((uint8_t *) ptr)[ off++ ];
       this->line[ this->hex ]   = hex_chars[ b >> 4 ];
@@ -266,9 +270,9 @@ print_mem( uint32_t s )
     Segment &seg = map->segment( s );
     uint64_t x, y;
     seg.get_position( seg.ring, map->hdr.seg_align_shift, x, y );
-    xprintf( "seg(%u): off=%lu, next=%lu:%lu, msg_count=%lu, "
-             "avail_size=%lu, move_msgs=%lu, move_size=%lu, evict_msgs=%lu, "
-             "evict_size=%lu\n", s, seg.seg_off, x, y, seg.msg_count.load(),
+    xprintf( "seg(%u): off=%" PRIu64 ", next=%" PRIu64 ":%" PRIu64 ", msg_count=%" PRIu64 ", "
+             "avail_size=%" PRIu64 ", move_msgs=%" PRIu64 ", move_size=%" PRIu64 ", evict_msgs=%" PRIu64 ", "
+             "evict_size=%" PRIu64 "\n", s, seg.seg_off, x, y, seg.msg_count.load(),
              seg.avail_size.load(), seg.move_msgs, seg.move_size,
              seg.evict_msgs, seg.evict_size );
   }
@@ -299,7 +303,7 @@ print_seg( uint32_t s )
     msg = (MsgHdr *) map->seg_data( s, off );
   }
   /*if ( dead_size > 0 ) {
-    xprintf( "[dead %lu] ", dead_size );
+    xprintf( "[dead %" PRIu64 "] ", dead_size );
   }*/
   xputs( "\n" );
 }
@@ -332,7 +336,7 @@ print_seg2( uint32_t s,  uint32_t x )
     msg = (MsgHdr *) map->seg_data( s, off );
   }
   /*if ( dead_size > 0 ) {
-    xprintf( "[dead %lu] ", dead_size );
+    xprintf( "[dead %" PRIu64 "] ", dead_size );
   }*/
   xputs( "\n" );
 }
@@ -365,15 +369,15 @@ gc_seg( uint32_t s )
   stats.zero();
   xprintf( "segment #%u\n", s );
   map->gc_segment( dbx_id, s, stats );
-  xprintf( "  seg=%lu new=%lu "
-                "moved[%u]=%lu "
-                "zombie[%u]=%lu\n"
-              "  expired[%u]=%lu "
-                "mutated[%u]=%lu "
-                "orphans[%u]=%lu "
-                "immovable[%u]=%lu\n"
-              "  msglist[%u]=%lu(%u) "
-                "compact[%u]=%lu\n",
+  xprintf( "  seg=%" PRIu64 " new=%" PRIu64 " "
+                "moved[%u]=%" PRIu64 " "
+                "zombie[%u]=%" PRIu64 "\n"
+              "  expired[%u]=%" PRIu64 " "
+                "mutated[%u]=%" PRIu64 " "
+                "orphans[%u]=%" PRIu64 " "
+                "immovable[%u]=%" PRIu64 "\n"
+              "  msglist[%u]=%" PRIu64 "(%u) "
+                "compact[%u]=%" PRIu64 "\n",
     stats.seg_pos, stats.new_pos,
     stats.moved, stats.moved_size, 
     stats.zombie, stats.zombie_size, 
@@ -466,12 +470,12 @@ parse_key_string( KeyBuf &kb,  const char *key )
   size_t len = ::strlen( key );
   if ( ! parse_key_value( kb, key, len ) ) {
     if ( len > 1 && key[ 0 ] == '\"' && key[ len - 1 ] == '\"' ) {
-      kb.keylen = len - 1;
+      kb.keylen = (uint16_t) ( len - 1 );
       ::memcpy( kb.u.buf, &key[ 1 ], len - 2 );
       kb.u.buf[ kb.keylen ] = '\0';
     }
     else {
-      kb.keylen = len + 1;
+      kb.keylen = (uint16_t) ( len + 1 );
       ::memcpy( kb.u.buf, key, kb.keylen );
     }
   }
@@ -657,7 +661,7 @@ static bool
 expires_token( const char *key,  uint64_t &exp_ns )
 {
   uint64_t val = 0, ns;
-  uint32_t j = 0, len = ::strlen( key );
+  size_t j = 0, len = ::strlen( key );
 
   if ( key[ j++ ] != '+' )
     return false;
@@ -701,19 +705,19 @@ print_key_data( KeyCtx &kctx,  const char *what,  uint64_t sz )
 
   sprintf_stamps( kctx, upd, exp );
   cnt =  kctx.serial - ( kctx.key & ValueCtr::SERIAL_MASK );
-  xprintf( "[%lu] [h=0x%08lx:%08lx:chn=%lu:cnt=%lu",
+  xprintf( "[%" PRIu64 "] [h=0x%08" PRIx64 ":%08" PRIx64 ":chn=%" PRIu64 ":cnt=%" PRIu64 "",
     kctx.pos, kctx.key, kctx.key2, kctx.chains, cnt );
 
   if ( ( kctx.entry->flags & FL_SEQNO ) != 0 ) {
     seq = kctx.entry->seqno( kctx.hash_entry_size );
-    xprintf( ",%lu", seq );
+    xprintf( ",%" PRIu64 "", seq );
   }
-  xprintf( ":db=%u:val=%u:inc=%u:sz=%lu%s%s] (%s",
+  xprintf( ":db=%u:val=%u:inc=%u:sz=%" PRIu64 "%s%s] (%s",
       kctx.get_db(), kctx.get_val(), kctx.inc,
       sz, upd, exp, flags_string( kctx.entry->flags, kctx.get_type(), fl ) );
   if ( kctx.msg != NULL ) {
     ValueGeom &geom = kctx.geom;
-    xprintf( " seg=%u:sz=%lu:off=%lu:cnt=%lu",
+    xprintf( " seg=%u:sz=%" PRIu64 ":off=%" PRIu64 ":cnt=%" PRIu64 "",
       geom.segment, geom.size, geom.offset,
       geom.serial - ( kctx.key & ValueCtr::SERIAL_MASK ) );
   }
@@ -792,14 +796,14 @@ static void
 print_rdtsc( uint64_t t1, uint64_t t2, uint64_t t3,
              const char *s1,  const char *s2 )
 {
-  xprintf( "%lu [%s] %lu [%s]\n", t2 - t1, s1, t3 - t2, s2 );
+  xprintf( "%" PRIu64 " [%s] %" PRIu64 " [%s]\n", t2 - t1, s1, t3 - t2, s2 );
 }
 
 static void
 print_rdtsc( uint64_t t1, uint64_t t2, uint64_t t3, uint64_t t4,
              const char *s1,  const char *s2,  const char *s3 )
 {
-  xprintf( "%lu [%s] %lu [%s] %lu [%s]\n",
+  xprintf( "%" PRIu64 " [%s] %" PRIu64 " [%s] %" PRIu64 " [%s]\n",
            t2 - t1, s1, t3 - t2, s2, t4 - t3, s3 );
 }
 #endif
@@ -833,7 +837,7 @@ validate_ht( HashTab *map )
           ::strcpy( buf, "key_part" );
         print_status( "find-buckets", buf, KEY_MAX_CHAINS );
         //kctx.get_pos_info( natural_pos, pos_off );
-        xprintf( "pos_off %lu natural_pos %lu\n", pos_off, natural_pos );
+        xprintf( "pos_off %" PRIu64 " natural_pos %" PRIu64 "\n", pos_off, natural_pos );
         print_key_data( kctx, "", 0 );
       }
       if ( status == KEY_OK ) {
@@ -854,8 +858,8 @@ validate_ht( HashTab *map )
           ::strcpy( buf, "key_part" );
         print_status( "find-position", buf, status );
         if ( status == KEY_OK ) {
-          xprintf( "pos %lu != kctx.pos %lu\n", pos, kctx2.pos );
-          xprintf( "pos_off %lu natural_pos %lu\n", pos_off, natural_pos );
+          xprintf( "pos %" PRIu64 " != kctx.pos %" PRIu64 "\n", pos, kctx2.pos );
+          xprintf( "pos_off %" PRIu64 " natural_pos %" PRIu64 "\n", pos_off, natural_pos );
           xprintf( "db %u db2 %u\n", db, kctx2.get_db() );
         }
         print_key_data( kctx, "", 0 );
@@ -1059,7 +1063,7 @@ cli( void )
               break;
             }
             case 'P': /* Publish */
-              if ( (status = kctx.append_msg( data, sz )) == KEY_OK ) {
+              if ( (status = kctx.append_msg( data, (msg_size_t) sz )) == KEY_OK ) {
                 /*::memcpy( ptr, data, sz );*/
                 status = print_key_data( kctx, "put", sz );
                 if ( do_verbose )
@@ -1114,15 +1118,15 @@ cli( void )
       case 'w': /* switch db */
         if ( key[ 0 ] >=  '0' && key[ 0 ] <= '9' ) {
           HashCounters tot;
-          db_num = string_to_uint64( key, ::strlen( key ) );
+          db_num = (uint8_t) string_to_uint64( key, ::strlen( key ) );
           xprintf( "switching to DB %u\n", db_num );
           dbx_id = map->attach_db( ctx_id, db_num );
           kctx.set_db( dbx_id );
           map->get_db_stats( tot, db_num );
-          xprintf( "count %lu, read %lu, write %lu, spin %lu, chains %lu, "
-             "add %lu, drop %lu, expire %lu, htevict %lu, afail %lu, hit %lu, "
-             "miss %lu, cuckacq %lu, cuckfet %lu, cuckmov %lu, cuckret %lu "
-             "cuckmax %lu\n",
+          xprintf( "count %" PRIu64 ", read %" PRIu64 ", write %" PRIu64 ", spin %" PRIu64 ", chains %" PRIu64 ", "
+             "add %" PRIu64 ", drop %" PRIu64 ", expire %" PRIu64 ", htevict %" PRIu64 ", afail %" PRIu64 ", hit %" PRIu64 ", "
+             "miss %" PRIu64 ", cuckacq %" PRIu64 ", cuckfet %" PRIu64 ", cuckmov %" PRIu64 ", cuckret %" PRIu64 " "
+             "cuckmax %" PRIu64 "\n",
             tot.add - tot.drop,
             tot.rd, tot.wr, tot.spins, tot.chains, tot.add, tot.drop,
             tot.expire, tot.htevict, tot.afail, tot.hit, tot.miss, tot.cuckacq,
@@ -1195,12 +1199,12 @@ cli( void )
               }
               bool not_printed = false;
               if ( is_msg_list )
-                xprintf( "[%lu]", i );
+                xprintf( "[%" PRIu64 "]", i );
               else
                 xprintf( "->" );
               if ( do_int ) {
                 if ( sz == 8 )
-                  xprintf( "%lu\n", *(uint64_t *) (void *) data );
+                  xprintf( "%" PRIu64 "\n", *(uint64_t *) (void *) data );
                 else if ( sz == 4 )
                   xprintf( "%u\n", *(uint32_t *) (void *) data );
                 else if ( sz == 2 )
@@ -1226,7 +1230,7 @@ cli( void )
             if ( count == 0 ) {
               /*t3 = get_rdtscp();
               print_rdtsc( t1, t2, t3, "hash", "find" );*/
-              xprintf( "[%lu] [h=%lx]: \n",
+              xprintf( "[%" PRIu64 "] [h=%" PRIx64 "]: \n",
                       kctx.pos, kctx.key );
               print_status( cmd, key, status );
             }
@@ -1304,7 +1308,7 @@ cli( void )
                     ::strcpy( key, kv_key_status_string( status ) );
                   sprintf_stamps( kctx, upd, exp );
                   xprintf(
-        "[%lu]+%u.%lu %s (%s db=%u:val=%u:seg=%u:sz=%lu:off=%lu:seq=%lu%s%s)\n",
+        "[%" PRIu64 "]+%u.%" PRIu64 " %s (%s db=%u:val=%u:seg=%u:sz=%" PRIu64 ":off=%" PRIu64 ":seq=%" PRIu64 "%s%s)\n",
                        kld.pos, kctx.inc, pos_off, key,
                        flags_string( kctx.entry->flags, kctx.get_type(), fl ),
                        kctx.get_db(), kctx.get_val(), geom.segment, geom.size,
@@ -1331,7 +1335,7 @@ cli( void )
                     ::strcpy( key, kv_key_status_string( status ) );
                   sprintf_stamps( kctx, upd, exp );
                   xprintf(
-        "[%lu]+%u.%lu %s (%s db=%u:val=%u:sz=%lu:seq=%lu%s%s)\n",
+        "[%" PRIu64 "]+%u.%" PRIu64 " %s (%s db=%u:val=%u:sz=%" PRIu64 ":seq=%" PRIu64 "%s%s)\n",
                            kld.pos, kctx.inc, pos_off, key,
                       flags_string( kctx.entry->flags, kctx.get_type(), fl ),
                       kctx.get_db(), kctx.get_val(), sz, sno, upd, exp );
@@ -1351,21 +1355,21 @@ cli( void )
           }
           kld.pos++;
         }
-        xprintf( "%lu keys, (%lu segment, %lu immediate, %lu none, "
-                 "%lu drops %lu moves %lu busy)\n",
+        xprintf( "%" PRIu64 " keys, (%" PRIu64 " segment, %" PRIu64 " immediate, %" PRIu64 " none, "
+                 "%" PRIu64 " drops %" PRIu64 " moves %" PRIu64 " busy)\n",
                  kld.key_count, kld.seg_values,
                  kld.immed_values, kld.no_value, kld.drops,
                  kld.moves, kld.busy );
         if ( kld.err_count > 0 )
-          xprintf( "%lu errors\n", kld.err_count );
+          xprintf( "%" PRIu64 " errors\n", kld.err_count );
         h = kld.hit[ 0 ];
         f = (double) h * 100.0 / (double) kld.key_count;
         j = 0;
-        xprintf( "0:%lu(%.1f)", h, f );
+        xprintf( "0:%" PRIu64 "(%.1f)", h, f );
         for ( i = 1; i < MAX_OFF; i++ ) {
           if ( kld.hit[ i ] > 0 ) {
             j = i;
-            xprintf( ", %u:%lu", i, kld.hit[ i ] );
+            xprintf( ", %u:%" PRIu64 "", i, kld.hit[ i ] );
             if ( f <= 99.9 ) {
               h += kld.hit[ i ];
               f = (double) h * 100.0 / (double) kld.key_count;
@@ -1376,7 +1380,7 @@ cli( void )
         }
         if ( kld.hit[ i ] > 0 ) {
           j = i;
-          xprintf( ", >=%u:%lu", i, kld.hit[ i ] );
+          xprintf( ", >=%u:%" PRIu64 "", i, kld.hit[ i ] );
           if ( f < 99.9 ) {
             h += kld.hit[ i ];
             f = (double) h * 100.0 / (double) kld.key_count;
@@ -1384,9 +1388,9 @@ cli( void )
               xprintf( "(%.1f)", f );
           }
         }
-        xprintf( " max=%lu\n", kld.max_hit == 0 ? j : kld.max_hit );
+        xprintf( " max=%" PRIu64 "\n", kld.max_hit == 0 ? j : kld.max_hit );
         if ( kld.pos < map->hdr.ht_size ) {
-          xprintf( "pos %lu of %lu (more)\n",
+          xprintf( "pos %" PRIu64 " of %" PRIu64 " (more)\n",
                   kld.pos, map->hdr.ht_size );
         }
         status = KEY_OK;

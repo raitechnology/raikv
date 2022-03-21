@@ -29,12 +29,7 @@ kv_create_ctx_alloc( size_t sz,  kv_alloc_func_t ba,  kv_free_func_t bf,
 {
   size_t off = align<size_t>( sizeof( ScratchMem ), sizeof( BufAlign64 ) );
   size_t sz2 = align<size_t>( off + sz, sizeof( BufAlign64 ) );
-  void * ptr =
-#ifdef _ISOC11_SOURCE
-    ::aligned_alloc( sizeof( BufAlign64 ), sz2 ); /* >= RH7 */
-#else
-    ::memalign( sizeof( BufAlign64 ), sz2 ); /* RH5, RH6 */
-#endif
+  void * ptr = aligned_malloc( sz2 );
   if ( ptr == NULL )
     return NULL;
   new ( ptr ) ScratchMem( 2, 16 * 1024 - 32,
@@ -99,12 +94,12 @@ void
 ScratchMem::reset_slow( void ) noexcept
 {
   if ( this->block_cnt > 0 ) {
-    this->blk_list.hd->off2 = this->alloc_size;
+    this->blk_list.hd->off2 = (uint32_t) this->alloc_size;
     while ( this->block_cnt > this->slack_count )
       this->release_block( this->blk_list.hd );
     this->free_cnt = this->block_cnt;
   }
-  this->off = this->alloc_size;
+  this->off = (uint32_t) this->alloc_size;
   while ( ! this->big_list.is_empty() )
     this->kv_big_free( this->closure, this->big_list.pop_hd() );
   this->fast = ( this->fast_len != 0 );
@@ -131,7 +126,7 @@ ScratchMem::alloc_slow( size_t sz ) noexcept
         return NULL;
     for (;;) {
       uint32_t j = this->off;
-      this->off += used;
+      this->off += (uint32_t) used;
       if ( this->off <= this->alloc_size ) {
         hdr = (MemHdr *) this->blk_list.hd->arena_ptr( j );
         hdr->size = used;
@@ -140,7 +135,7 @@ ScratchMem::alloc_slow( size_t sz ) noexcept
         return p;
       }
       if ( j < this->alloc_size )
-        this->blk_list.hd->off2 += this->alloc_size - j;
+        this->blk_list.hd->off2 += (uint32_t) ( this->alloc_size - j );
       if ( this->alloc_block() == NULL )
         return NULL;
     }
@@ -173,7 +168,7 @@ ScratchMem::release( void *p ) noexcept
     if ( off != 0 ) {
       MBlock * blk = (MBlock *) ( (uint8_t *) p - off );
       ScratchMem &_this = *blk->owner;
-      blk->off2 += hdr->size;
+      blk->off2 += (uint32_t) hdr->size;
       if ( blk->off2 == _this.alloc_size )
 	_this.release_block( blk );
     }

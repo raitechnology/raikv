@@ -1,12 +1,17 @@
 #include <stdio.h>
 #include <stdint.h>
+#define __STDC_FORMAT_MACROS
+#include <inttypes.h>
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
 #include <math.h>
+#ifndef _MSC_VER
 #include <unistd.h>
 #include <pthread.h>
-
+#else
+#include <raikv/win.h>
+#endif
 #include <raikv/shm_ht.h>
 #include <raikv/key_buf.h>
 #include <raikv/zipf.h>
@@ -79,7 +84,7 @@ struct Results {
   /* cols matches up with hdr */
   void print_stats( void ) {
     printf( "%5.1f", this->ival );
-    printf( "%12lu", this->total_ops );
+    printf( "%12" PRIu64, this->total_ops );
     printf( "%12.0f", this->ops_rate );
     printf( "%6.1f", this->ns_per );
     printf( "%6.2f", this->collision );
@@ -88,31 +93,31 @@ struct Results {
     printf( "%14.0f\n", this->spin_rate );
   }
   void print_stats2( void ) {
-    printf( "     %12lu", this->hit );
-    printf( "%12lu", this->miss );
-    printf( "%12lu", this->evict );
-    printf( "%12lu", this->cuckacq );
-    printf( "%12lu", this->cuckfet );
-    printf( "%12lu\n", this->cuckmov );
+    printf( "     %12" PRIu64, this->hit );
+    printf( "%12" PRIu64, this->miss );
+    printf( "%12" PRIu64, this->evict );
+    printf( "%12" PRIu64, this->cuckacq );
+    printf( "%12" PRIu64, this->cuckfet );
+    printf( "%12" PRIu64 "\n", this->cuckmov );
   }
   /* space separated */
   void print_line( void ) {
     printf( "%.1f ", this->ival );
-    printf( "%lu ", this->total_ops );
+    printf( "%" PRIu64 " ", this->total_ops );
     printf( "%.1f ", this->ops_rate );
     printf( "%.1f ", this->ns_per );
     printf( "%.2f ", this->collision );
     printf( "%.1f ", this->rd_rate );
     printf( "%.1f ", this->wr_rate );
     printf( "%.1f ", this->spin_rate );
-    printf( "%lu ", this->evict );
-    printf( "%lu ", this->hit );
-    printf( "%lu ", this->miss );
-    printf( "%lu ", this->cuckacq );
-    printf( "%lu ", this->cuckfet );
-    printf( "%lu ", this->cuckmov );
-    printf( "%lu ", this->cuckret );
-    printf( "%lu\n", this->cuckmax );
+    printf( "%" PRIu64 " ", this->evict );
+    printf( "%" PRIu64 " ", this->hit );
+    printf( "%" PRIu64 " ", this->miss );
+    printf( "%" PRIu64 " ", this->cuckacq );
+    printf( "%" PRIu64 " ", this->cuckfet );
+    printf( "%" PRIu64 " ", this->cuckmov );
+    printf( "%" PRIu64 " ", this->cuckret );
+    printf( "%" PRIu64 "\n", this->cuckmax );
   }
 };
 
@@ -175,7 +180,7 @@ struct Test {
   void test_int( void ) noexcept;
   void run( void ) noexcept;
   Test * copy( void ) noexcept {
-    void * p = ::aligned_alloc( 64, sizeof( Test ) ); /* this is necessary */
+    void * p = ::malloc( sizeof( Test ) ); /* this is necessary */
     Test * t = new ( p ) Test( this->map, this->num_threads );
     t->test_count = this->test_count;
     t->load_pct   = this->load_pct;
@@ -298,7 +303,7 @@ Test::test_one( void ) noexcept
     if ( this->num_secs <= 0 || mono - start >= this->num_secs ) {
       this->ival = mono - last; last = mono;
       if ( this->map.sum_ht_thr_delta( this->stats, this->ops, this->tot,
-                                       this->ctx_id ) > 0 ) {
+                                       this->ctx_id ) ) {
         this->sum_stats();
         this->print_stats();
       }
@@ -456,7 +461,7 @@ Test::test_int( void ) noexcept
     if ( this->num_secs <= 0 || mono - start >= this->num_secs || done ) {
       this->ival = mono - last; last = mono;
       if ( this->map.sum_ht_thr_delta( this->stats, this->ops, this->tot,
-                                       this->ctx_id ) > 0 ) {
+                                       this->ctx_id ) ) {
         this->sum_stats();
         this->print_hdr();
         this->print_stats();
@@ -472,7 +477,9 @@ Test::test_int( void ) noexcept
 void
 Test::run( void ) noexcept
 {
-  this->ctx_id = this->map.attach_ctx( ::getpid() );
+  uint32_t mypid;
+  mypid = ::getpid();
+  this->ctx_id = this->map.attach_ctx( mypid );
   if ( this->ctx_id == MAX_CTX_ID ) {
     fprintf( stderr, "no more ctx available\n" );
     return;
@@ -485,7 +492,7 @@ Test::run( void ) noexcept
     fputs( s, stdout );
     printf( "generator:   %s\n", this->generator );
     printf( "num threads: %d\n", this->num_threads );
-    printf( "elem count:  %lu\n", this->test_count );
+    printf( "elem count:  %" PRIu64 "\n", this->test_count );
     printf( "prefetch:    %u\n", this->prefetch );
     printf( "use find:    %s\n", this->use_find ? "yes" : "no" );
     printf( "use ratio:   %s\n", this->use_ratio ? "yes" : "no" );
@@ -584,7 +591,7 @@ main( int argc, char *argv[] )
   if ( sz[ szl ] != '\0' && (m = tomem( &sz[ szl ] )) != 0 )
     szf *= (double) m;
   if ( cr != NULL ) {
-    geom.map_size         = strtod( cr, 0 ) * 1024 * 1024;
+    geom.map_size         = (uint64_t) ( strtod( cr, 0 ) * 1024 * 1024 );
     geom.hash_entry_size  = 64;
     geom.cuckoo_buckets   = 4;
     geom.cuckoo_arity     = 2;
@@ -594,9 +601,9 @@ main( int argc, char *argv[] )
       geom.hash_value_ratio = 1;
     }
     else {
-      geom.max_value_size   = (uint64_t) szf + 128;
-      geom.hash_value_ratio = 1.0 / /* hash ratio of / 64 bytes */
-                    ( ( ( (uint64_t) szf | 127 ) + 129 ) / 64.0 );
+      geom.max_value_size   = (uint32_t) szf + 128;
+      geom.hash_value_ratio = (float) ( 1.0 / /* hash ratio of / 64 bytes */
+                    ( ( ( (uint64_t) szf | 127 ) + 129 ) / 64.0 ) );
     }
     map = HashTab::create_map( mn, 0, geom, 0666 );
   }
@@ -658,6 +665,7 @@ main( int argc, char *argv[] )
       test.results.print_line();
     }
   }
+#ifndef _MSC_VER
   /* if multiple threads */
   else {
     int i = 0;
@@ -681,6 +689,7 @@ main( int argc, char *argv[] )
     printf( "%d %.1f ", nthr, (double) geom.map_size / 1024.0 / 1024.0 );
     total.print_line();
   }
+#endif
   if ( ! test.quiet )
     printf( "bye\n" );
 

@@ -1,6 +1,8 @@
 #ifndef __rai_raikv__cube_route_h__
 #define __rai_raikv__cube_route_h__
 
+#include <raikv/util.h>
+
 namespace rai {
 namespace kv {
 
@@ -203,9 +205,9 @@ struct CubeRoute {
   }
 
   size_t popcount( void ) const {
-    size_t p = __builtin_popcountl( this->w[ 0 ] ), i = 1;
+    size_t p = kv_popcountl( this->w[ 0 ] ), i = 1;
     while ( i < BITS_W )
-      p += __builtin_popcountl( this->w[ i++ ] );
+      p += kv_popcountl( this->w[ i++ ] );
     return p;
   }
 
@@ -226,7 +228,7 @@ struct CubeRoute {
       return false;
     if ( (x >>= i) == 0 )
       return false;
-    i += __builtin_ffsll( x ) - 1;
+    i += kv_ffsl( x ) - 1;
     return true;
   }
 
@@ -333,10 +335,10 @@ struct CubeRoute {
 
   void print_pop( void ) const {
     size_t i;
-    printf( "pop %lu: ", this->popcount() );
+    printf( "pop %" PRIu64 ": ", this->popcount() );
     if ( this->first_set( i ) ) {
       do {
-        printf( "%lu ", i );
+        printf( "%" PRIu64 " ", i );
       } while ( this->next_set( i ) );
     }
     printf( "\n" );
@@ -347,10 +349,10 @@ struct CubeRoute {
     RangeType range[ 8 ];
 
     if ( (j = this->branch4( node, start, end, range )) == 0 ) {
-      printf( "%*s [%lu]\n", x, "", node );
+      printf( "%*s [%" PRIu64 "]\n", x, "", node );
     }
     else {
-      printf( "%*s [%lu] %lu -> %lu\n", x, "", node, start, end );
+      printf( "%*s [%" PRIu64 "] %" PRIu64 " -> %" PRIu64 "\n", x, "", node, start, end );
       for ( i = 0; i < j; i += 2 ) {
         this->print_traverse( x + 2, range[ i ], range[ i ], range[ i + 1 ] );
       }

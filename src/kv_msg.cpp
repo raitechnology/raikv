@@ -2,6 +2,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <stdlib.h>
+#include <inttypes.h>
 
 #include <raikv/util.h>
 #include <raikv/kv_msg.h>
@@ -145,8 +146,8 @@ KvMsg::msg_type_string( void ) const noexcept
 void
 KvMsg::print( void ) noexcept
 {
-  printf( "\r\nseqno      : %lu\r\n"
-          "stamp      : 0x%lx\r\n"
+  printf( "\r\nseqno      : %" PRIu64 "\r\n"
+          "stamp      : 0x%" PRIx64 "\r\n"
           "size       : %u\r\n"
           "src        : %u\r\n"
           "dest_start : %u\r\n"
@@ -178,7 +179,7 @@ KvMsg::print( void ) noexcept
       }
     }
     if ( this->msg_type == KV_MSG_FRAGMENT ) {
-      printf( "msg_off    : %lu\r\n", sub.get_frag_off() );
+      printf( "msg_off    : %" PRIu64 "\r\n", sub.get_frag_off() );
     }
 #if 0
     if ( this->msg_type >= KV_MSG_PUBLISH ) {
@@ -223,7 +224,7 @@ KvFragAsm::merge( KvFragAsm *&fragp,  const KvSubMsg &msg ) noexcept
       if ( seqno - frag->frag_count == frag->first_seqno ) {
         if ( size > frag->msg_size ) {
           fprintf( stderr,
-            "bad fragment(%.*s), off %lu + %u > %lu\n",
+            "bad fragment(%.*s), off %" PRIu64 " + %u > %" PRIu64 "\n",
             (int) msg.sublen, msg.subj(), off, msg.msg_size,
             frag->msg_size );
           goto create_new_frag;
@@ -232,7 +233,7 @@ KvFragAsm::merge( KvFragAsm *&fragp,  const KvSubMsg &msg ) noexcept
       }
       else {
         fprintf( stderr,
-          "bad fragment(%.*s), seqno %lu - frag_count %lu != first %lu\n",
+          "bad fragment(%.*s), seqno %" PRIu64 " - frag_count %" PRIu64 " != first %" PRIu64 "\n",
           (int) msg.sublen, msg.subj(), seqno, frag->frag_count,
           frag->first_seqno );
         goto create_new_frag;
@@ -244,13 +245,13 @@ KvFragAsm::merge( KvFragAsm *&fragp,  const KvSubMsg &msg ) noexcept
   }
   if ( frag == NULL || frag->msg_size < msg.msg_size ) {
     fprintf( stderr,
-      "bad fragment(%.*s), frag->msg_size %lu < msg_size %u\n",
+      "bad fragment(%.*s), frag->msg_size %" PRIu64 " < msg_size %u\n",
       (int) msg.sublen, msg.subj(), frag == NULL ? 0 : frag->msg_size,
       msg.msg_size );
   }
   else if ( seqno - frag->frag_count != frag->first_seqno ) {
     fprintf( stderr,
-      "bad fragment(%.*s), seqno %lu - frag_count %lu != first %lu\n",
+      "bad fragment(%.*s), seqno %" PRIu64 " - frag_count %" PRIu64 " != first %" PRIu64 "\n",
       (int) msg.sublen, msg.subj(), seqno, frag->frag_count,
       frag->first_seqno );
   }

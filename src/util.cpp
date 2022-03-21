@@ -1,16 +1,43 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#ifndef _MSC_VER
 #include <signal.h>
 #include <unistd.h>
+#include <sys/syscall.h>
+#else
+#include <windows.h>
+#endif
+#include <stdlib.h>
 #include <fcntl.h>
 #include <time.h>
+#include <errno.h>
 
 #include <raikv/util.h>
 #include <raikv/atom.h>
 
 using namespace rai;
 using namespace kv;
+
+#ifndef _MSC_VER
+extern "C"
+uint32_t
+getthrid( void )
+{
+  return ::syscall( SYS_gettid );
+}
+
+extern "C"
+int
+pidexists( uint32_t pid )
+{
+  if ( ::kill( pid, 0 ) == 0 )
+    return 1;
+  if ( errno == EPERM )
+    return -1;
+  return 0;
+}
+#endif
 
 static const uint64_t newhash_magic = _U64( 0x9e3779b9U, 0x7f4a7c13U );
 inline void
@@ -55,23 +82,52 @@ rai::kv::rand::fill_urandom_bytes( void *buf,  uint16_t sz ) noexcept
   }
   else {
     static uint8_t ubuf[ 16384 ];
-    static int32_t nbytes;
+    static int32_t nbytes = 0;
+#ifdef _MSC_VER
+    static HMODULE advapi;
+    static BOOLEAN (APIENTRY * RtlGenRandom)( void *, ULONG );
+    static bool advapi_init;
+    if ( ! advapi_init ) {
+      advapi = GetModuleHandle( "advapi32.dll" );
+      if ( advapi != NULL ) {
+        RtlGenRandom = (BOOLEAN( APIENTRY * )( void *, ULONG ))
+          GetProcAddress( advapi, "SystemFunction036" );
+      }
+      advapi_init = true;
+    }
+#endif
     while ( sz > 0 ) {
       if ( nbytes <= 0 ) {
+#ifndef _MSC_VER
         int fd = ::open( "/dev/urandom", O_RDONLY );
         if ( fd >= 0 ) {
           nbytes = ::read( fd, ubuf, sizeof( ubuf ) );
           ::close( fd );
         }
+#else
+        if ( RtlGenRandom != NULL ) {
+          if ( RtlGenRandom( ubuf, sizeof( ubuf ) ) )
+            nbytes = sizeof( ubuf );
+        }
+#endif
         if ( nbytes <= 0 ) {
           uint64_t h[ 6 ] = { 1, 2, 3, 4, 5, 6 };
           for ( uint32_t i = 0; i < sizeof( ubuf ); ) {
             h[ 0 ] ^= current_monotonic_time_ns();
+#if 0
+            uint32_t r1, r2;
+            rand_s( &r1 ); rand_s( &r2 );
+            h[ 0 ] ^= ( (uint64_t) r1 << 32 ) | (uint64_t) r2;
+#endif
             h[ 1 ] ^= get_rdtsc();
             h[ 2 ] ^= newhash_magic;
             if ( ( h[ 0 ] & 63 ) < 32 )
               kv_sync_pause();
             h[ 3 ] ^= current_monotonic_time_ns();
+#if 0
+            rand_s( &r1 ); rand_s( &r2 );
+            h[ 3 ] ^= ( (uint64_t) r1 << 32 ) | (uint64_t) r2;
+#endif
             if ( ( h[ 1 ] & 63 ) < 32 )
               kv_sync_mfence();
             h[ 4 ] ^= newhash_magic;
@@ -127,6 +183,16 @@ rai::kv::rand::xoroshiro128plus::init( void *seed,  uint16_t sz ) noexcept
   return true;
 }
 
+#ifdef _MSC_VER
+static inline void kv_localtime( time_t t, struct tm &tmbuf ) {
+  ::localtime_s( &tmbuf, &t );
+}
+#else
+static inline void kv_localtime( time_t t, struct tm &tmbuf ) {
+  ::localtime_r( &t, &tmbuf );
+}
+#endif
+
 char *
 rai::kv::timestamp( uint64_t ns,  int precision,  char *buf,
                     size_t len,  const char *fmt ) noexcept
@@ -136,7 +202,7 @@ rai::kv::timestamp( uint64_t ns,  int precision,  char *buf,
   struct tm stamp;
   time_t t = (time_t) ( ns / ONE_NS );
 
-  ::localtime_r( &t, &stamp );
+  kv_localtime( t, stamp );
 
   buf[ 0 ] = '\0';
   ::strftime( buf, len, fmt ? fmt : default_fmt, &stamp );
@@ -149,7 +215,7 @@ rai::kv::timestamp( uint64_t ns,  int precision,  char *buf,
     if ( i < len - 1 )
       buf[ i++ ] = '.';
     for ( ; i < len - 1 && precision > 0; precision-- ) {
-      buf[ i++ ] = '0' + ( ( ns % j ) / k );
+      buf[ i++ ] = '0' + (char) ( ( ns % j ) / k );
       j = k; k /= 10;
     }
     buf[ i ] = '\0';
@@ -160,136 +226,282 @@ rai::kv::timestamp( uint64_t ns,  int precision,  char *buf,
 uint64_t
 rai::kv::get_rdtsc( void ) noexcept
 {
+#ifndef _MSC_VER
    uint32_t lo, hi;
   __asm__ __volatile__("rdtsc" : "=a" (lo), "=d" (hi));
   return ( (uint64_t) hi << 32 ) | (uint64_t) lo;
+#else
+  LARGE_INTEGER cnt;
+  QueryPerformanceCounter( &cnt );
+  return cnt.QuadPart;
+#endif
 }
-
+#if 0
 uint64_t
 rai::kv::get_rdtscp( void ) noexcept
 {
+#ifndef _MSC_VER
    uint32_t lo, hi;
   __asm__ __volatile__("rdtscp" : "=a" (lo), "=d" (hi));
   return ( (uint64_t) hi << 32 ) | (uint64_t) lo;
+#else
+  LARGE_INTEGER freq;
+  QueryPerformanceFrequency( &freq );
+  return freq.QuadPart;
+#endif
 }
+#endif
+#ifdef _MSC_VER
+enum { TO_NS = 0, TO_US = 1, TO_MS = 2, TO_SEC = 3 };
+static uint64_t freq_mul[ 4 ], freq_div[ 4 ];
+static double   freq_mul_f[ 4 ];
+
+static void
+qpc_init( void ) noexcept
+{
+  LARGE_INTEGER freq;
+  QueryPerformanceFrequency( &freq );
+  if ( freq.QuadPart > 1000000000ULL )
+    freq_div[ TO_NS ] = freq.QuadPart / 1000000000ULL;
+  else
+    freq_mul[ TO_NS ] = 1000000000ULL / freq.QuadPart;
+  freq_mul_f[ TO_NS ] = 1000000000.0 / (double) freq.QuadPart;
+
+  if ( freq.QuadPart > 1000000ULL )
+    freq_div[ TO_US ] = freq.QuadPart / 1000000ULL;
+  else
+    freq_mul[ TO_US ] = 1000000ULL / freq.QuadPart;
+  freq_mul_f[ TO_US ] = 1000000.0 / (double) freq.QuadPart;
+
+  if ( freq.QuadPart > 1000ULL )
+    freq_div[ TO_MS ] = freq.QuadPart / 1000ULL;
+  else
+    freq_mul[ TO_MS ] = 1000ULL / freq.QuadPart;
+  freq_mul_f[ TO_MS ] = 1000.0 / (double) freq.QuadPart;
+
+  freq_div[ TO_SEC ] = freq.QuadPart;
+  freq_mul_f[ TO_SEC ] = 1.0 / (double) freq.QuadPart;
+}
+
+static inline uint64_t
+qpc_to( int to ) noexcept
+{
+  LARGE_INTEGER lrg;
+  QueryPerformanceCounter( &lrg );
+  if ( freq_mul[ to ] == 0 || freq_div[ to ] == 0 )
+    qpc_init();
+  if ( freq_mul[ to ] == 0 )
+    return lrg.QuadPart / freq_div[ to ];
+  return lrg.QuadPart * freq_mul[ to ];
+}
+
+static inline double
+qpc_to_f( int to ) noexcept
+{
+  LARGE_INTEGER lrg;
+  QueryPerformanceCounter( &lrg );
+  if ( freq_mul_f[ to ] == 0 )
+    qpc_init();
+  return (double) lrg.QuadPart * freq_mul_f[ to ];
+}
+
+static const uint64_t DELTA_EPOCH = 116444736ULL *
+                                    1000000000ULL;
+static inline uint64_t
+fs_to( int to ) noexcept
+{
+  FILETIME ft;
+  uint64_t t;
+  GetSystemTimeAsFileTime( &ft );
+  t = ( (uint64_t) ft.dwHighDateTime << 32 ) | (uint64_t) ft.dwLowDateTime;
+  if ( to == TO_NS )
+    return t * 100ULL;
+  if ( to == TO_US )
+    return t / 10ULL;
+  if ( to == TO_MS )
+    return ( t / 10ULL ) / 1000ULL;
+  return ( ( t / 10ULL ) / 1000ULL ) / 1000ULL;
+}
+
+static inline double
+fs_to_f( int to ) noexcept
+{
+  FILETIME ft;
+  uint64_t t;
+  GetSystemTimeAsFileTime( &ft );
+  t = ( (uint64_t) ft.dwHighDateTime << 32 ) | (uint64_t) ft.dwLowDateTime;
+  if ( to == TO_NS )
+    return (double) t * 100.0;
+  if ( to == TO_US )
+    return (double) t / 10.0;
+  if ( to == TO_MS )
+    return ( (double) t / 10.0 ) / 1000.0;
+  return ( ( (double) t / 10.0 ) / 1000.0 ) / 1000.0;
+}
+#else
+
+static inline uint64_t
+cget( int clock,  uint64_t mul ) noexcept
+{
+  timespec ts;
+  clock_gettime( clock, &ts );
+  return ts.tv_sec * mul + ts.tv_nsec / ( 1000000000ULL / mul );
+}
+
+static inline double
+cget_f( int clock,  double mul ) noexcept
+{
+  timespec ts;
+  clock_gettime( clock, &ts );
+  return ts.tv_sec * mul + ts.tv_nsec / ( 1000000000.0 / mul );
+}
+#endif
 
 uint64_t
 rai::kv::current_monotonic_time_ns( void ) noexcept
 {
-  timespec ts;
-  clock_gettime( CLOCK_MONOTONIC, &ts );
-  return ts.tv_sec * (uint64_t) 1000000000 + ts.tv_nsec;
+#ifndef _MSC_VER
+  return cget( CLOCK_MONOTONIC, 1000000000 );
+#else
+  return qpc_to( TO_NS );
+#endif
 }
 
 uint64_t
 rai::kv::current_monotonic_time_us( void ) noexcept
 {
-  timespec ts;
-  clock_gettime( CLOCK_MONOTONIC, &ts );
-  return ts.tv_sec * (uint64_t) 1000000 + ts.tv_nsec;
+#ifndef _MSC_VER
+  return cget( CLOCK_MONOTONIC, 1000000 );
+#else
+  return qpc_to( TO_US );
+#endif
 }
 
 double
 rai::kv::current_monotonic_time_s( void ) noexcept
 {
-  timespec ts;
-  clock_gettime( CLOCK_MONOTONIC, &ts );
-  return (double) ts.tv_sec + (double) ts.tv_nsec / 1000000000.0;
+#ifndef _MSC_VER
+  return cget_f( CLOCK_MONOTONIC, 1.0 );
+#else
+  return qpc_to_f( TO_SEC );
+#endif
 }
 
 uint64_t
 rai::kv::current_monotonic_coarse_ns( void ) noexcept
 {
+#ifndef _MSC_VER
 #ifndef CLOCK_MONOTONIC_COARSE
 #define CLOCK_MONOTONIC_COARSE 6
 #endif
-  timespec ts;
-  clock_gettime( CLOCK_MONOTONIC_COARSE, &ts );
-  return ts.tv_sec * (uint64_t) 1000000000 + ts.tv_nsec;
+  return cget( CLOCK_MONOTONIC_COARSE, 1000000000 );
+#else
+  return qpc_to( TO_NS );
+#endif
 }
 
 double
 rai::kv::current_monotonic_coarse_s( void ) noexcept
 {
-  timespec ts;
-  clock_gettime( CLOCK_MONOTONIC_COARSE, &ts );
-  return (double) ts.tv_sec + (double) ts.tv_nsec / 1000000000.0;
+#ifndef _MSC_VER
+  return cget_f( CLOCK_MONOTONIC_COARSE, 1.0 );
+#else
+  return qpc_to_f( TO_SEC );
+#endif
 }
 
 uint64_t
 rai::kv::current_realtime_ns( void ) noexcept
 {
-  timespec ts;
-  clock_gettime( CLOCK_REALTIME, &ts );
-  return ts.tv_sec * (uint64_t) 1000000000 + ts.tv_nsec;
+#ifndef _MSC_VER
+  return cget( CLOCK_REALTIME, 1000000000 );
+#else
+  return fs_to( TO_NS );
+#endif
 }
 
 uint64_t
 rai::kv::current_realtime_ms( void ) noexcept
 {
-  timespec ts;
-  clock_gettime( CLOCK_REALTIME, &ts );
-  return ts.tv_sec * (uint64_t) 1000 + ts.tv_nsec / 1000000;
+#ifndef _MSC_VER
+  return cget( CLOCK_REALTIME, 1000 );
+#else
+  return fs_to( TO_MS );
+#endif
 }
 
 uint64_t
 rai::kv::current_realtime_us( void ) noexcept
 {
-  timespec ts;
-  clock_gettime( CLOCK_REALTIME, &ts );
-  return ts.tv_sec * (uint64_t) 1000000 + ts.tv_nsec / 1000;
+#ifndef _MSC_VER
+  return cget( CLOCK_REALTIME, 1000000 );
+#else
+  return fs_to( TO_US );
+#endif
 }
 
 double
 rai::kv::current_realtime_s( void ) noexcept
 {
-  timespec ts;
-  clock_gettime( CLOCK_REALTIME, &ts );
-  return (double) ts.tv_sec + (double) ts.tv_nsec / 1000000000.0;
+#ifndef _MSC_VER
+  return cget_f( CLOCK_REALTIME, 1.0 );
+#else
+  return fs_to_f( TO_SEC );
+#endif
 }
 
 uint64_t
 rai::kv::current_realtime_coarse_ns( void ) noexcept
 {
+#ifndef _MSC_VER
 #ifndef CLOCK_REALTIME_COARSE
 #define CLOCK_REALTIME_COARSE 5
 #endif
-  timespec ts;
-  clock_gettime( CLOCK_REALTIME_COARSE, &ts );
-  return ts.tv_sec * (uint64_t) 1000000000 + ts.tv_nsec;
+  return cget( CLOCK_REALTIME_COARSE, 1000000000 );
+#else
+  return fs_to( TO_NS );
+#endif
 }
 
 uint64_t
 rai::kv::current_realtime_coarse_ms( void ) noexcept
 {
-  timespec ts;
-  clock_gettime( CLOCK_REALTIME_COARSE, &ts );
-  return ts.tv_sec * (uint64_t) 1000 + ts.tv_nsec / 1000000;
+#ifndef _MSC_VER
+  return cget( CLOCK_REALTIME_COARSE, 1000 );
+#else
+  return fs_to( TO_MS );
+#endif
 }
 
 uint64_t
 rai::kv::current_realtime_coarse_us( void ) noexcept
 {
-  timespec ts;
-  clock_gettime( CLOCK_REALTIME_COARSE, &ts );
-  return ts.tv_sec * (uint64_t) 1000000 + ts.tv_nsec / 1000;
+#ifndef _MSC_VER
+  return cget( CLOCK_REALTIME_COARSE, 1000000 );
+#else
+  return fs_to( TO_US );
+#endif
 }
 
 double
 rai::kv::current_realtime_coarse_s( void ) noexcept
 {
-  timespec ts;
-  clock_gettime( CLOCK_REALTIME_COARSE, &ts );
-  return (double) ts.tv_sec + (double) ts.tv_nsec / 1000000000.0;
+#ifndef _MSC_VER
+  return cget_f( CLOCK_REALTIME_COARSE, 1.0 );
+#else
+  return fs_to_f( TO_SEC );
+#endif
 }
 extern "C" {
 
 uint64_t kv_get_rdtsc( void ) {
   return rai::kv::get_rdtsc(); /* intel rdtsc */
 }
+#if 0
 uint64_t kv_get_rdtscp( void ) {
   return rai::kv::get_rdtscp(); /* intel rdtscp */
 }
+#endif
 double kv_current_realtime_coarse_s( void ) {
   return rai::kv::current_realtime_coarse_s();
 }
@@ -332,6 +544,7 @@ uint64_t kv_current_realtime_coarse_us( void ) {
 
 static kv_signal_handler_t * the_sh;
 
+#ifndef _MSC_VER
 static void
 kv_termination_handler( int signum )
 {
@@ -340,15 +553,36 @@ kv_termination_handler( int signum )
     the_sh->signaled = 1;
   }
 }
+#else
+BOOL
+kv_ctrl_handler( DWORD fdwCtrlType )
+{
+  if ( the_sh != NULL ) {
+    switch ( fdwCtrlType ) {
+      case CTRL_C_EVENT:
+      case CTRL_CLOSE_EVENT:
+      case CTRL_BREAK_EVENT:
+      case CTRL_LOGOFF_EVENT:
+      case CTRL_SHUTDOWN_EVENT:
+      default:
+        the_sh->sig = 2;
+        the_sh->signaled = 1;
+        break;
+    }
+  }
+  return TRUE;
+}
+#endif
 
 void
 kv_sighndl_install( kv_signal_handler_t *sh )
 {
-  struct sigaction new_action, old_action, ign_action;
-
   sh->signaled = 0;
   sh->sig = 0;
   the_sh = sh;
+
+#ifndef _MSC_VER
+  struct sigaction new_action, old_action, ign_action;
 
   /* Set up the structure to specify the new action. */
   new_action.sa_handler = kv_termination_handler;
@@ -372,8 +606,11 @@ kv_sighndl_install( kv_signal_handler_t *sh )
   sigaction (SIGPIPE, NULL, &old_action);
   if (old_action.sa_handler != SIG_IGN)
     sigaction (SIGPIPE, &ign_action, NULL);
+#else
+  ::SetConsoleCtrlHandler( (PHANDLER_ROUTINE) kv_ctrl_handler, TRUE );
+#endif
 }
-}
+} /* extern "C" */
 
 void
 SignalHandler::install( void ) noexcept
@@ -504,7 +741,7 @@ rai::kv::string_to_int64( const char *b,  size_t len ) noexcept
   bool     is_neg = false;
   if ( b[ 0 ] == '-' ) { is_neg = true; b++; len -= 1; }
   x = string_to_uint64( b, len );
-  if ( is_neg ) return -x;
+  if ( is_neg ) return -(int64_t) x;
   return x;
 }
 
@@ -658,4 +895,35 @@ rai::kv::base64_to_bin( const void *inp,  size_t in_len,  void *outp ) noexcept
   return out_len;
 }
 
+extern "C" {
+/* atom C versions */
+uint8_t kv_sync_xchg8( kv_atom_uint8_t *a,  uint8_t new_val ) { return kv_sync_xchg( a, new_val ); }
+uint16_t kv_sync_xchg16( kv_atom_uint16_t *a,  uint16_t new_val ) { return kv_sync_xchg( a, new_val ); }
+uint32_t kv_sync_xchg32( kv_atom_uint32_t *a,  uint32_t new_val ) { return kv_sync_xchg( a, new_val ); }
+uint64_t kv_sync_xchg64( kv_atom_uint64_t *a,  uint64_t new_val ) { return kv_sync_xchg( a, new_val ); }
 
+int kv_sync_cmpxchg8( kv_atom_uint8_t *a, uint8_t old_val, uint8_t new_val ) { return kv_sync_cmpxchg( a, old_val, new_val ); }
+int kv_sync_cmpxchg16( kv_atom_uint16_t *a, uint16_t old_val, uint16_t new_val ) { return kv_sync_cmpxchg( a, old_val, new_val ); }
+int kv_sync_cmpxchg32( kv_atom_uint32_t *a, uint32_t old_val, uint32_t new_val ) { return kv_sync_cmpxchg( a, old_val, new_val ); }
+int kv_sync_cmpxchg64( kv_atom_uint64_t *a, uint64_t old_val, uint64_t new_val ) { return kv_sync_cmpxchg( a, old_val, new_val ); }
+
+uint8_t kv_sync_add8( kv_atom_uint8_t *a,  uint8_t val ) { return kv_sync_add( a, val ); }
+uint16_t kv_sync_add16( kv_atom_uint16_t *a,  uint16_t val ) { return kv_sync_add( a, val ); }
+uint32_t kv_sync_add32( kv_atom_uint32_t *a,  uint32_t val ) { return kv_sync_add( a, val ); }
+uint64_t kv_sync_add64( kv_atom_uint64_t *a,  uint64_t val ) { return kv_sync_add( a, val ); }
+
+uint8_t kv_sync_sub8( kv_atom_uint8_t *a,  uint8_t val ) { return kv_sync_sub( a, val ); }
+uint16_t kv_sync_sub16( kv_atom_uint16_t *a,  uint16_t val ) { return kv_sync_sub( a, val ); }
+uint32_t kv_sync_sub32( kv_atom_uint32_t *a,  uint32_t val ) { return kv_sync_sub( a, val ); }
+uint64_t kv_sync_sub64( kv_atom_uint64_t *a,  uint64_t val ) { return kv_sync_sub( a, val ); }
+
+void kv_sync_store8( kv_atom_uint8_t *a, uint8_t val ) { kv_sync_store( a, val ); }
+void kv_sync_store16( kv_atom_uint16_t *a, uint16_t val ) { kv_sync_store( a, val ); }
+void kv_sync_store32( kv_atom_uint32_t *a, uint32_t val ) { kv_sync_store( a, val ); }
+void kv_sync_store64( kv_atom_uint64_t *a, uint64_t val ) { kv_sync_store( a, val ); }
+
+uint8_t kv_sync_load8( kv_atom_uint8_t *a ) { return kv_sync_load( a ); }
+uint16_t kv_sync_load16( kv_atom_uint16_t *a ) { return kv_sync_load( a ); }
+uint32_t kv_sync_load32( kv_atom_uint32_t *a ) { return kv_sync_load( a ); }
+uint64_t kv_sync_load64( kv_atom_uint64_t *a ) { return kv_sync_load( a ); }
+}

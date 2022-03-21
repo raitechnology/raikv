@@ -119,7 +119,7 @@ CuckooAltHash::find_cuckoo_path( CuckooPosition &cp ) noexcept
       p    = this->pos[ inc ];
       boff = 0;
       while ( boff < buckets ) {
-        node[ off ].set( ZOMBIE64, 0, p, inc, boff++, -1 );
+        node[ off ].set( ZOMBIE64, 0, p, inc, (uint16_t) boff++, -1 );
         if ( ++p == ht_size )
           p = 0;
         stk[ tos ] = off;
@@ -132,7 +132,7 @@ CuckooAltHash::find_cuckoo_path( CuckooPosition &cp ) noexcept
     maxtos = tos;
     while ( tos > 0 ) {
       /* randomly choose an entry to move, idx = rng % tos, rng >>= tos_bits */
-      uint32_t idx = fpmod.mod( tos, rng_bits, tos_bits );
+      uint32_t idx = fpmod.mod( tos, (uint32_t) rng_bits, tos_bits );
       rng_bits   >>= tos_bits;
       vis          = &node[ stk[ idx ] ];
       stk[ idx ]   = stk[ --tos ];
@@ -174,7 +174,7 @@ CuckooAltHash::find_cuckoo_path( CuckooPosition &cp ) noexcept
         /* if another key to move, push it to the search stack */
         if ( status == KEY_OK ) {
 	  if ( off < node_size && tos < stk_size ) {
-	    node[ off ].set( vis->to_pos, key, p, inc, boff,
+	    node[ off ].set( vis->to_pos, key, p, inc, (uint16_t) boff,
                              (int32_t) ( vis - node ) );
 	    stk[ tos ] = off;
 	    off++; tos++;

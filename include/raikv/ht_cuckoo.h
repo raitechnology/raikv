@@ -55,7 +55,7 @@ struct FixedPointMod {
   uint8_t mod_frac[ MAX_VAL + 1 ]; /* mod fractions for 1 -> MAX_VAL */
 
   static uint8_t get_fraction( uint32_t sz ) {
-    uint32_t szlog2   = 32 - __builtin_clz( sz ),
+    uint32_t szlog2   = 32 - kv_clzw( sz ),
              mask     = ( (uint32_t) 1 << szlog2 ) - 1,
              fraction = (uint32_t) ( ( (double) sz / (double) mask ) *
                                    (double) ( 1U << SHFT ) ),
@@ -70,7 +70,7 @@ struct FixedPointMod {
   }
   /* 1 <= limit <= MAX_VAL */
   uint32_t mod( uint32_t limit,  uint32_t hash,  uint32_t &bits ) {
-    bits = ( 32 - __builtin_clz( limit ) );
+    bits = ( 32 - kv_clzw( limit ) );
     return ( ( hash & ( ( 1U << bits ) - 1 ) ) *
            (uint32_t) this->mod_frac[ limit ] ) >> SHFT;
   }
