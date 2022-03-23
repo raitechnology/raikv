@@ -329,16 +329,16 @@ $(bind)/test_bitset: $(test_bitset_objs) $(test_bitset_libs)
 all_exes          += $(bind)/test_bitset
 all_depends       += $(test_bitset_deps)
 
-test_list_files := test_list
-test_list_cfile := $(addprefix test/, $(addsuffix .cpp, $(test_list_files)))
-test_list_objs  := $(addprefix $(objd)/, $(addsuffix .o, $(test_list_files)))
-test_list_deps  := $(addprefix $(dependd)/, $(addsuffix .d, $(test_list_files)))
-test_list_libs  := $(libd)/libraikv.so
-test_list_lnk   := -lraikv
+test_dlist_files := test_list
+test_dlist_cfile := $(addprefix test/, $(addsuffix .cpp, $(test_dlist_files)))
+test_dlist_objs  := $(addprefix $(objd)/, $(addsuffix .o, $(test_dlist_files)))
+test_dlist_deps  := $(addprefix $(dependd)/, $(addsuffix .d, $(test_dlist_files)))
+test_dlist_libs  := $(libd)/libraikv.so
+test_dlist_lnk   := -lraikv
 
-$(bind)/test_list: $(test_list_objs) $(test_list_libs)
-all_exes        += $(bind)/test_list
-all_depends     += $(test_list_deps)
+$(bind)/test_dlist: $(test_dlist_objs) $(test_dlist_libs)
+all_exes        += $(bind)/test_dlist
+all_depends     += $(test_dlist_deps)
 
 test_bloom_files := test_bloom
 test_bloom_cfile := $(addprefix test/, $(addsuffix .cpp, $(test_bloom_files)))
@@ -449,9 +449,8 @@ CMakeLists.txt: .copr/Makefile
 	  cmake_policy(SET CMP0111 OLD)
 	endif ()
 	project (raikv)
-	set (CMAKE_VERBOSE_MAKEFILE ON)
+	include_directories (include)
 	if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
-	  include_directories (include pcre2/build)
 	  add_definitions(/DPCRE2_STATIC)
 	  if ($$<CONFIG:Release>)
 	    add_compile_options (/arch:AVX2 /GL /std:c11)
@@ -460,7 +459,6 @@ CMakeLists.txt: .copr/Makefile
 	  endif ()
 	  set (kv_sources $(libraikv_cfile) $(libraikv_wfile))
 	else ()
-	  include_directories (include)
 	  set (kv_sources $(libraikv_cfile))
 	  add_compile_options ($(cflags))
 	endif ()
@@ -470,7 +468,7 @@ CMakeLists.txt: .copr/Makefile
 	else ()
 	  link_libraries (raikv -lpthread -lrt)
 	endif ()
-	add_definitions(-DKV_VER=$(ver_build))
+	add_definitions (-DKV_VER=$(ver_build))
 	add_executable (kv_test $(kv_test_cfile))
 	add_executable (hash_test $(hash_test_cfile))
 	add_executable (ping $(ping_cfile))
@@ -489,16 +487,26 @@ CMakeLists.txt: .copr/Makefile
 	add_executable (test_routes $(test_routes_cfile))
 	add_executable (test_wild $(test_wild_cfile))
 	if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
-	  add_library(pcre2-8 STATIC IMPORTED)
-	  set_property(TARGET pcre2-8 PROPERTY IMPORTED_LOCATION_DEBUG ../pcre2/build/Debug/pcre2-8-staticd.lib)
-	  set_property(TARGET pcre2-8 PROPERTY IMPORTED_LOCATION_RELEASE ../pcre2/build/Release/pcre2-8-static.lib)
-	  target_link_libraries (test_wild pcre2-8)
+	  if (NOT TARGET pcre2-8-static)
+	    add_library (pcre2-8-static STATIC IMPORTED)
+	    set_property (TARGET pcre2-8-static PROPERTY IMPORTED_LOCATION_DEBUG ../pcre2/build/Debug/pcre2-8-staticd.lib)
+	    set_property (TARGET pcre2-8-static PROPERTY IMPORTED_LOCATION_RELEASE ../pcre2/build/Release/pcre2-8-static.lib)
+	    target_include_directories (test_wild PUBLIC ../pcre2/build)
+	  else ()
+	    target_include_directories (test_wild PUBLIC $${CMAKE_BINARY_DIR}/pcre2)
+	  endif ()
+	  target_link_libraries (test_wild pcre2-8-static)
 	else ()
-	  target_link_libraries (test_wild -lpcre2-8)
+	  if (TARGET pcre2-8-static)
+	    target_include_directories (test_wild PUBLIC $${CMAKE_BINARY_DIR}/pcre2)
+	    target_link_libraries (test_wild pcre2-8-static)
+	  else ()
+	    target_link_libraries (test_wild -lpcre2-8)
+	  endif ()
 	endif ()
 	add_executable (test_uintht $(test_uintht_cfile))
 	add_executable (test_bitset $(test_bitset_cfile))
-	add_executable (test_list $(test_list_cfile))
+	add_executable (test_dlist $(test_dlist_cfile))
 	add_executable (test_bloom $(test_bloom_cfile))
 	add_executable (test_coll $(test_coll_cfile))
 	add_executable (test_min $(test_min_cfile))
