@@ -88,6 +88,17 @@ wp_close_fd( int fd )
 }
 
 int
+wp_shutdown_fd( int fd, int how )
+{
+  if ( fd < 0 || (size_t) fd >= MAX_FD_MAP_SIZE ||
+       fdmap[ fd ].type == WP_FD_NONE )
+    return_set_error( -1, ERROR_INVALID_PARAMETER );
+  if ( fdmap[ fd ].type == WP_FD_SOCKET )
+    return shutdown( fdmap[ fd ].sock.socket, how );
+  return 0;
+}
+
+int
 wp_get_socket( int fd,  SOCKET *s )
 {
   if ( fd < 0 || (size_t) fd >= MAX_FD_MAP_SIZE ||

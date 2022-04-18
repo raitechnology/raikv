@@ -68,8 +68,9 @@ struct DbgRouteNotify : public RouteNotify {
 int
 EvPoll::init( int numfds,  bool prefetch/*,  bool single*/ ) noexcept
 {
-  uint32_t n  = align<uint32_t>( numfds, 2 ); /* 64 bit boundary */
-  size_t   sz = sizeof( this->ev[ 0 ] ) * n;
+  uint32_t n   = align<uint32_t>( numfds, 2 ); /* 64 bit boundary */
+  uint32_t mfd = EvPoll::ALLOC_INCR;
+  size_t   sz  = sizeof( this->ev[ 0 ] ) * n;
   if ( prefetch )
     this->prefetch_queue = EvPrefetchQueue::create();
   /*this->single_thread = single;*/
@@ -82,10 +83,14 @@ EvPoll::init( int numfds,  bool prefetch/*,  bool single*/ ) noexcept
   }
   this->nfds = n;
   this->ev   = (struct epoll_event *) ::malloc( sz );
-  if ( this->ev == NULL ) {
+  this->sock = (EvSocket **) ::malloc( mfd * sizeof( this->sock[ 0 ] ) );
+  if ( this->ev == NULL || this->sock == NULL ) {
     perror( "malloc" );
     return -1;
   }
+  for ( uint32_t i = 0; i < mfd; i++ )
+    this->sock[ i ] = NULL;
+  this->maxfd = mfd - 1;
   this->timer.queue = EvTimerQueue::create_timer_queue( *this );
   if ( this->timer.queue == NULL )
     return -1;
@@ -271,23 +276,16 @@ EvPoll::add_sock( EvSocket *s ) noexcept
     return -EV_ERR_BAD_FD;
   /* make enough space for fd */
   if ( (uint32_t) s->fd > this->maxfd ) {
-    uint32_t xfd = align<uint32_t>( s->fd + 1, EvPoll::ALLOC_INCR );
+    uint32_t mfd = align<uint32_t>( s->fd + 1, EvPoll::ALLOC_INCR );
     EvSocket **tmp;
-    if ( xfd < this->nfds )
-      xfd = this->nfds;
-  try_again:;
     tmp = (EvSocket **)
-          ::realloc( this->sock, xfd * sizeof( this->sock[ 0 ] ) );
-    if ( tmp == NULL ) {
-      xfd /= 2;
-      if ( xfd > (uint32_t) s->fd )
-        goto try_again;
+          ::realloc( this->sock, mfd * sizeof( this->sock[ 0 ] ) );
+    if ( tmp == NULL )
       return s->set_sock_err( EV_ERR_ALLOC, errno );
-    }
-    for ( uint32_t i = this->maxfd + 1; i < xfd; i++ )
+    for ( uint32_t i = this->maxfd + 1; i < mfd; i++ )
       tmp[ i ] = NULL;
     this->sock  = tmp;
-    this->maxfd = xfd - 1;
+    this->maxfd = mfd - 1;
   }
   if ( ! s->test_opts( OPT_NO_POLL ) ) {
     /* add to poll set */

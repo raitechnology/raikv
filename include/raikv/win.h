@@ -59,8 +59,10 @@ enum EPOLL_EVENTS {
 #include <mstcpip.h>
 #include <windows.h>
 
+#ifndef kv_ssizet_defined
+#define kv_ssizet_defined
 typedef ptrdiff_t ssize_t;
-
+#endif
 #ifndef kv_iovec_defined
 #define kv_iovec_defined
 struct iovec {
@@ -91,6 +93,7 @@ int wp_epoll_wait( int fd,  struct epoll_event* events,  int maxevents,
                    uint64_t us_timeout );
 int wp_make_null_fd( void );
 int wp_close_fd( int fd );
+int wp_shutdown_fd( int fd, int how );
 ssize_t wp_read( int fd,  void *buf,  size_t buflen );
 ssize_t wp_send( int fd,  struct iovec *buf,  size_t nbufs );
 ssize_t wp_recvmsg( int fd,  struct msghdr *msg );

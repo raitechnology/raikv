@@ -2,28 +2,21 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <ctype.h>
 #define __STDC_FORMAT_MACROS
 #include <inttypes.h>
-#ifndef _MSC_VER
-#include <unistd.h>
-#include <sys/stat.h>
-#include <sys/mman.h>
-#else
-#include <raikv/win.h>
-#endif
-#include <fcntl.h>
-#include <ctype.h>
+#include <raikv/util.h>
+#include <raikv/os_file.h>
 #include <raikv/key_hash.h>
 #include <raikv/delta_coder.h>
 #include <raikv/uint_ht.h>
-#include <raikv/util.h>
 #include <raikv/radix_sort.h>
 #include <raikv/bloom.h>
 
 using namespace rai;
 using namespace kv;
 
-static const char * linux_words,
+static const char * dict_words,
                  ** word;
 static uint32_t   * word_len,
                     words_cnt;
@@ -31,74 +24,26 @@ static uint64_t     words_size;
 static const uint32_t max_words = 512 * 1024;
 
 bool
-load_words( const char *input ) noexcept
+load_words( MapFile &map ) noexcept
 {
-#ifndef _MSC_VER
-  static char words[] = "/usr/share/dict/words";
-/* if redirected to file, read that */
-  if ( input == NULL ) input = words;
-  int    fd  = ::open( input, O_RDONLY );
-  void * map = MAP_FAILED;
-  struct stat st;
-
-  if ( fd < 0 ) {
-    ::perror( input );
-    return false;
-  }
-  if ( ::fstat( fd, &st ) == 0 )
-    map = ::mmap( 0, st.st_size, PROT_READ, MAP_PRIVATE, fd, 0 );
-  if ( map == MAP_FAILED ) {
-    ::perror( input );
-    ::close( fd );
-    return false;
-  }
-  ::close( fd );
-  words_size  = st.st_size;
-#else
-  static char words[] = "words";
-  if ( input == NULL ) input = words;
-  HANDLE h = CreateFileA( input, GENERIC_READ, NULL, NULL,
-                          OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL );
-  LARGE_INTEGER st;
-  if ( h == INVALID_HANDLE_VALUE ) {
-    fprintf( stderr, "err open %s: %u\n", input, GetLastError() );
-    return false;
-  }
-  GetFileSizeEx( h, &st );
-  words_size = st.QuadPart;
-  HANDLE maph = CreateFileMappingA( h, NULL, PAGE_READONLY, 0, 0, NULL );
-  if ( maph == NULL ) {
-    fprintf( stderr, "err map %s: %u\n", input, GetLastError() );
-    CloseHandle( h );
-    return false;
-  }
-  void *map = MapViewOfFile( maph, FILE_MAP_READ, 0, 0, 0 );
-  if ( map == NULL ) {
-    fprintf( stderr, "err view %s: %u\n", input, GetLastError() );
-    CloseHandle( h );
-    CloseHandle( maph );
-    return false;
-  }
-  CloseHandle( h );
-  CloseHandle( maph );
-#endif
-  linux_words = (const char *) map;
-  word     = (const char **) ::malloc( max_words * sizeof( word[ 0 ] ) );
-  word_len = (uint32_t *)    ::malloc( max_words * sizeof( word_len[ 0 ] ) );
+  words_size = map.map_size;
+  dict_words = (const char *) map.map;
+  word       = (const char **) ::malloc( max_words * sizeof( word[ 0 ] ) );
+  word_len   = (uint32_t *)    ::malloc( max_words * sizeof( word_len[ 0 ] ) );
 
   uint64_t off = 0, left = words_size;
   while ( off < words_size ) {
-    const void *p = ::memchr( &linux_words[ off ], '\n', left );
+    const void *p = ::memchr( &dict_words[ off ], '\n', left );
     if ( p == NULL )
       break;
-    word[ words_cnt ]     = &linux_words[ off ];
+    word[ words_cnt ]     = &dict_words[ off ];
     word_len[ words_cnt ] = (uint32_t) ( (const char *) p - word[ words_cnt ] );
-    off  = ( (const char *) p - linux_words ) + 1;
+    off  = ( (const char *) p - dict_words ) + 1;
     left = words_size - off;
     if ( ++words_cnt == max_words )
       break;
   }
-  return true;
+  return words_cnt > 0;
 }
 
 static uint32_t
@@ -126,7 +71,8 @@ serialize( const BloomBits &bits ) noexcept
   t2 = current_monotonic_time_ns();
 
   printf( "encode time %.3f usecs\n", ((double) t2 - (double) t1) / 1000.0 );
-  printf( "bytes sz %u, %.1f bytes / entry, %.1f bytes / bloom size (%" PRIu64 ")\n",
+  printf( "bytes sz %u, %.1f bytes / entry, %.1f "
+          "bytes / bloom size (%" PRIu64 ")\n",
            spc.code_sz * 4, (double) spc.code_sz * 4 / (double) bits.count,
            (double) spc.code_sz * 4 / (double) bits.width, bits.width );
   t1 = current_monotonic_time_ns();
@@ -226,7 +172,8 @@ test_filter( void ) noexcept
       t2 = current_monotonic_time_ns();
       printf( "%.1f ns/lookup %.2f%% false rate\n",
               (double) ( t2 - t1 ) / (double) words_cnt, false_ratio );
-      printf( "resize cnt %u (%.1f bits) (%" PRIu64 " ht coll) %" PRIu64 "(%u,%u,%u,%u) -> ",
+      printf( "resize cnt %u (%.1f bits) "
+              "(%" PRIu64 " ht coll) %" PRIu64 "(%u,%u,%u,%u) -> ",
               n, (double) filter->width * 8.0 / (double) n, elem_count,
               filter->width, filter->SHFT1, filter->SHFT2, filter->SHFT3,
               filter->SHFT4 );
@@ -255,7 +202,14 @@ test_filter( void ) noexcept
 int
 main( int argc,  const char *argv[] )
 {
-  if ( ! load_words( argc > 1 ? argv[ 1 ] : NULL ) )
+  #ifndef _MSC_VER
+  static char words[] = "/usr/share/dict/words";
+  #else
+  static char words[] = "words";
+  #endif
+  const char * input = ( argc > 1 ? argv[ 1 ] : words );
+  MapFile map( input );
+  if ( ! map.open() || ! load_words( map ) )
     return 1;
   test_filter();
   return 0;

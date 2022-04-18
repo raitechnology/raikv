@@ -313,7 +313,7 @@ struct EvPoll {
   int                   efd,             /* epoll fd */
                         null_fd,         /* /dev/null fd for null sockets */
                         quit;            /* when > 0, wants to exit */
-  static const size_t   ALLOC_INCR    = 64, /* alloc size of poll socket ar */
+  static const size_t   ALLOC_INCR    = 16, /* alloc size of poll socket ar */
                         PREFETCH_SIZE = 8;  /* pipe size of number of pref */
   size_t                prefetch_pending; /* count of elems in prefetch queue */
                    /*, prefetch_cnt[ PREFETCH_SIZE + 1 ]*/

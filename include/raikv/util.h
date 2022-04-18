@@ -57,6 +57,9 @@ int pidexists( uint32_t pid );
 #define kv_str(S) #S
 
 #ifdef _MSC_VER
+#define kv_strncasecmp _strnicmp
+#define kv_strcasecmp _stricmp
+
 inline uint8_t
 kv_ctzl( uint64_t val )
 {
@@ -79,7 +82,15 @@ inline uint8_t kv_ffsl( uint64_t val ) { return val == 0 ? 0 : ( kv_ctzl( val ) 
 inline uint8_t kv_ffsw( uint32_t val ) { return val == 0 ? 0 : ( kv_ctzw( val ) + 1 ); }
 inline uint8_t kv_popcountl( uint64_t val ) { return (uint8_t) __popcnt64( val ); }
 inline uint8_t kv_popcountw( uint32_t val ) { return (uint8_t) __popcnt( val ); }
+inline uint16_t kv_bswap16( uint16_t x ) { return _byteswap_ushort( x ); }
+inline uint32_t kv_bswap32( uint32_t x ) { return _byteswap_ulong( x ); }
+inline uint64_t kv_bswap64( uint64_t x ) { return _byteswap_uint64( x ); }
+
 #else
+#define kv_strncasecmp strncasecmp
+#define kv_strcasecmp strcasecmp
+
+/* gcc style */
 inline uint8_t kv_ctzl( uint64_t val ) { return __builtin_ctzl( val ); }
 inline uint8_t kv_ctzw( uint32_t val ) { return __builtin_ctz( val ); }
 inline uint8_t kv_clzl( uint64_t val ) { return __builtin_clzl( val ); }
@@ -88,6 +99,9 @@ inline uint8_t kv_ffsl( uint64_t val ) { return __builtin_ffsl( val ); }
 inline uint8_t kv_ffsw( uint32_t val ) { return __builtin_ffs( val ); }
 inline uint8_t kv_popcountl( uint64_t val ) { return __builtin_popcountl( val ); }
 inline uint8_t kv_popcountw( uint32_t val ) { return __builtin_popcount( val ); }
+inline uint16_t kv_bswap16( uint16_t x ) { return __builtin_bswap16( x ); }
+inline uint32_t kv_bswap32( uint32_t x ) { return __builtin_bswap32( x ); }
+inline uint64_t kv_bswap64( uint64_t x ) { return __builtin_bswap64( x ); }
 #endif
 
 #ifdef __cplusplus
@@ -100,8 +114,8 @@ namespace kv {
 
 #define KV_ALIGN( sz, a ) ( ( ( sz ) + ( ( a ) - 1 ) ) & ~( ( a ) - 1 ) )
 /* align<int>( 11, 8 ) == 16 */
-template <class Int> static inline Int align( Int sz,  Int a ) {
-  return (Int) KV_ALIGN( (size_t) sz, (size_t) a );
+template <class Int> static inline Int align( Int sz,  size_t a ) {
+  return (Int) KV_ALIGN( (size_t) sz, a );
 }
 template <class Int> static inline Int max_int( Int i,  Int j ) { return i>j?i:j; }
 template <class Int> static inline Int min_int( Int i,  Int j ) { return i<j?i:j; }
@@ -267,7 +281,7 @@ inline size_t uint_to_string( UInt v,  char *buf,  size_t len ) {
 template <class Int, class UInt>
 size_t int_to_string( Int v,  char *buf,  size_t len ) {
   if ( v < 0 ) {
-    len--; *buf++ = '-';
+    *buf++ = '-';
     return 1 + uint_to_string<UInt>( neg<Int, UInt>( v ), buf, len - 1 );
   }
   return uint_to_string<UInt>( (UInt) v, buf, len );

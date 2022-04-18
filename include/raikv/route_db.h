@@ -895,10 +895,10 @@ struct NotifySub {
     reply_len( (uint16_t) rlen ), subj_hash( hash ), src_fd( fd ),
     sub_count( 0 ), src( source ), hash_collision( coll ), src_type( t ) {}
 
-  NotifySub( const char *s,  uint16_t slen,
+  NotifySub( const char *s,  size_t slen,
              uint32_t hash,  uint32_t fd,
              bool coll,  char t,  void *source = NULL ) :
-    subject( s ), reply( 0 ), subject_len( slen ), reply_len( 0 ),
+    subject( s ), reply( 0 ), subject_len( (uint16_t) slen ), reply_len( 0 ),
     subj_hash( hash ), src_fd( fd ), sub_count( 0 ), src( source ),
     hash_collision( coll ), src_type( t ) {}
 };
@@ -1110,6 +1110,12 @@ struct EvTimerCallback {
   virtual bool timer_cb( uint64_t timer_id,  uint64_t event_id ) noexcept;
 };
 
+enum TimerUnits {
+  IVAL_SECS   = 0,
+  IVAL_MILLIS = 1,
+  IVAL_MICROS = 2,
+  IVAL_NANOS  = 3
+};
 struct EvTimerQueue;
 struct TimerQueue {
   EvTimerQueue * queue;
@@ -1124,6 +1130,8 @@ struct TimerQueue {
                          uint64_t timer_id,  uint64_t event_id ) noexcept;
   bool add_timer_nanos( EvTimerCallback &tcb,  uint32_t nsecs,
                         uint64_t timer_id,  uint64_t event_id ) noexcept;
+  bool add_timer_units( EvTimerCallback &tcb,  uint32_t val,  TimerUnits units,
+                        uint64_t timer_id,  uint64_t event_id ) noexcept;
   /* arm a timer by fd */
   bool add_timer_seconds( int32_t id,  uint32_t secs,  uint64_t timer_id,
                           uint64_t event_id ) noexcept;
@@ -1133,6 +1141,8 @@ struct TimerQueue {
                          uint64_t event_id ) noexcept;
   bool add_timer_nanos( int32_t id,  uint32_t nsecs,  uint64_t timer_id,
                         uint64_t event_id ) noexcept;
+  bool add_timer_units( int32_t id,  uint32_t val,  TimerUnits units,
+                        uint64_t timer_id,  uint64_t event_id ) noexcept;
   bool remove_timer( int32_t id,  uint64_t timer_id,
                      uint64_t event_id ) noexcept;
   /* when a timer expires, these are updated */

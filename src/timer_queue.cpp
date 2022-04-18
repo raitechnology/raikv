@@ -271,6 +271,15 @@ TimerQueue::add_timer_nanos( EvTimerCallback &tcb,  uint32_t nsecs,
 {
   return this->queue->add_timer_cb( tcb, nsecs, IVAL_NANOS, timer_id, event_id);
 }
+
+bool
+TimerQueue::add_timer_units( EvTimerCallback &tcb,  uint32_t val,
+                             TimerUnits units,  uint64_t timer_id,
+                             uint64_t event_id ) noexcept
+{
+  return this->queue->add_timer_cb( tcb, val, units, timer_id, event_id );
+}
+
 /* start a timer event fd */
 bool
 TimerQueue::add_timer_seconds( int32_t id,  uint32_t secs,  uint64_t timer_id,
@@ -301,6 +310,13 @@ TimerQueue::add_timer_nanos( int32_t id,  uint32_t nsecs,  uint64_t timer_id,
 {
   return this->queue->add_timer_units( id, nsecs, IVAL_NANOS, timer_id,
                                        event_id );
+}
+
+bool
+TimerQueue::add_timer_units( int32_t id,  uint32_t val,  TimerUnits units,
+                             uint64_t timer_id,  uint64_t event_id ) noexcept
+{
+  return this->queue->add_timer_units( id, val, units, timer_id, event_id );
 }
 
 bool

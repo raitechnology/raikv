@@ -8,13 +8,6 @@
 
 namespace rai {
 namespace kv {
-
-enum TimerUnits {
-  IVAL_SECS   = 0,
-  IVAL_MILLIS = 1,
-  IVAL_MICROS = 2,
-  IVAL_NANOS  = 3
-};
 /* a priority queue of these */
 struct EvTimerEvent {
   int32_t  id;          /* owner of event (fd), negative is a EvTimerCallback */

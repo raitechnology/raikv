@@ -66,7 +66,7 @@ static inline void kv_acquire_fence( void ) { __atomic_thread_fence( __ATOMIC_AC
 static inline void kv_release_fence( void ) { __atomic_thread_fence( __ATOMIC_RELEASE ); }
 #else
 static inline void kv_acquire_fence( void ) { kv_sync_sfence(); }
-static inline void kv_release_fence( void ) { kv_sync_sfence(); }
+static inline void kv_release_fence( void ) { kv_sync_mfence(); }
 #endif
 
 #else
@@ -81,7 +81,7 @@ static inline void kv_prefetch( const void *addr, int rdwr, int locality ) {
   _mm_prefetch( (char *) addr, 1 );
 }
 static inline void kv_acquire_fence( void ) { kv_sync_sfence(); }
-static inline void kv_release_fence( void ) { kv_sync_sfence(); }
+static inline void kv_release_fence( void ) { kv_sync_mfence(); }
 #endif
 
 #ifdef __cplusplus
