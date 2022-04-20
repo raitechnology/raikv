@@ -20,6 +20,10 @@ namespace kv {
  *              bits[ tab_mask ]
  * }
  */
+#if __GNUC__ >= 12
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Warray-bounds"
+#endif
 struct IntHashUsage {
   size_t elem_count,  /* num elems used */
          tab_mask,    /* tab_size - 1 */
@@ -558,6 +562,9 @@ struct IntHashTabU : public IntHashUsage
     remove_tab<IntHashTabU>( *this, pos );
   }
 };
+#if __GNUC__ >= 12
+#pragma GCC diagnostic pop
+#endif
 }
 }
 #endif

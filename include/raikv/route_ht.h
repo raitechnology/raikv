@@ -232,11 +232,18 @@ struct RouteHT {
     }
     return HT_SIZE;
   }
+#if __GNUC__ >= 12
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Waddress"
+#endif
   static bool test_equals( const Data &data,  const void *s,  uint16_t l ) {
     if ( data_equals != NULL )
       return data_equals( data, s, l );
     return l == data.len && ::memcmp( s, data.value, l ) == 0;
   }
+#if __GNUC__ >= 12
+#pragma GCC diagnostic pop
+#endif
   /* find data and position by key */
   Data *locate( uint32_t h,  const void *s,  uint16_t l, uint16_t &pos ) const {
     Data   * data;
