@@ -1,6 +1,9 @@
 #ifndef __rai__raikv__util_h__
 #define __rai__raikv__util_h__
 
+/* aligned alloc, free */
+#include <stdlib.h>
+
 /* also include stdint.h, string.h */
 #ifdef __cplusplus
 extern "C" {

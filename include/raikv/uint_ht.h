@@ -381,7 +381,7 @@ struct IntHashTabX : public IntHashUsage
       ::free( this->tab );
     this->copy_geom( mv );
     if ( mv.tab == mv.buf ) {
-      ::memcpy( this->buf, mv.buf, sizeof( this->buf ) );
+      ::memcpy( (void *) this->buf, (void *) mv.buf, sizeof( this->buf ) );
       this->tab = this->buf;
     }
     else {

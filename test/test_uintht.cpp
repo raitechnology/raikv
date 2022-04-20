@@ -189,6 +189,10 @@ do_test3( const char *kind )
 struct Hash {
   uint32_t hash[ 4 ];
   Hash() {}
+  Hash( const Hash &h1 ) {
+    for ( size_t i = 0; i < 4; i++ )
+      this->hash[ i ] = h1.hash[ i ];
+  }
   Hash( uint32_t h ) {
     for ( size_t i = 0; i < 4; i++ )
       this->hash[ i ] = h;
