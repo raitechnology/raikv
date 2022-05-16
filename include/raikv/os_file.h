@@ -382,18 +382,18 @@ struct MapFile {
     bool res = true;
     if ( secure ) {
       if ( ::madvise( map, map_size, MADV_DONTDUMP ) != 0 ) {
-        perror( "madvise" );
+        /*perror( "madvise" );*/
         res = false;
       }
     }
 #ifdef MLOCK_ONFAULT
     if ( ::mlock2( map, map_size, MLOCK_ONFAULT ) != 0 ) {
-      perror( "mlock2" );
+      /*perror( "mlock2" );*/
       res = false;
     }
 #else
     if ( ::mlock( map, map_size ) != 0 ) {
-      perror( "mlock" );
+      /*perror( "mlock" );*/
       res = false;
     }
 #endif
