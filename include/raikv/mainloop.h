@@ -12,7 +12,8 @@ struct MainLoopVars {
   size_t        thr_exit,     /* wait for my turn to exit */
                 thr_start,    /* wait for my turn to start */
                 thr_error;    /* if failed to start */
-  const char  * map_name;
+  const char  * map_name,
+              * ipc_name;
   int           maxfd,        /* max fd count */
                 timeout,      /* keep alive timeout */
                 num_threads,  /* thread count */
@@ -21,12 +22,12 @@ struct MainLoopVars {
   bool          use_reuseport,/* true to set SO_REUSEPORT on sock */
                 use_ipv4,     /* true to only bind to ipv4 address */
                 use_sigusr,   /* true to use sig usr to signal messages */
-                busy_poll,    /* true to busy poll kv msgs */
                 use_prefetch, /* prefetch keys in batches */
                 all,          /* start all ports with default */
                 no_threads,   /* don't want threading options */
                 no_reuseport, /* don't want so_reuseport */
                 no_map,       /* don't want shm */
+                no_ipc,       /* don't want ipc */
                 no_default;   /* don't want discard default -X */
   uint8_t       db_num;       /* which db to attach */
 
@@ -64,6 +65,9 @@ struct MainLoopVars {
     if ( ! this->no_map )
       printf(
         "  -m map   = kv shm map name       (" KV_DEFAULT_SHM ") (" KV_MAP_NAME_ENV ")\n" );
+    if ( ! this->no_ipc )
+      printf(
+        "  -i ipc   = kv pubsub ipc name    (none) (" KV_IPC_NAME_ENV ")\n" );
     for ( int i = 0; i < n; i++ )
       printf( "%s\n", this->desc[ i ] );
     if ( ! this->no_map )
@@ -77,9 +81,6 @@ struct MainLoopVars {
     if ( ! this->no_threads )
       printf( "  -t nthr  = spawn N threads         (1) (implies -P) (" KV_NUM_THREADS_ENV ")\n" );
     printf( "  -4       = use only ipv4 listeners (" KV_IPV4_ONLY_ENV ")\n" );
-    if ( ! this->no_map )
-      printf( "  -s       = do not use signal USR1 publish notification (" KV_USE_SIGUSR_ENV ")\n" );
-    printf( "  -b       = busy poll               (" KV_BUSYPOLL_ENV ")\n" );
     if ( ! this->no_default )
       printf( "  -X       = do not listen to default ports, only using cmd line\n" );
   }
@@ -99,18 +100,17 @@ struct MainLoopVars {
     else {
       this->map_name = "none";
     }
+    if ( ! this->no_ipc )
+      this->ipc_name = get_arg( argc, argv, 1, "-i", NULL, KV_IPC_NAME_ENV );
     this->maxfd       = int_arg(  argc, argv, 1, "-x", "10000", KV_MAXFD_ENV );
     this->timeout     = int_arg(  argc, argv, 1, "-k", "16", KV_KEEPALIVE_ENV );
     if ( ! this->no_map )
       this->use_prefetch = bool_arg( argc, argv, 1, "-f", "1", KV_PREFETCH_ENV );
-    this->busy_poll   = bool_arg( argc, argv, 0, "-b", 0, KV_BUSYPOLL_ENV );
     if ( ! this->no_reuseport )
       this->use_reuseport = bool_arg( argc, argv, 0, "-P", 0, KV_REUSEPORT_ENV );
     if ( ! this->no_threads )
       this->num_threads = int_arg(  argc, argv, 1, "-t", "1", KV_NUM_THREADS_ENV);
     this->use_ipv4 = bool_arg( argc, argv, 0, "-4", 0, KV_IPV4_ONLY_ENV );
-    if ( ! this->no_map )
-      this->use_sigusr  = bool_arg( argc, argv, 0, "-s", 0, KV_USE_SIGUSR_ENV );
     if ( ! this->no_default )
       this->all = ! bool_arg( argc, argv, 0, "-X", 0 );
 
@@ -191,22 +191,16 @@ struct MainLoop {
         return false;
     }
     /* set timeouts */
+    if ( this->r.ipc_name != NULL )
+      this->shm.ipc_name = this->r.ipc_name;
     this->poll.wr_timeout_ns   = (uint64_t) this->r.timeout * 1000000000;
     this->poll.so_keepalive_ns = (uint64_t) this->r.timeout * 1000000000;
 
     if ( this->poll.init( this->r.maxfd, this->r.use_prefetch ) != 0 ||
-         this->poll.init_shm( this->shm ) != 0 ) {
+         this->poll.sub_route.init_shm( this->shm ) != 0 ) {
       fprintf( stderr, "unable to init poll\n" );
       return false;
     }
-#if 0
-    if ( this->poll.pubsub != NULL ) {
-      if ( this->r.busy_poll )
-        this->poll.pubsub->idle_push( EV_BUSY_POLL );
-      if ( ! this->r.use_sigusr )
-        this->poll.pubsub->flags &= ~KV_DO_NOTIFY;
-    }
-#endif
     return true;
   }
 #ifdef _MSC_VER

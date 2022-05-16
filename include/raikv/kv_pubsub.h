@@ -1,285 +1,424 @@
 #ifndef __rai_raikv__kv_pubsub_h__
 #define __rai_raikv__kv_pubsub_h__
 
-#include <raikv/shm_ht.h>
-#include <raikv/key_buf.h>
-#include <raikv/pipe_buf.h>
-#include <raikv/stream_buf.h>
 #include <raikv/ev_net.h>
-#include <raikv/cube_route.h>
-#include <raikv/kv_msg.h>
+
+#ifndef _MSC_VER
+#define KVPS_USE_UNIX_SOCKET
+#endif
+
+#ifdef KVPS_USE_UNIX_SOCKET
+#include <raikv/ev_unix.h>
+#define KVPS_LISTEN EvUnixListen
+#else
+#include <raikv/ev_tcp.h>
+#define KVPS_LISTEN EvTcpListen
+#endif
+#include <raikv/route_ht.h>
+#include <raikv/dlinklist.h>
+#include <raikv/pattern_cvt.h>
+#include <raikv/bit_set.h>
 
 namespace rai {
 namespace kv {
 
-struct EvPublish;
-struct RouteDB;
-
-static const uint32_t KV_CTX_INBOX_COUNT = 1;
-
-struct KvBacklog {
-  KvBacklog      * next, * back;
-  size_t           cnt;
-  KvMsg         ** vec;
-  kv::msg_size_t * siz;
-  uint64_t         vec_size;
-
-  void * operator new( size_t, void *ptr ) { return ptr; }
-  KvBacklog( size_t n,  KvMsg **v,  kv::msg_size_t *sz,  uint64_t vsz )
-    : next( 0 ), back( 0 ), cnt( n ), vec( v ), siz( sz ), vec_size( vsz ) {}
+enum PsSubType {
+  PS_SUB     = 0,
+  PS_PATTERN = 1
 };
 
-struct KvMcastKey {
-  uint64_t        hash1, /* hash of mcast name: _SYS.MC */
-                  hash2;
-  kv::KeyFragment kbuf;  /* the key name (_SYS.MC) */
-
-  void * operator new( size_t, void *ptr ) { return ptr; }
-  KvMcastKey( kv::KeyCtx &kctx,  const char *name,  uint16_t namelen ) {
-    this->kbuf.keylen = namelen;
-    ::memcpy( this->kbuf.u.buf, name, namelen );
-    kv::HashSeed hs;
-    kctx.ht.hdr.get_hash_seed( kctx.db_num, hs );
-    hs.hash( this->kbuf, this->hash1, this->hash2 );
-  }
-};
-
-struct KvInboxKey : public kv::KeyCtx {
-  uint64_t        hash1,            /* hash of inbox name */
-                  hash2,
-                  ibx_pos,
-                  ibx_seqno,
-                  read_cnt,
-                  read_msg,
-                  read_size;
-  kv::ValueCtr    ibx_value_ctr;    /* the value serial ctr, track change */
-  kv::KeyFragment ibx_kbuf;         /* the inbox name (_SYS.XX) XX=ctx_id hex */
-
-  KvInboxKey( kv::KeyCtx &kctx,  const char *name,  uint16_t namelen )
-    : kv::KeyCtx( kctx ), hash1( 0 ), hash2( 0 ),
-      ibx_pos( 0 ), ibx_seqno( 0 ), read_cnt( 0 ), read_msg( 0 ),
-      read_size( 0 ) {
-    this->ibx_value_ctr.zero();
-    this->ibx_kbuf.keylen = namelen;
-    ::memcpy( this->ibx_kbuf.u.buf, name, namelen );
-    kv::HashSeed hs;
-    kctx.ht.hdr.get_hash_seed( kctx.db_num, hs );
-    hs.hash( this->ibx_kbuf, this->hash1, this->hash2 );
-  }
-};
-
-typedef kv::DLinkList<KvBacklog> KvBacklogList;
-
-struct KvMsgQueue {
-  KvMsgQueue  * next, * back;     /* links when have backlog msgs */
-  kv::PipeBuf * snd_pipe;
-  uint64_t      hash1,            /* hash of inbox name */
-                hash2,
-                high_water_size,  /* current high water send size */
-                src_seqno,        /* src sender seqno */
-                pub_size,         /* total size sent */
-                pub_cnt,          /* total msg vectors sent */
-                pub_msg,          /* total msgs sent */
-                backlog_size,     /* size of messages in backlog */
-                backlog_cnt,      /* count of messages in backlog */
-                backlog_progress_ns, /* if backlog cleared some msgs */
-                backlog_progress_cnt,
-                backlog_progress_size,
-                signal_cnt;       /* number of signals sent */
-  uint32_t      ibx_num;
-  bool          need_signal;      /* need to kill() recver to wake them */
-  KvBacklogList kv_backlog;       /* kv backlog for this queue */
-  KvBacklogList pipe_backlog;     /* pipe backlog for this queue */
-  kv::WorkAllocT< 4096 > tmp;     /* msg queue mem when overflow */
-  kv::KeyFragment kbuf;           /* the inbox name (_SYS.XX) XX=ctx_id hex */
-  
-  void * operator new( size_t, void *ptr ) { return ptr; }
-  KvMsgQueue( kv::KeyCtx &kctx,  const char *name,  uint16_t namelen,
-              uint32_t n )
-    : next( 0 ), back( 0 ), snd_pipe( 0 ), high_water_size( 128 * 1024 ),
-      src_seqno( 0 ), pub_size( 0 ),
-      pub_cnt( 0 ), pub_msg( 0 ), backlog_size( 0 ), backlog_cnt( 0 ),
-      backlog_progress_ns( 0 ), backlog_progress_cnt( 0 ),
-      backlog_progress_size( 0 ), signal_cnt( 0 ), ibx_num( n ),
-      need_signal( true ) {
-    this->kbuf.keylen = namelen;
-    ::memcpy( this->kbuf.u.buf, name, namelen );
-    kv::HashSeed hs;
-    kctx.ht.hdr.get_hash_seed( kctx.db_num, hs );
-    hs.hash( this->kbuf, this->hash1, this->hash2 );
-  }
-};
-
-struct KvRouteCache {
-  CubeRoute128 cr;
-  range_t range;
-  size_t cnt;
-};
-
-struct KvSubRoute {
+struct PsSub {
   uint32_t hash;
-  uint8_t  rt_bits[ sizeof( CubeRoute128 ) ];
+  uint8_t  type,
+           fmt;
   uint16_t len;
-  char     value[ 2 ];
+  char     value[ 4 ];
 };
 
-struct KvSubTab : public RouteVec<KvSubRoute> {};
-#if 0
-struct KvSubNotifyList {
-  KvSubNotifyList * next, * back;
-  bool in_list;
-  virtual void on_sub( uint32_t src_fd,  uint32_t rcnt,
-                       KvSubMsg &submsg ) noexcept;
-  KvSubNotifyList() : next( 0 ), back( 0 ), in_list( false ) {}
+struct PsSubTab : public RouteVec<PsSub> {
+  uint64_t   time_ns;
+  uint32_t * sub_upd;
+  PsSubTab() : time_ns( 0 ), sub_upd( 0 ) {}
+  bool load( void *data,  uint32_t data_len ) noexcept;
+  bool recover_lost_subs( void ) noexcept;
+  virtual void * new_vec_data( uint32_t id,  size_t sz ) noexcept;
+  virtual void free_vec_data( uint32_t id,  void *p,  size_t sz ) noexcept;
+  void *get_vec_data( uint32_t id ) noexcept;
+  void unmap_vec_data( void ) noexcept;
 };
+
+struct PsCtrlCtx {
+  AtomUInt64 key;         /* a time_ns spin lock */
+  uint64_t   time_ns;     /* unizue time prefix used for connect and shm */
+  uint32_t   pid,         /* pid of ctx */
+             serial,      /* order of new ctx */
+             sub_upd[ 2 ];/* last id and update count */
+  uint8_t    unused[ 64 - ( sizeof( uint64_t ) * 2 + sizeof( uint32_t ) * 4 ) ];
+  void zero( void ) {
+    this->time_ns      = 0;
+    this->pid          = 0;
+    this->serial       = 0;
+    this->sub_upd[ 0 ] = 0;
+    this->sub_upd[ 1 ] = 0;
+  }
+};
+
+struct PsGuard {
+  PsCtrlCtx & ctx;
+  uint64_t    save;
+  bool        locked;
+  PsGuard( PsCtrlCtx &el,  uint64_t time_ns ) : ctx( el ), locked( true ) {
+    this->save = this->lock( el, time_ns );
+  }
+  ~PsGuard() {
+    this->unlock();
+  }
+  void test_unlock( uint64_t val ) {
+    if ( ! this->locked ) return;
+    this->locked = false;
+    PsGuard::unlock( this->ctx, val );
+  }
+  void unlock( void )          { this->test_unlock( this->save ); }
+  void release( void )         { this->test_unlock( 0 ); }
+  void mark( uint64_t marker ) { this->test_unlock( marker ); }
+  static uint64_t lock( PsCtrlCtx &el,  uint64_t time_ns ) noexcept;
+  static void     unlock( PsCtrlCtx &el,  uint64_t val ) noexcept;
+};
+
+static const size_t   KVPS_CTRL_SIZE     = 128 * 64 + 64;
+static const uint32_t KVPS_CTRL_CTX_SIZE = 128;
+struct PsCtrlFile {
+  char       magic[ 16 ];     /* PsCtrlFile */
+  AtomUInt64 ipc_token;       /* if shm attached */
+  AtomUInt32 next_serial,     /* serial number of new context */
+             next_ctx,        /* try to find ctr[] at next */
+             ctrl_ready_spin, /* wait until ctrl is initialized */
+             init_ctx_spin;   /* serialize new context additions */
+  uint8_t    unused[ 64 - ( 16 + 8 + 4 * 4 ) ];
+  PsCtrlCtx  ctx[ KVPS_CTRL_CTX_SIZE ];
+
+  void check_dead_pids( uint32_t &dead,  uint32_t &alive ) noexcept;
+};
+
+#if __cplusplus >= 201103L
+  /* 1024b align */
+  static_assert( KVPS_CTRL_SIZE == sizeof( PsCtrlFile ), "ps ctrl file" );
 #endif
-enum KvPubSubFlag {
-  KV_DO_NOTIFY     = 1, /* whether to notify external processes of inbox msgs */
-  KV_INITIAL_SCAN  = 2, /* set after initial scan is complete */
-  KV_READ_INBOX    = 4  /* set when reading inbox */
-};
 
-struct KvPubSub : public EvSocket, public KvSendQueue, public RouteNotify {
-  static const uint8_t  EV_KV_PUBSUB = 9;
-  static const uint16_t KV_NO_SIGUSR = 1;
-  uint16_t     ctx_id;           /* my endpoint */
-  uint16_t     flags;            /* KvPubSubFlags above */
-  uint32_t     dbx_id;           /* db xref */
-  RoutePublish & sub_route;        /* pub sub routing */
-  kv::HashSeed hs;               /* seed for db */
-  uint64_t     timer_id,         /* my timer id */
-               timer_cnt,        /* count of timer expires */
-               time_ns,          /* current coarse time */
-               route_size,       /* size of msgs routed from send queue */
-               route_cnt,        /* count of msgs routed from send queue*/
-               sigusr_recv_cnt,
-               inbox_msg_cnt,
-               pipe_msg_cnt,
-               mc_pos;           /* hash position of the mcast route */
-  kv::ValueCtr mc_value_ctr;     /* the value serial ctr, track change */
-  CubeRoute128 mc_cr;            /* the current mcast route */
-  range_t      mc_range;         /* the range of current mcast */
-  size_t       mc_cnt;           /* count of bits in mc_range */
-  KvRouteCache rte_cache[ 256 ]; /* cache of cube routes */
+struct KvPubSub;
+struct KvMsgIn;
 
-  KvSubTab     sub_tab;          /* subject route table to shm */
-  kv::KeyCtx   kctx,             /* a kv context for send/recv msgs */
-               rt_kctx;          /* a kv context for route lookup */
-
-  CubeRoute128 dead_cr,          /* clean up old route inboxes */
-               pipe_cr,          /* routes that have pipe connected */
-               subscr_cr;        /* routes that have subscribes incoming*/
-
-  KvInboxKey  * rcv_inbox[ KV_CTX_INBOX_COUNT ];
-  kv::PipeBuf * rcv_pipe[ KV_MAX_CTX_ID ];
-  KvMsgQueue  * snd_inbox[ KV_MAX_CTX_ID ]; /* _SYS.IBX.xx : ctx send queues */
-  KvMcastKey  & mcast;                   /* _SYS.MC : ctx_ids to shm network */
-  KvFragAsm   * frag_asm[ KV_MAX_CTX_ID ];  /* fragment asm per source */
-  /*uint64_t      last_seqno[ KV_MAX_CTX_ID ];*/
-
-  /*kv::DLinkList<KvSubNotifyList> sub_notifyq;  notify for subscribes */
-  kv::DLinkList<KvMsgQueue>      backlogq;    /* ibx which have pending sends */
-
-  kv::WorkAllocT< 256 > rt_wrk,     /* wrk for rt_kctx kv */
-                        wrk,        /* wrk for kctx, send, mcast */
-                        ib_wrk;     /* wrk for inbox recv */ 
+struct KvPubSubPeer : public EvConnection {
+  RoutePublish & sub_route;
+  KvPubSub     & me;
+  PsCtrlFile   & ctrl;
+  BloomRoute   * bloom_rt;
+  BloomDB        bloom_db;
+  uint64_t       time_ns,
+                 sub_seqno;
+  uint32_t       ctx_id;
+  bool           is_shutdown;
+  KvPubSubPeer * next, * back;
 
   void * operator new( size_t, void *ptr ) { return ptr; }
-  KvPubSub( EvPoll &p,  int sock,  void *mcptr,  const char *mc,  size_t mclen,
-            uint32_t xid )
-      : EvSocket( p, p.register_type( "kv_pubsub" ) ),
-        KvSendQueue( p.map->hdr.create_stamp, p.ctx_id ),
-        RouteNotify( p.sub_route ),
-        ctx_id( p.ctx_id ), flags( KV_DO_NOTIFY ),
-        dbx_id( xid ), sub_route( p.sub_route ),
-        timer_id( (uint64_t) EV_KV_PUBSUB << 56 ),
-        timer_cnt( 0 ), time_ns( p.current_coarse_ns() ),
-        route_size( 0 ), route_cnt( 0 ),
-        sigusr_recv_cnt( 0 ), inbox_msg_cnt( 0 ), pipe_msg_cnt( 0 ),
-        mc_pos( 0 ), mc_cnt( 0 ), kctx( *p.map, xid ),
-        rt_kctx( *p.map, xid ),
-        mcast( *(new ( mcptr ) KvMcastKey( this->kctx, mc, mclen )) ) {
-    this->mc_value_ctr.zero();
-    this->mc_cr.zero();
-    this->mc_range.w = 0;
-    ::memset( (void *) this->rte_cache, 0, sizeof( this->rte_cache ) );
-    this->dead_cr.zero();
-    this->pipe_cr.zero();
-    this->subscr_cr.zero();
-    ::memset( this->rcv_inbox, 0, sizeof( this->rcv_inbox ) );
-    ::memset( this->rcv_pipe, 0, sizeof( this->rcv_pipe ) );
-    ::memset( this->snd_inbox, 0, sizeof( this->snd_inbox ) );
-    ::memset( this->frag_asm, 0, sizeof( this->frag_asm ) );
-    /* ::memset( this->last_seqno, 0, sizeof( this->last_seqno ) ); */
-    this->PeerData::init_peer( sock, NULL, "kv" );
-    this->kctx.ht.hdr.get_hash_seed( this->kctx.db_num, this->hs );
-    p.sub_route.add_route_notify( *this );
-  }
+  KvPubSubPeer( EvPoll &p,  uint8_t st,  KvPubSub &m ) noexcept;
 
-  static KvPubSub *create( EvPoll &p,  uint8_t db_num ) noexcept;
-  void print_backlog( void ) noexcept;
-  bool is_dead( uint32_t id ) const noexcept;
-  bool get_set_mcast( CubeRoute128 &result_cr ) noexcept;
-  bool register_mcast( void ) noexcept;
-  void clear_mcast_dead_routes( void ) noexcept;
-  void force_unsubscribe( void ) noexcept;
-  void check_peer_health( void ) noexcept;
-  bool unregister_mcast( void ) noexcept;
-  enum UpdateEnum { DEACTIVATE = 0, ACTIVATE = 1, USE_FIND = 2 };
-  bool update_mcast_sub( const char *sub,  size_t len,  int flags ) noexcept;
-  bool update_mcast_route( void ) noexcept;
-  bool push_backlog( KvMsgQueue &ibx,  KvBacklogList &list,  size_t cnt,
-                     KvMsg **vec,  kv::msg_size_t *siz,
-                     uint64_t vec_size ) noexcept;
-  bool send_pipe_backlog( KvMsgQueue &ibx ) noexcept;
-  bool send_kv_backlog( KvMsgQueue &ibx ) noexcept;
-  bool pipe_msg( KvMsgQueue &ibx,  KvMsg &msg ) noexcept;
-  bool send_kv_msg( KvMsgQueue &ibx,  KvMsg &msg,  bool backitup ) noexcept;
-  bool pipe_vec( size_t cnt,  KvMsg **vec,  kv::msg_size_t *siz,
-                 KvMsgQueue &ibx,  uint64_t vec_size ) noexcept;
-  bool send_kv_vec( size_t cnt,  KvMsg **vec,  kv::msg_size_t *siz,
-                    KvMsgQueue &ibx,  uint64_t vec_size ) noexcept;
+  void assert_subs( void *data,  uint32_t data_len ) noexcept;
+  uint32_t iter_sub_tab( PsSubTab &sub_tab,  bool add ) noexcept;
+  void drop_bloom_refs( void ) noexcept;
+  void drop_sub_tab( void ) noexcept;
+  virtual void process( void ) noexcept;
+  virtual void release( void ) noexcept;
+  virtual void process_shutdown( void ) noexcept;
+  virtual bool on_msg( EvPublish &pub ) noexcept;
+  void hello_msg( KvMsgIn &msg ) noexcept;
+  void bloom_msg( KvMsgIn &msg ) noexcept;
+  void bloom_del_msg( KvMsgIn &msg ) noexcept;
+  void bye_msg( KvMsgIn &msg ) noexcept;
+  void on_sub_msg( KvMsgIn &msg ) noexcept;
+  void on_unsub_msg( KvMsgIn &msg ) noexcept;
+  void do_sub_msg( KvMsgIn &msg,  bool is_sub ) noexcept;
+  void on_psub_msg( KvMsgIn &msg ) noexcept;
+  void on_punsub_msg( KvMsgIn &msg ) noexcept;
+  void do_psub_msg( KvMsgIn &msg,  bool is_sub ) noexcept;
+  void fwd_msg( KvMsgIn &msg ) noexcept;
+};
+
+struct KvPeerList : public DLinkList<KvPubSubPeer> {};
+struct KvMsg;
+struct KvEst;
+
+struct KvPubSub : public KVPS_LISTEN, public RouteNotify {
+  RoutePublish & sub_route;
+  PsCtrlFile   & ctrl;
+  BitSpace       peer_set;
+  uint64_t       init_ns,
+                 sub_seqno;
+  uint32_t       serial,
+                 ctx_id;
+  PsSubTab       sub_tab;
+  KvPeerList     peer_list;
+  ArraySpace<char, 16 * 1024> msg_buf;
+  const char  *  ipc_name;
+  uint64_t       ipc_token;
+  uint8_t        peer_sock_type;
+
+  void * operator new( size_t, void *ptr ) { return ptr; }
+  KvPubSub( RoutePublish &sr,  PsCtrlFile &cf,  const char *ipc_nm,
+            uint64_t ipc_tok ) noexcept;
+  static KvPubSub *create( RoutePublish &sr,  const char *ipc_name,
+                           uint64_t ipc_token ) noexcept;
+  virtual bool accept( void ) noexcept;
+  virtual void release( void ) noexcept;
+
+  bool init( void ) noexcept;
+  void send_hello( KvPubSubPeer &c ) noexcept;
+  void bcast_msg( KvMsg &m ) noexcept;
+  KvMsg &get_msg_buf( KvEst &e, int mtype ) noexcept;
+  bool attach_ctx( void ) noexcept;
+  void detach_ctx( void ) noexcept;
   /* RouteNotify */
   virtual void on_sub( NotifySub &sub ) noexcept;
   virtual void on_unsub( NotifySub &sub ) noexcept;
+  void do_on_sub( NotifySub &sub,  int mtype ) noexcept;
   virtual void on_psub( NotifyPattern &pat ) noexcept;
   virtual void on_punsub( NotifyPattern &pat ) noexcept;
+  void do_on_psub( NotifyPattern &pat,  int mtype ) noexcept;
+  bool add_sub( uint32_t h,  const char *sub,  uint16_t sublen,
+                PsSubType t,  PatternFmt f = (PatternFmt) 0 ) noexcept;
+  bool rem_sub( uint32_t h,  const char *sub,  uint16_t sublen,
+                PsSubType t,  PatternFmt f = (PatternFmt) 0 ) noexcept;
   virtual void on_reassert( uint32_t fd,  RouteVec<RouteSub> &sub_db,
                             RouteVec<RouteSub> &pat_db ) noexcept;
-  /*void forward_sub( uint32_t src_fd,  uint32_t rcnt,
-                    KvSubMsg &submsg ) noexcept;*/
-  void scan_ht( void ) noexcept;
-  size_t resolve_routes( CubeRoute128 &used ) noexcept;
-  /*void check_seqno( void ) noexcept;*/
-  void write_send_queue_fast( void ) noexcept;
-  void write_send_queue_slow( void ) noexcept;
-  void notify_peers( CubeRoute128 &used ) noexcept;
-  bool check_backlog_warning( KvMsgQueue &ibx ) noexcept;
-  bool get_sub_mcast( const char *sub,  size_t len,
-                      CubeRoute128 &cr ) noexcept;
-  bool route_msg( KvMsg &msg ) noexcept;
-  bool make_rcv_pipe( size_t src ) noexcept;
-  bool make_snd_pipe( size_t src ) noexcept;
-  void open_pipe( size_t src ) noexcept;
-  void close_pipe( size_t src ) noexcept;
-  void close_rcv_pipe( size_t src ) noexcept;
-  size_t read_inbox( bool read_until_empty ) noexcept;
-  size_t read_inbox2( KvInboxKey &ibx,  bool read_until_empty ) noexcept;
-  void publish_status( KvMsgType mtype ) noexcept;
-  /* EvSocket */
-  virtual void write( void ) noexcept final;
-  virtual void read( void ) noexcept final;
-  virtual void process( void ) noexcept final;
-  virtual bool busy_poll( void ) noexcept final;
-  virtual void release( void ) noexcept final;
-  virtual bool timer_expire( uint64_t tid, uint64_t eid ) noexcept final;
-  virtual bool hash_to_sub( uint32_t h, char *k, size_t &klen ) noexcept final;
-  virtual bool on_msg( EvPublish &pub ) noexcept final;
-  virtual void process_shutdown( void ) noexcept final;
-  virtual void process_close( void ) noexcept final;
+  virtual void on_bloom_ref( BloomRef &ref ) noexcept;
+  virtual void on_bloom_deref( BloomRef &ref ) noexcept;
+};
+
+enum KvMsgType {
+  KV_MSG_HELLO     = 0,
+  KV_MSG_BLOOM     = 1,
+  KV_MSG_BLOOM_DEL = 2,
+  KV_MSG_BYE       = 3,
+  KV_MSG_ON_SUB    = 4,
+  KV_MSG_ON_PSUB   = 5,
+  KV_MSG_ON_UNSUB  = 6,
+  KV_MSG_ON_PUNSUB = 7,
+  KV_MSG_FWD       = 8,
+  KV_MSG_MAX       = 9
+};
+
+#define kv_dispatch_msg { \
+  &KvPubSubPeer::hello_msg, \
+  &KvPubSubPeer::bloom_msg, \
+  &KvPubSubPeer::bloom_del_msg, \
+  &KvPubSubPeer::bye_msg, \
+  &KvPubSubPeer::on_sub_msg, \
+  &KvPubSubPeer::on_psub_msg, \
+  &KvPubSubPeer::on_unsub_msg, \
+  &KvPubSubPeer::on_punsub_msg, \
+  &KvPubSubPeer::fwd_msg \
+}
+#define kv_msg_name { \
+  "hello", "bloom", "bloom_del", "bye", "on_sub", "on_psub", "on_unsub", \
+  "on_punsub", "fwd" \
+}
+
+enum KvFieldType {
+  KV_FLD_CTX_ID    = 0,
+  KV_FLD_TIME_NS   = 1,
+  KV_FLD_SUB_SEQNO = 2,
+  KV_FLD_SUBJECT   = 3,
+  KV_FLD_REPLY     = 4,
+  KV_FLD_SUBJ_HASH = 5,
+  KV_FLD_SUB_COUNT = 6,
+  KV_FLD_HASH_COLL = 7,
+  KV_FLD_PATTERN   = 8,
+  KV_FLD_PAT_FMT   = 9,
+  KV_FLD_MSG_ENC   = 10,
+  KV_FLD_DATA      = 11,
+  KV_FLD_REF_NUM   = 12,
+  KV_FLD_NAME      = 13,
+  KV_FLD_MAX       = 14
+};
+
+/* KvMsg :
+ * <len 4 bytes><magic 0xab><KvMsgType 1 byte>
+ * <4 bits field len><4 bits KvFieldType><field data>
+ * ...
+ * <len + 4>
+ */
+struct KvMsg {
+  uint32_t off;
+  char     d[ 1024 ];
+
+  void * operator new( size_t, void *ptr ) { return ptr; }
+  KvMsg( int t ) : off( 2 ) {
+    this->d[ 0 ] = (char) 0xab;
+    this->d[ 1 ] = (char) t;
+  }
+  const void * msg( void ) const { return &this->off; }
+  size_t len( void ) const { return this->off + 4; }
+
+  static uint8_t len_byte( uint32_t len,  bool var ) {
+    uint8_t vflag = ( var ? 0x40 : 0 );
+    if ( len == 4 ) return 0x10 | vflag;
+    if ( len == 2 ) return 0x20 | vflag;
+    if ( len == 8 ) return 0x30 | vflag;
+    /* if len == 1, byte == 0 */
+    return vflag;
+  }
+  KvMsg & u( KvFieldType t,  const void *p,  uint32_t len ) {
+    this->d[ this->off ] = (char) ( (uint8_t) t | len_byte( len, false ) );
+    ::memcpy( &this->d[ this->off + 1 ], p, len );
+    this->off += len + 1;
+    return *this;
+  }
+  KvMsg & v32( KvFieldType t,  uint32_t sz,  const void *var ) {
+    this->d[ this->off ] = (char) ( (uint8_t) t | len_byte( 4, true ) );
+    ::memcpy( &this->d[ this->off + 1 ], &sz, 4 );
+    ::memcpy( &this->d[ this->off + 5 ], var, sz );
+    this->off += 5 + sz;
+    return *this;
+  }
+  KvMsg & v16( KvFieldType t,  uint16_t sz,  const void *var ) {
+    this->d[ this->off ] = (char) ( (uint8_t) t | len_byte( 2, true ) );
+    ::memcpy( &this->d[ this->off + 1 ], &sz, 2 );
+    ::memcpy( &this->d[ this->off + 3 ], var, sz );
+    this->off += 3 + sz;
+    return *this;
+  }
+  KvMsg & ctx_id( uint32_t i )    { return this->u( KV_FLD_CTX_ID, &i, 4 ); }
+  KvMsg & time_ns( uint64_t t )   { return this->u( KV_FLD_TIME_NS, &t, 8 ); }
+  KvMsg & sub_seqno( uint64_t n ) { return this->u( KV_FLD_SUB_SEQNO, &n, 8 ); }
+  KvMsg & subject( const char *s,  uint16_t len ) {
+    return this->v16( KV_FLD_SUBJECT, len, s );
+  }
+  KvMsg & reply( const void *s,  uint16_t len ) {
+    return this->v16( KV_FLD_REPLY, len, s );
+  }
+  KvMsg & subj_hash( uint32_t h ) { return this->u( KV_FLD_SUBJ_HASH, &h, 4 ); }
+  KvMsg & sub_count( uint32_t n ) { return this->u( KV_FLD_SUB_COUNT, &n, 4 ); }
+  KvMsg & hash_coll( uint8_t c )  { return this->u( KV_FLD_HASH_COLL, &c, 1 ); }
+  KvMsg & pattern( const char *s,  uint16_t len ) {
+    return this->v16( KV_FLD_PATTERN, len, s );
+  }
+  KvMsg & pat_fmt( uint8_t f )    { return this->u( KV_FLD_PAT_FMT, &f, 1 ); }
+  KvMsg & msg_enc( uint32_t e )   { return this->u( KV_FLD_MSG_ENC, &e, 4 ); }
+  KvMsg & data( const void *s,  uint32_t len ) {
+    return this->v32( KV_FLD_DATA, len, s );
+  }
+  KvMsg & ref_num( uint32_t n )   { return this->u( KV_FLD_REF_NUM, &n, 4 ); }
+  KvMsg & name( const char *s,  uint32_t len ) {
+    return this->v16( KV_FLD_NAME, len, s );
+  }
+  void *ptr( KvFieldType t,  uint32_t len ) {
+    this->d[ this->off ] = (char) ( (uint8_t) t | len_byte( 4, true ) );
+    ::memcpy( &this->d[ this->off + 1 ], &len, 4 );
+    char * ptr = &this->d[ this->off + 5 ];
+    this->off += 5 + len;
+    return ptr;
+  }
+};
+
+struct KvEst {
+  uint32_t off;
+
+  KvEst() : off( 2 ) {}
+  size_t len( void ) const { return this->off + 4; }
+
+  KvEst & u( uint32_t len )       { this->off += len + 1; return *this; }
+  KvEst & ctx_id( void )          { return this->u( 4 ); }
+  KvEst & time_ns( void )         { return this->u( 8 ); }
+  KvEst & sub_seqno( void )       { return this->u( 8 ); }
+  KvEst & subject( uint16_t len ) { return this->u( len + 2 ); }
+  KvEst & reply( uint16_t len )   { return this->u( len + 2 ); }
+  KvEst & subj_hash( void )       { return this->u( 4 ); }
+  KvEst & sub_count( void )       { return this->u( 4 ); }
+  KvEst & hash_coll( void)        { return this->u( 1 ); }
+  KvEst & pattern( uint16_t len ) { return this->u( len + 2 ); }
+  KvEst & pat_fmt( void )         { return this->u( 1 ); }
+  KvEst & msg_enc( void )         { return this->u( 4 ); }
+  KvEst & data( uint32_t len )    { return this->u( len + 4 ); }
+  KvEst & ref_num( void )         { return this->u( 4 ); }
+  KvEst & name( uint32_t len )    { return this->u( len + 2 ); }
+};
+
+enum KvMsgErr {
+  KV_NOT_ENOUGH   = -1,
+  KV_MSG_OK       = 0,
+  KV_BAD_MAGIC    = 1,
+  KV_BAD_MSG_TYPE = 2,
+  KV_BAD_FLD_TYPE = 3,
+  KV_BAD_FLD_LEN  = 4
+};
+
+struct KvMsgIn {
+  uint32_t     fld_set, len, missing;
+  KvMsgType    type;
+  const char * fld[ KV_FLD_MAX ];
+  uint32_t     fld_size[ KV_FLD_MAX ];
+
+  KvMsgIn() : fld_set( 0 ), len( 0 ), missing( 0 ) {}
+
+  KvMsgErr decode( const char *msg,  uint32_t msglen ) noexcept;
+
+  void print( void ) noexcept;
+
+  bool is_set( int i ) const {
+    return ( this->fld_set & ( 1U << i ) ) != 0;
+  }
+  template <class T>
+  T get( int i ) {
+    if ( this->is_set( i ) && this->fld_size[ i ] == sizeof( T ) ) {
+      T ival;
+      ::memcpy( &ival, this->fld[ i ], sizeof( T ) );
+      return ival;
+    }
+    this->missing++;
+    return 0;
+  }
+  const char * get_field( int i,  uint32_t &len ) {
+    if ( this->is_set( i ) ) {
+      len = this->fld_size[ i ];
+      return this->fld[ i ];
+    }
+    this->missing |= ( 1U << i );
+    len = 0;
+    return NULL;
+  }
+  bool is_field_missing( void ) {
+    if ( this->missing == 0 )
+      return false;
+    this->missing_error();
+    return true;
+  }
+  void decode_ftype( const char *msg,  uint8_t &ftype,  uint32_t &fsize ) {
+    ftype = (uint8_t) msg[ 0 ] & 0xf;
+    fsize = (uint8_t) msg[ 0 ] & 0x30;
+
+    if      ( fsize == 0x10 ) fsize = 4;
+    else if ( fsize == 0x20 ) fsize = 2;
+    else if ( fsize == 0x30 ) fsize = 8;
+    else                      fsize = 1;
+  }
+  bool decode_vlen( const char *msg,  uint32_t fsize,  uint32_t &vlen ) {
+    vlen = 0;
+    if ( fsize == 2 ) {
+      uint16_t vlen16;
+      ::memcpy( &vlen16, &msg[ 1 ], 2 );
+      vlen = vlen16;
+    }
+    else if ( fsize == 4 )
+      ::memcpy( &vlen, &msg[ 1 ], 4 );
+    else if ( fsize == 1 )
+      vlen = (uint32_t) (uint8_t) msg[ 1 ];
+    else
+      return false;
+    return true;
+  }
+  void missing_error( void ) noexcept;
 };
 
 }
 }
-
 #endif

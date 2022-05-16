@@ -20,9 +20,13 @@ dependd   := $(build_dir)/dep
 
 have_pandoc := $(shell if [ -x /usr/bin/pandoc ]; then echo true; fi)
 
+default_cflags := -ggdb -O3
 # use 'make port_extra=-g' for debug build
 ifeq (-g,$(findstring -g,$(port_extra)))
-  DEBUG = true
+  default_cflags := -ggdb
+endif
+ifeq (-a,$(findstring -a,$(port_extra)))
+  default_cflags := -fsanitize=address -ggdb -O3
 endif
 
 # the compiler and linker
@@ -45,11 +49,6 @@ fpicflags   := -fPIC
 soflag      := -shared
 rpath       := -Wl,-rpath,$(pwd)/$(libd)
 
-ifdef DEBUG
-default_cflags := -ggdb
-else
-default_cflags := -ggdb -O3
-endif
 CFLAGS := $(default_cflags)
 # rpmbuild uses RPM_OPT_FLAGS, which uses the -fstack-protector-strong flag
 #RPM_OPT_FLAGS ?= $(default_cflags)
@@ -90,8 +89,7 @@ server_defines = -DKV_VER=$(ver_build)
 libraikv_files := key_ctx ht_linear ht_cuckoo key_hash msg_ctx ht_stats \
                   ht_init scratch_mem util rela_ts radix_sort print \
 		  ev_net route_db timer_queue stream_buf \
-		  bloom monitor ev_tcp ev_udp ev_unix logger
-# unported := pipe_buf kv_pubsub kv_msg 
+		  bloom monitor ev_tcp ev_udp ev_unix logger kv_pubsub
 libraikv_cfile := \
           $(foreach file, $(libraikv_files), $(wildcard src/$(file).cpp)) \
           $(foreach file, $(libraikv_files), $(wildcard src/$(file).c))
@@ -263,17 +261,6 @@ $(bind)/test_rtht: $(test_rtht_objs) $(test_rtht_libs)
 all_exes        += $(bind)/test_rtht
 all_depends     += $(test_rtht_deps)
 
-test_cr_files := test_cr
-test_cr_cfile := $(addprefix test/, $(addsuffix .cpp, $(test_cr_files)))
-test_cr_objs  := $(addprefix $(objd)/, $(addsuffix .o, $(test_cr_files)))
-test_cr_deps  := $(addprefix $(dependd)/, $(addsuffix .d, $(test_cr_files)))
-test_cr_libs  := $(libd)/libraikv.so
-test_cr_lnk   := -lraikv
-
-$(bind)/test_cr: $(test_cr_objs) $(test_cr_libs)
-all_exes      += $(bind)/test_cr
-all_depends   += $(test_cr_deps)
-
 test_delta_files := test_delta
 test_delta_cfile := $(addprefix test/, $(addsuffix .cpp, $(test_delta_files)))
 test_delta_objs  := $(addprefix $(objd)/, $(addsuffix .o, $(test_delta_files)))
@@ -394,8 +381,8 @@ test_tcp_libs  := $(libd)/libraikv.so
 test_tcp_lnk   := -lraikv
 
 $(bind)/test_tcp: $(test_tcp_objs) $(test_tcp_libs)
-all_exes         += $(bind)/test_tcp
-all_depends      += $(test_tcp_deps)
+all_exes       += $(bind)/test_tcp
+all_depends    += $(test_tcp_deps)
 
 test_udp_files := test_udp
 test_udp_cfile := $(addprefix test/, $(addsuffix .cpp, $(test_udp_files)))
@@ -405,8 +392,30 @@ test_udp_libs  := $(libd)/libraikv.so
 test_udp_lnk   := -lraikv
 
 $(bind)/test_udp: $(test_udp_objs) $(test_udp_libs)
-all_exes         += $(bind)/test_udp
-all_depends      += $(test_udp_deps)
+all_exes       += $(bind)/test_udp
+all_depends    += $(test_udp_deps)
+
+test_unix_files := test_unix
+test_unix_cfile := $(addprefix test/, $(addsuffix .cpp, $(test_unix_files)))
+test_unix_objs  := $(addprefix $(objd)/, $(addsuffix .o, $(test_unix_files)))
+test_unix_deps  := $(addprefix $(dependd)/, $(addsuffix .d, $(test_unix_files)))
+test_unix_libs  := $(libd)/libraikv.so
+test_unix_lnk   := -lraikv
+
+$(bind)/test_unix: $(test_unix_objs) $(test_unix_libs)
+all_exes        += $(bind)/test_unix
+all_depends     += $(test_unix_deps)
+
+test_dgram_files := test_dgram
+test_dgram_cfile := $(addprefix test/, $(addsuffix .cpp, $(test_dgram_files)))
+test_dgram_objs  := $(addprefix $(objd)/, $(addsuffix .o, $(test_dgram_files)))
+test_dgram_deps  := $(addprefix $(dependd)/, $(addsuffix .d, $(test_dgram_files)))
+test_dgram_libs  := $(libd)/libraikv.so
+test_dgram_lnk   := -lraikv
+
+$(bind)/test_dgram: $(test_dgram_objs) $(test_dgram_libs)
+all_exes        += $(bind)/test_dgram
+all_depends     += $(test_dgram_deps)
 
 test_log_files := test_log
 test_log_cfile := $(addprefix test/, $(addsuffix .cpp, $(test_log_files)))
@@ -416,8 +425,8 @@ test_log_libs  := $(libd)/libraikv.so
 test_log_lnk   := -lraikv
 
 $(bind)/test_log: $(test_log_objs) $(test_log_libs)
-all_exes         += $(bind)/test_log
-all_depends      += $(test_log_deps)
+all_exes       += $(bind)/test_log
+all_depends    += $(test_log_deps)
 
 all_dirs := $(bind) $(libd) $(objd) $(dependd)
 
@@ -482,7 +491,6 @@ CMakeLists.txt: .copr/Makefile
 	add_executable (pubsub $(pubsub_cfile))
 	add_executable (zipf_test $(zipf_test_cfile))
 	add_executable (test_rtht $(test_rtht_cfile))
-	add_executable (test_cr $(test_cr_cfile))
 	add_executable (test_delta $(test_delta_cfile))
 	add_executable (test_routes $(test_routes_cfile))
 	add_executable (test_wild $(test_wild_cfile))

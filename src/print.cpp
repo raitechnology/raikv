@@ -34,6 +34,18 @@ xnprintf( char *&b,  size_t &sz,  const char *format, ... )
   return x;
 }
 
+const char *
+rai::kv::get_kv_version( void ) noexcept
+{
+  return kv_stringify( KV_VER );
+}
+
+const char *
+kv_get_version( void )
+{
+  return get_kv_version();
+}
+
 static char default_buf[ 4 * 1024 ]; /* should be about 3k */
 char *
 rai::kv::print_map_geom( HashTab *map,  uint32_t ctx_id,  char *buf,
@@ -45,7 +57,7 @@ rai::kv::print_map_geom( HashTab *map,  uint32_t ctx_id,  char *buf,
   }
   char *b  = buf;
   size_t sz = buflen;
-  xnprintf( b, sz, "kv_version:           %s\n", kv_stringify( KV_VER ) );
+  xnprintf( b, sz, "kv_version:           %s\n", get_kv_version() );
   xnprintf( b, sz, "map_sig:              %s\n", map->hdr.sig );
   xnprintf( b, sz, "map_name:             %s\n", map->hdr.name );
   xnprintf( b, sz, "map_size:             %" PRIu64 " (%.3fMB) (config)\n",

@@ -26,7 +26,9 @@ enum MapFileFlags {
   MAP_FILE_PRIVATE = 4,
   MAP_FILE_LOCK    = 8,
   MAP_FILE_SECURE  = 16,
-  MAP_FILE_NOUNMAP = 32
+  MAP_FILE_NOUNMAP = 32,
+  MAP_FILE_CREATE  = 64,
+  MAP_FILE_SHM     = 128
 };
 
 static inline bool map_readonly( int how ) {
@@ -47,6 +49,12 @@ static inline bool map_secure( int how ) {
 static inline bool map_nounmap( int how ) {
   return ( how & MAP_FILE_NOUNMAP ) != 0;
 }
+static inline bool map_create( int how ) {
+  return ( how & MAP_FILE_CREATE ) != 0;
+}
+static inline bool map_shm( int how ) {
+  return ( how & MAP_FILE_SHM ) != 0;
+}
 
 #ifdef _MSC_VER
 
@@ -56,17 +64,17 @@ struct MapFile {
   size_t       map_size;
   HANDLE       h,
                maph;
-  int          mfflags;
+  bool         no_unmap;
 
   MapFile( const char *p = NULL,  size_t sz = 0 )
     : path( p ), map( NULL ), map_size( sz ), h( INVALID_HANDLE_VALUE ),
-      maph( NULL ), mfflags( 0 ) {}
+      maph( NULL ), no_unmap( false ) {}
   ~MapFile() {
     this->close();
   }
   void close( void ) {
     if ( this->map != NULL ) {
-      if ( ! map_nounmap( this->mfflags ) ) {
+      if ( ! this->no_unmap ) {
         UnmapViewOfFile( this->map );
         this->map = NULL;
       }
@@ -90,7 +98,7 @@ struct MapFile {
            mapping = FILE_MAP_READ;
     size_t map_sz  = 0;
 
-    this->mfflags = how;
+    this->no_unmap = map_nounmap( how );
     if ( this->path != NULL ) {
       DWORD access = GENERIC_READ,
             mode   = FILE_SHARE_READ;
@@ -271,20 +279,23 @@ os_dup( int fd ) noexcept
 #else
 
 struct MapFile {
+  static const int ugo_mode = 0666;
   const char * path;
   void       * map;
   size_t       map_size;
-  int          fd,
-               mfflags;
+  int          fd;
+  bool         no_unmap,
+               is_new;
 
   MapFile( const char *p = NULL,  size_t sz = 0 )
-    : path( p ), map( NULL ), map_size( sz ), fd( -1 ), mfflags( 0 ) {}
+    : path( p ), map( NULL ), map_size( sz ), fd( -1 ), no_unmap( false ),
+      is_new( false ) {}
   ~MapFile() {
     this->close();
   }
   void close( void ) {
     if ( this->map != NULL ) {
-      if ( ! map_nounmap( this->mfflags ) ) {
+      if ( ! this->no_unmap ) {
         ::munmap( this->map, this->map_size );
         this->map = NULL;
       }
@@ -297,18 +308,52 @@ struct MapFile {
   static void unmap( void *p,  size_t len ) {
     ::munmap( p, align_page( len ) );
   }
+  static int unlink( const char *path,  bool is_shm ) {
+    if ( ! is_shm )
+      return ::unlink( path );
+    return ::shm_unlink( path );
+  }
   bool open( int how = ( MAP_FILE_RDONLY | MAP_FILE_PRIVATE ) ) {
     struct stat st;
-    int prot = PROT_READ,
-        type = MAP_SHARED;
-    this->mfflags = how;
+    int  prot      = PROT_READ,
+         type      = MAP_SHARED;
+    bool is_shm    = map_shm( how );
+    this->no_unmap = map_nounmap( how );
+
     if ( this->path != NULL ) {
       int flags = O_RDONLY;
       if ( ! map_readonly( how ) )
         flags = O_RDWR;
-      this->fd = ::open( this->path, flags );
-      if ( this->fd < 0 )
-        return false;
+      if ( map_create( how ) ) {
+        int create_flags = flags | O_CREAT | O_EXCL;
+        if ( ! is_shm )
+          this->fd = ::open( this->path, create_flags, ugo_mode );
+        else
+          this->fd = ::shm_open( this->path, create_flags, ugo_mode );
+        if ( this->fd >= 0 && this->map_size > 0 ) {
+          if ( ::ftruncate( this->fd, this->map_size ) == -1 ) {
+            ::close( this->fd );
+            return false;
+          }
+          this->is_new = true;
+        }
+        else if ( this->fd < 0 ) {
+          if ( ! is_shm )
+            this->fd = ::open( this->path, flags, ugo_mode );
+          else
+            this->fd = ::shm_open( this->path, flags, ugo_mode );
+          if ( this->fd < 0 )
+            return false;
+        }
+      }
+      else {
+        if ( ! is_shm )
+          this->fd = ::open( this->path, flags, ugo_mode );
+        else
+          this->fd = ::shm_open( this->path, flags, ugo_mode );
+        if ( this->fd < 0 )
+          return false;
+      }
       if ( ::fstat( this->fd, &st ) != 0 )
         return false;
       this->map_size = st.st_size;

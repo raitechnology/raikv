@@ -32,19 +32,15 @@ RoutePDB::get_service( const char *svc,  uint32_t num ) noexcept
   return *rt->sub_route;
 }
 
-RouteDB::RouteDB() noexcept
+RouteDB::RouteDB( BloomDB &g_db ) noexcept
+       : g_bloom_db( g_db ), entry_count( 0 ), pat_mask( 0 ), rt_mask( 0 ),
+         pat_bit_count( 0 )
 {
   for ( size_t i = 0; i < sizeof( this->rt_hash ) /
                           sizeof( this->rt_hash[ 0 ] ); i++ ) {
     this->rt_hash[ i ] = UIntHashTab::resize( NULL );
     this->bloom_pref_count[ i ] = 0;
   }
-  this->entry_count   = 0;
-  this->pat_mask      = 0;
-  this->rt_mask       = 0;
-  this->bloom_mask    = 0;
-  this->pat_bit_count = 0;
-
   for ( uint8_t j = 0; j < 64; j++ ) {
     SysWildSub w( NULL, j );
     this->pre_seed[ j ] = kv_crc_c( w.sub, w.len, 0 );
@@ -633,22 +629,23 @@ RouteDB::get_bloom_count( uint16_t prefix_len,  uint32_t hash ) noexcept
   }
   return rcnt;
 }
-
+#if 0
 BloomRoute *
 RouteDB::create_bloom_route( uint32_t r,  uint32_t *pref_count,
-                             BloomBits *bits,  const char *nm ) noexcept
+                             BloomBits *bits,  const char *nm,
+                             BloomDB &db ) noexcept
 {
   return this->create_bloom_route( r,
-           this->create_bloom_ref( pref_count, bits, nm ) );
+           this->create_bloom_ref( pref_count, bits, nm, db ) );
 }
 
 BloomRoute *
 RouteDB::create_bloom_route( uint32_t r,  uint32_t seed,
-                             const char *nm ) noexcept
+                             const char *nm,  BloomDB &db ) noexcept
 {
-  return this->create_bloom_route( r, this->create_bloom_ref( seed, nm ) );
+  return this->create_bloom_route( r, this->create_bloom_ref( seed, nm, db ) );
 }
-
+#endif
 BloomRoute *
 RouteDB::create_bloom_route( uint32_t r,  BloomRef *ref ) noexcept
 {
@@ -660,6 +657,7 @@ RouteDB::create_bloom_route( uint32_t r,  BloomRef *ref ) noexcept
       m = ::malloc( sizeof( BloomRoute ) );
       b = new ( m ) BloomRoute( r, *this );
       this->bloom_list.push_tl( b );
+      b->is_in_list = true;
       break;
     }
     if ( p->r >= r ) {
@@ -669,55 +667,91 @@ RouteDB::create_bloom_route( uint32_t r,  BloomRef *ref ) noexcept
         m = ::malloc( sizeof( BloomRoute ) );
         b = new ( m ) BloomRoute( r, *this );
         this->bloom_list.insert_before( b, p );
+        b->is_in_list = true;
       }
       break;
     }
   }
-  b->add_bloom_ref( ref );
+  if ( ref != NULL )
+    b->add_bloom_ref( ref );
   return b;
 }
 
+void
+RouteDB::remove_bloom_route( BloomRoute *b ) noexcept
+{
+  if ( b->is_in_list ) {
+    this->bloom_list.pop( b );
+    b->is_in_list = false;
+  }
+}
+
 BloomRef *
-RouteDB::create_bloom_ref( uint32_t seed,  const char *nm ) noexcept
+RouteDB::create_bloom_ref( uint32_t seed,  const char *nm,
+                           BloomDB &db ) noexcept
 {
   void * m = ::malloc( sizeof( BloomRef ) );
-  return new ( m ) BloomRef( seed, nm );
+  return new ( m ) BloomRef( seed, nm, db );
 }
 
 BloomRef *
 RouteDB::create_bloom_ref( uint32_t *pref_count,  BloomBits *bits,
-                           const char *nm ) noexcept
+                           const char *nm,  BloomDB &db ) noexcept
 {
   void * m = ::malloc( sizeof( BloomRef ) );
-  return new ( m ) BloomRef( bits, pref_count, nm );
+  return new ( m ) BloomRef( bits, pref_count, nm, db );
 }
 
-BloomRef::BloomRef( uint32_t seed,  const char *nm ) noexcept
+BloomRef *
+RouteDB::update_bloom_ref( const void *data,  size_t datalen,
+                           uint32_t ref_num,  const char *nm,
+                           BloomDB &db ) noexcept
 {
-  this->name        = nm;
-  this->bits        = NULL;
-  this->links       = NULL;
-  this->details     = NULL;
-  this->nlinks      = 0;
-  this->ndetails    = 0;
-  this->pref_mask   = 0;
-  this->detail_mask = 0;
+  BloomRef * ref;
+  uint32_t     pref[ MAX_RTE ];
+  BloomCodec   code;
+  BloomBits  * bits;
+  void       * details;
+  size_t       detail_size;
+
+  bits = code.decode( pref, MAX_RTE, details, detail_size, data, datalen/4 );
+  if ( bits == NULL )
+    return NULL;
+
+  if ( (ref = db[ ref_num ]) != NULL ) {
+    ref->update_route( pref, bits, (BloomDetail *) details,
+                       (uint32_t) ( detail_size / sizeof( BloomDetail ) ) );
+  }
+  else {
+    void * m = ::malloc( sizeof( BloomRef ) );
+    ref = new ( m ) BloomRef( bits, pref, nm, db, ref_num );
+  }
+  return ref;
+}
+
+BloomRef::BloomRef( uint32_t seed,  const char *nm,  BloomDB &db ) noexcept
+        : bits( 0 ), links( 0 ), details( 0 ), pref_mask( 0 ),
+          detail_mask( 0 ), nlinks( 0 ), ndetails( 0 ), ref_num( db.count ),
+          bloom_db( db )
+{
+  ::strncpy( this->name, nm, sizeof( this->name ) );
+  this->name[ sizeof( this->name ) - 1 ] = '\0';
   ::memset( this->pref_count, 0, sizeof( this->pref_count ) );
+  db[ this->ref_num ] = this;
   this->update_route( NULL, BloomBits::resize( NULL, seed ), NULL, 0 );
 }
 
 BloomRef::BloomRef( BloomBits *b,  const uint32_t *pref,
-                    const char *nm ) noexcept
+                    const char *nm,  BloomDB &db,  uint32_t num ) noexcept
+        : bits( 0 ), links( 0 ), details( 0 ), pref_mask( 0 ),
+          detail_mask( 0 ), nlinks( 0 ), ndetails( 0 ), bloom_db( db )
 {
-  this->name        = nm;
-  this->bits        = NULL;
-  this->links       = NULL;
-  this->details     = NULL;
-  this->nlinks      = 0;
-  this->ndetails    = 0;
-  this->pref_mask   = 0;
-  this->detail_mask = 0;
+  ::strncpy( this->name, nm, sizeof( this->name ) );
+  this->name[ sizeof( this->name ) - 1 ] = '\0';
   ::memset( this->pref_count, 0, sizeof( this->pref_count ) );
+  if ( (this->ref_num = num) == (uint32_t) -1 )
+    this->ref_num = db.count;
+  db[ this->ref_num ] = this;
   this->update_route( pref, b, NULL, 0 );
 }
 
@@ -757,7 +791,7 @@ BloomRef::unlink( bool del_empty_routes ) noexcept
     BloomRoute * b = this->links[ this->nlinks - 1 ];
     b->del_bloom_ref( this );
     if ( del_empty_routes && b->nblooms == 0 ) {
-      b->rdb.bloom_list.pop( b );
+      b->rdb.remove_bloom_route( b );
       delete b;
     }
   }
@@ -775,17 +809,7 @@ BloomRef::zero( void ) noexcept
   }
 }
 
-void
-BloomRef::add_link( BloomRoute *b ) noexcept
-{
-  uint32_t n = this->nlinks + 1;
-  this->links = (BloomRoute **)
-                ::realloc( this->links, sizeof( this->links[ 0 ] ) * n );
-  this->links[ n - 1 ] = b;
-  this->nlinks = n;
-}
-
-void
+BloomRef *
 BloomRoute::del_bloom_ref( BloomRef *ref ) noexcept
 {
   uint32_t i, n;
@@ -793,17 +817,19 @@ BloomRoute::del_bloom_ref( BloomRef *ref ) noexcept
   n = this->nblooms;
   for ( i = n; ; i-- ) {
     if ( i == 0 )
-      return;
-    if ( this->bloom[ i - 1 ] == ref ) {
-      if ( i != n )
-        ::memmove( &this->bloom[ i - 1 ], &this->bloom[ i ],
-                   sizeof( this->bloom[ 0 ] ) * ( n - i ) );
-      this->nblooms = n - 1;
-      /*printf( "del_bloom_ref %s -> %s:%u (cnt=%u)\n", ref->name,
-               ((RoutePublish &) this->rdb).service_name, this->r, n-1 );*/
-      ref->del_link( this );
-      break;
-    }
+      return NULL;
+    if ( ref == NULL )
+      ref = this->bloom[ i - 1 ];
+    else if ( this->bloom[ i - 1 ] != ref )
+      continue;
+    if ( i != n )
+      ::memmove( &this->bloom[ i - 1 ], &this->bloom[ i ],
+                 sizeof( this->bloom[ 0 ] ) * ( n - i ) );
+    this->nblooms = n - 1;
+    /*printf( "del_bloom_ref %s -> %s:%u (cnt=%u)\n", ref->name,
+             ((RoutePublish &) this->rdb).service_name, this->r, n-1 );*/
+    ref->del_link( this );
+    break;
   }
 
   uint16_t prefix_len;
@@ -814,6 +840,23 @@ BloomRoute::del_bloom_ref( BloomRef *ref ) noexcept
       }
     }
   }
+  return ref;
+}
+
+BloomRoute::~BloomRoute()
+{
+  if ( this->bloom != NULL )
+    ::free( this->bloom );
+}
+
+void
+BloomRef::add_link( BloomRoute *b ) noexcept
+{
+  uint32_t n = this->nlinks + 1;
+  this->links = (BloomRoute **)
+                ::realloc( this->links, sizeof( this->links[ 0 ] ) * n );
+  this->links[ n - 1 ] = b;
+  this->nlinks = n;
 }
 
 void
@@ -828,7 +871,7 @@ BloomRef::del_link( BloomRoute *b ) noexcept
         ::memmove( &this->links[ i - 1 ], &this->links[ i ],
                    sizeof( this->links[ 0 ] ) * ( n - i ) );
       this->nlinks = n - 1;
-      break;
+      return;
     }
   }
 }

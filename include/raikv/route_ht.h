@@ -23,37 +23,47 @@ enum RouteFit {
   FITS_OK      = 2
 };
 
-/* Data has DataTrail members, with value[] trailing */
+/* Data has RouteSub members, with value[] trailing */
 template < class Data,
          void (*data_copy)( Data &, const void *, uint16_t ) = nullptr,
          bool (*data_equals)( const Data &, const void *, uint16_t ) = nullptr >
 struct RouteHT {
   void * operator new( size_t, void *ptr ) { return ptr; }
   void operator delete( void *ptr ) { ::free( ptr ); }
-  /* with avg 40 len entries: 2048 entries use 98k : sizeof( RouteHT<Data> ) */
-  static const size_t HT_SHIFT   = 12,
-                      HT_SIZE    = 1 << HT_SHIFT, /* 4096 */
-                      HT_83FULL  = HT_SIZE / 6 * 5,
-                      BLOCK_SIZE = 2 * HT_SIZE + 1984; /* 80k, 40b at 50% */
-
   struct Entry {
     uint16_t half; /* lower half of hash32, off == 0 means entry is unused */
     uint16_t off;  /* data off, &block[ BLOCK_SIZE - off ] */
   };
+  /* with avg 40 len entries: 2048 entries use 98k : sizeof( RouteHT<Data> ) */
+  static const size_t HT_SHIFT   = 12,
+                      HT_SIZE    = 1 << HT_SHIFT, /* 4096 */
+                      HT_83FULL  = HT_SIZE / 6 * 5,
+                      BLOCK_SIZE =
+          ( 0x15000 - ( 32 + sizeof( Entry ) * HT_SIZE ) ) / sizeof( uint64_t );
+                      /* 2 * HT_SIZE + 1984; 80k, 40b at 50% */
+
   /* entries are never reallocated, so uint16 is enough to count them */
   uint16_t free_off,  /* next offset free */
            count,     /* count of items inserted */
            rem_count, /* count of items removed */
            rem_size;  /* size of removed items */
   uint32_t min_hash_val,   /* min hash value stored */
-           max_hash_val;   /* max hash value stored (inclusive) */
+           max_hash_val,   /* max hash value stored (inclusive) */
+           id,
+           next_id,
+           prev_id,
+           index;
   Entry    entry[ HT_SIZE ];    /* ht index of data */
   uint64_t block[ BLOCK_SIZE ]; /* data items, aligned on uint64_t */
 
-  RouteHT() {
+  RouteHT( uint32_t i = 0,  uint32_t idx = 0 ) {
     this->reset();
     this->min_hash_val = 0;
     this->max_hash_val = ~(uint32_t) 0;
+    this->id           = i;
+    this->next_id      = i;
+    this->prev_id      = i;
+    this->index        = idx;
   }
   /* if all items removed, reset instead of split */
   void reset( void ) {
@@ -94,7 +104,7 @@ struct RouteHT {
   static size_t ht_shift( void ) { return HT_SHIFT; }*/
   /* number of int32 words needed for data + string length l */
   static size_t intsize( uint16_t value_len ) {
-    return ( (size_t) value_len + ( sizeof( Data ) - TRAIL_VALLEN ) +
+    return ( (size_t) value_len + ( sizeof( Data ) - sizeof( Data::value ) ) +
              sizeof( uint64_t ) - 1 ) / sizeof( uint64_t );
   }
   /* if entry string length l fits into ht */
@@ -198,16 +208,15 @@ struct RouteHT {
   }
   /* find data and pos by hash */
   Data *locate_hash( uint32_t h,  uint16_t &pos ) const {
-    pos = (uint16_t) ( h % HT_SIZE );
-    return this->iterate_hash( h, pos );
+    return this->iterate_hash( h, pos, (uint16_t) ( h % HT_SIZE ) );
   }
-  Data *iterate_hash( uint32_t h,  uint16_t &pos ) const {
-    Data   * data;
-    uint16_t i = (uint16_t) ( pos % HT_SIZE );
-
+  Data *locate_next_hash( uint32_t h,  uint16_t &pos ) const {
+    return this->iterate_hash( h, pos, ( pos + 1 ) % HT_SIZE );
+  }
+  Data *iterate_hash( uint32_t h,  uint16_t &pos,  uint16_t i ) const {
     while ( this->entry[ i ].off != 0 ) {
       if ( this->entry[ i ].half == (uint16_t) h ) {
-        data = (Data *) (void *)
+        Data * data = (Data *) (void *)
                &this->block[ BLOCK_SIZE - this->entry[ i ].off ];
         if ( data->hash == h ) {
           pos = i;
@@ -224,7 +233,7 @@ struct RouteHT {
     uint16_t i = (uint16_t) ( h % HT_SIZE );
 
     while ( this->entry[ i ].off != 0 ) {
-      Data *data2 = (Data *) (void *)
+      Data * data2 = (Data *) (void *)
              &this->block[ BLOCK_SIZE - this->entry[ i ].off ];
       if ( (void *) data == (void *) data2 )
         return i;
@@ -246,47 +255,44 @@ struct RouteHT {
 #endif
   /* find data and position by key */
   Data *locate( uint32_t h,  const void *s,  uint16_t l, uint16_t &pos ) const {
-    Data   * data;
-    uint16_t i = (uint16_t) ( h % HT_SIZE );
-
-    while ( this->entry[ i ].off != 0 ) {
-      if ( this->entry[ i ].half == (uint16_t) h ) {
-        data = (Data *) (void *)
-               &this->block[ BLOCK_SIZE - this->entry[ i ].off ];
-        if ( data->hash == h && test_equals( *data, s, l ) ) {
-          pos = i;
-          return data;
-        }
-      }
-      i = ( i + 1 ) % HT_SIZE;
+    return this->locate_iterate( h, s, l, pos, (uint16_t) ( h % HT_SIZE ) );
+  }
+  Data *locate_next( uint32_t h,  const void *s,  uint16_t l,
+                     uint16_t &pos ) const {
+    return this->locate_iterate( h, s, l, pos, ( pos + 1 ) % HT_SIZE );
+  }
+  Data *locate_iterate( uint32_t h,  const void *s,  uint16_t l,
+                        uint16_t &pos,  uint16_t i ) const {
+    for (;;) {
+      Data * data = iterate_hash( h, pos, i );
+      if ( data == NULL )
+        return NULL;
+      if ( test_equals( *data, s, l ) )
+        return data;
+      i = ( pos + 1 ) % HT_SIZE;
     }
-    pos = i;
-    return NULL;
   }
   /* locate with hash collision counter */
   Data *locate2( uint32_t h,  const void *s,  uint16_t l,
                  uint16_t &pos,  uint32_t &hcnt ) const {
-    Data   * data,
-           * found = NULL;
-    uint16_t i = (uint16_t) ( h % HT_SIZE );
+    Data   * found     = NULL;
+    uint16_t found_pos = (uint16_t) ( h % HT_SIZE );
     hcnt = 0;
-    while ( this->entry[ i ].off != 0 ) {
-      if ( this->entry[ i ].half == (uint16_t) h ) {
-        data = (Data *) (void *)
-               &this->block[ BLOCK_SIZE - this->entry[ i ].off ];
-        if ( data->hash == h ) {
-          hcnt++;
-          if ( found == NULL && test_equals( *data, s, l ) ) {
-            pos = i;
-            found = data;
-          }
+    for ( uint16_t i = found_pos; ; i = ( pos + 1 ) % HT_SIZE ) {
+      Data * data = iterate_hash( h, pos, i );
+      if ( data == NULL ) {
+        if ( found != NULL ) {
+          pos = found_pos;
+          return found;
         }
+        return NULL;
       }
-      i = ( i + 1 ) % HT_SIZE;
+      hcnt++;
+      if ( found == NULL && test_equals( *data, s, l ) ) {
+        found = data;
+        found_pos = pos;
+      }
     }
-    if ( found == NULL )
-      pos = i;
-    return found;
   }
   Data *get( uint16_t i ) {
     return (Data *) (void *) &this->block[ BLOCK_SIZE - this->entry[ i ].off ];
@@ -439,16 +445,18 @@ struct RouteHT {
     for ( uint16_t off = fr.free_off; (data = fr.iter_data( off )) != NULL; )
       this->copy_ins( data );
   }
-  /* merge two into one, if possible */
+  /* merge two into one, if less than half full */
   bool merge( RouteHT &fr ) {
-    if ( (uint32_t) this->free_off + (uint32_t) fr.free_off -
-         ( (uint32_t) this->rem_size + (uint32_t) fr.rem_size ) > BLOCK_SIZE )
-      return false;
     if ( (uint32_t) this->count + (uint32_t) fr.count -
-         ( (uint32_t) this->rem_count + (uint32_t) fr.rem_count ) >= HT_83FULL )
+         ( (uint32_t) this->rem_count + (uint32_t) fr.rem_count ) >=
+           HT_83FULL / 2 )
+      return false;
+    if ( (uint32_t) this->free_off + (uint32_t) fr.free_off -
+         ( (uint32_t) this->rem_size + (uint32_t) fr.rem_size ) >=
+           BLOCK_SIZE / 2 )
       return false;
 
-    RouteHT<Data, data_copy, data_equals> x; /* temp copy */
+    RouteHT x; /* temp copy */
     x.insert_all( *this );
     x.insert_all( fr );
     x.min_hash_val = this->min_hash_val;
@@ -463,31 +471,41 @@ struct RouteHT {
 };
 
 struct RouteLoc {
-  uint32_t i;
-  uint16_t j;
+  uint32_t i; /* index of RouteVec::vec[] */
+  uint16_t j; /* index of RouteHT::entry[] */
   bool     is_new;
 
   void init( void ) { this->i = 0; this->j = 0; this->is_new = false; }
 };
 
-/* Data has DataTrail members, with value[] trailing */
+/* Data has RouteSub members, with value[] trailing */
 template < class Data,
          void (*data_copy)( Data &, const void *, uint16_t ) = nullptr,
          bool (*data_equals)( const Data &, const void *, uint16_t ) = nullptr >
 struct RouteVec {
                            /* ht vector, in order by max_hash_val[] */
-  RouteHT<Data, data_copy, data_equals> ** vec;
+  typedef RouteHT<Data, data_copy, data_equals> VecData;
+  VecData ** vec;
   uint32_t * max_hash_val, /* vec[ k ], h > max_hash_val[ k-1 ] <= [ k ]*/
-             vec_size;     /* count of vec[] */
+             vec_size,     /* count of vec[] */
+             id;
+  uint64_t   seqno;
 
-  RouteVec() : vec( 0 ), max_hash_val( 0 ), vec_size( 0 ) {}
-  RouteVec( RouteVec &v )
-    : vec( v.vec ), max_hash_val( v.max_hash_val ), vec_size( v.vec_size ) {}
-
+  RouteVec() : vec( 0 ), max_hash_val( 0 ), vec_size( 0 ), id( 0 ),
+               seqno( 0 ) {}
+  RouteVec( RouteVec &v ) : vec( v.vec ), max_hash_val( v.max_hash_val ),
+                            vec_size( v.vec_size ), id( v.id ) {}
   void release( void ) {
     if ( this->vec_size > 0 ) {
       for ( uint32_t i = 0; i < this->vec_size; i++ )
-        delete this->vec[ i ];
+        this->free_vec_data( this->vec[ i ]->id, this->vec[ i ],
+                             sizeof( VecData ) );
+      this->release_vec();
+    }
+  }
+
+  void release_vec( void ) {
+    if ( this->vec_size > 0 ) {
       ::free( this->vec );
       this->vec          = NULL;
       this->max_hash_val = NULL;
@@ -560,7 +578,9 @@ struct RouteVec {
       return NULL;
     loc.is_new = true;
     this->fits( loc, h, l );
-    return this->vec[ loc.i ]->insert( h, s, l, loc.j );
+    Data *data = this->vec[ loc.i ]->insert( h, s, l, loc.j );
+    if ( data != NULL ) this->seqno++;
+    return data;
   }
   /* add new data */
   Data *insert( uint32_t h,  const void *s,  size_t l ) {
@@ -584,7 +604,9 @@ struct RouteVec {
     loc.is_new = true;
     if ( ! this->fits( loc, h, l ) )
       this->vec[ loc.i ]->locate( h, s, l, loc.j );
-    return this->vec[ loc.i ]->inplace( h, s, l, loc.j );
+    data = this->vec[ loc.i ]->inplace( h, s, l, loc.j );
+    if ( data != NULL ) this->seqno++;
+    return data;
   }
   Data *upsert2( uint32_t h,  const void *s,  size_t l,  RouteLoc &loc,
                  uint32_t &hcnt ) {
@@ -602,7 +624,9 @@ struct RouteVec {
     loc.is_new = true;
     if ( ! this->fits( loc, h, l ) )
       this->vec[ loc.i ]->locate2( h, s, l, loc.j, hcnt );
-    return this->vec[ loc.i ]->inplace( h, s, l, loc.j );
+    data = this->vec[ loc.i ]->inplace( h, s, l, loc.j );
+    if ( data != NULL ) this->seqno++;
+    return data;
   }
   /* insert if not present */
   Data *upsert( uint32_t h,  const void *s,  size_t l ) {
@@ -620,22 +644,23 @@ struct RouteVec {
   Data *resize( uint32_t h,  const void *s,  uint16_t old_len,
                 uint16_t new_len,  RouteLoc &loc ) {
     Data *data = this->vec[ loc.i ]->resize( loc.j, new_len );
-    if ( data != NULL )
-      return data;
-
-    switch ( this->vec[ loc.i ]->fits( new_len ) ) {
-      case DOES_NOT_FIT: /* split vec[ i ] into two, then insert */
-        if ( ! this->split_ht( loc.i ) )
-          return NULL;
-        if ( h > this->max_hash_val[ loc.i ] )
-          loc.i++;
-        break;
-      default: /* adjust */
-        this->vec[ loc.i ]->adjust();
-        break;
+    if ( data == NULL ) {
+      switch ( this->vec[ loc.i ]->fits( new_len ) ) {
+        case DOES_NOT_FIT: /* split vec[ i ] into two, then insert */
+          if ( ! this->split_ht( loc.i ) )
+            return NULL;
+          if ( h > this->max_hash_val[ loc.i ] )
+            loc.i++;
+          break;
+        default: /* adjust */
+          this->vec[ loc.i ]->adjust();
+          break;
+      }
+      this->vec[ loc.i ]->locate( h, s, old_len, loc.j );
+      data = this->vec[ loc.i ]->resize( loc.j, new_len );
     }
-    this->vec[ loc.i ]->locate( h, s, old_len, loc.j );
-    return this->vec[ loc.i ]->resize( loc.j, new_len );
+    if ( data != NULL ) this->seqno++;
+    return data;
   }
   /* find data by hash and value, fill in location */
   Data *find( uint32_t h,  const void *s,  size_t l,  RouteLoc &loc ) const {
@@ -648,6 +673,10 @@ struct RouteVec {
     if ( this->vec_size > 1 )
       loc.i = this->bsearch( h );
     return this->vec[ loc.i ]->locate( h, s, l, loc.j );
+  }
+  Data *find_next( uint32_t h,  const void *s,  uint16_t l,
+                   RouteLoc &loc ) const {
+    return this->vec[ loc.i ]->locate_next( h, s, l, loc.j );
   }
   /* find a data by hash and value */
   Data *find( uint32_t h,  const void *s,  size_t l ) const {
@@ -682,8 +711,7 @@ struct RouteVec {
   }
   /* find next element by hash */
   Data *find_next_by_hash( uint32_t h,  RouteLoc &loc ) const {
-    loc.j++;
-    return this->vec[ loc.i ]->iterate_hash( h, loc.j );
+    return this->vec[ loc.i ]->locate_next_hash( h, loc.j );
   }
   /* locate first element that matches hash */
   Data *find_by_hash( uint32_t h ) const {
@@ -694,35 +722,110 @@ struct RouteVec {
   bool init_ht( void ) {
     return this->split_ht( 0 );
   }
+  virtual void * new_vec_data( uint32_t,  size_t sz ) noexcept {
+    return ::malloc( sz );
+  }
+  virtual void free_vec_data( uint32_t,  void *p,  size_t ) noexcept {
+    delete (VecData *) p;
+  }
+#if __GNUC__ >= 12
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Warray-bounds"
+#endif
   /* when vec[] is full, split it */
   bool split_ht( uint32_t i ) {
-    RouteVec<Data, data_copy, data_equals> tmp( *this );
-    size_t sz = ( sizeof( uint32_t ) +
-                  sizeof( RouteHT<Data, data_copy, data_equals> * ) ) *
+    size_t sz = ( sizeof( uint32_t ) + sizeof( VecData * ) ) *
                 ( this->vec_size + 1 );
-    void * p = ::malloc( sz ),
-         * v = ::malloc( sizeof( RouteHT<Data, data_copy, data_equals> ) );
-    uint32_t j;
-    if ( p == NULL || v == NULL )
+    void * p  = ::realloc( this->vec, sz );
+    void * d  = this->new_vec_data( this->id, sizeof( VecData ) );
+    if ( p == NULL || d == NULL )
       return false;
+
     this->vec_size++;
-    this->vec = (RouteHT<Data, data_copy, data_equals> **) p;
-    this->max_hash_val = (uint32_t *) (void *) &this->vec[ this->vec_size ];
-    for ( j = 0; j < i; j++ ) {
-      this->vec[ j ] = tmp.vec[ j ];
-      this->max_hash_val[ j ] = tmp.max_hash_val[ j ];
+    VecData ** v   = (VecData **) p;
+    uint32_t * nhv = (uint32_t *) (void *) &v[ this->vec_size ];
+
+    if ( this->vec_size > 1 ) {
+      uint32_t vsz = this->vec_size - 1,
+             * ohv = (uint32_t *) (void *) &v[ vsz ], j;
+      for ( j = vsz; j > i; j-- ) {
+        nhv[ j ] = ohv[ j - 1 ]; /* mv max_hash_val[i] -> max_hash_val[i+1] */
+      }
+      for ( j = i; j > 0; ) {
+        j--;
+        nhv[ j ] = ohv[ j ]; /* mv max_hash_val -> end of vec[ vec_size ] */
+      }
+      for ( j = vsz; j > i; j-- ) {
+        v[ j ] = v[ j - 1 ]; /* mv vec[i] -> vec[i+1] */
+        v[ j ]->index = j;
+      }
     }
-    for ( j = i; j < tmp.vec_size; j++ ) {
-      this->vec[ j + 1 ] = tmp.vec[ j ];
-      this->max_hash_val[ j + 1 ] = tmp.max_hash_val[ j ];
-    }
-    if ( tmp.vec != NULL )
-      ::free( tmp.vec );
-    this->vec[ i ] = new ( v ) RouteHT<Data, data_copy, data_equals>();
+    v[ i ] = new ( d ) VecData( this->id++, i );
     if ( i + 1 < this->vec_size )
-      this->vec[ i + 1 ]->split( *this->vec[ i ] );
-    this->max_hash_val[ i ] = this->vec[ i ]->max_hash_val;
+      v[ i + 1 ]->split( *v[ i ] );
+    nhv[ i ] = v[ i ]->max_hash_val;
+    this->vec          = v;
+    this->max_hash_val = nhv;
+    this->link_id( i );
+    if ( i + 1 < this->vec_size )
+      this->link_id( i + 1 );
+    if ( i > 0 )
+      this->link_id( i - 1 );
     return true;
+  }
+#if __GNUC__ >= 12
+#pragma GCC diagnostic pop
+#endif
+  /* try to merge vec[ i ] into vec[ i - 1 ] */
+  void try_shrink( uint32_t i ) {
+    if ( i > 0 && this->vec[ i - 1 ]->merge( *this->vec[ i ] ) ) {
+      uint32_t vec_id = this->vec[ i ]->id;
+      this->free_vec_data( vec_id, this->vec[ i ], sizeof( VecData ) );
+      this->max_hash_val[ i - 1 ] = this->max_hash_val[ i ];
+      this->vec_size -= 1;
+      for ( uint32_t j = i; j < this->vec_size; j++ ) {
+        this->vec[ j ] = this->vec[ j + 1 ];
+        this->max_hash_val[ j ] = this->max_hash_val[ j + 1 ];
+      }
+      uint32_t * ptr = (uint32_t *) (void *) &this->vec[ this->vec_size ];
+      ::memmove( ptr, this->max_hash_val,
+                 sizeof( uint32_t ) * this->vec_size );
+      this->max_hash_val = ptr;
+      this->link_id( i - 1 );
+      if ( i > 1 )
+        this->link_id( i - 2 );
+      if ( i < this->vec_size )
+        this->link_id( i );
+    }
+  }
+  void preload( VecData **v,  size_t count ) {
+    size_t sz = ( sizeof( uint32_t ) + sizeof( VecData * ) ) * count;
+    void * p  = ::realloc( this->vec, sz );
+
+    this->vec_size     = count;
+    this->vec          = (VecData **) p;
+    this->max_hash_val = (uint32_t *) (void *) &this->vec[ count ];
+    this->id           = 0;
+    ::memcpy( this->vec, v, sizeof( v[ 0 ] ) * count );
+
+    for ( size_t i = 0; i < count; i++ ) {
+      if ( v[ i ]->id >= this->id )
+        this->id = v[ i ]->id + 1;
+      this->max_hash_val[ i ] = v[ i ]->max_hash_val;
+    }
+  }
+  void link_id( uint32_t i ) {
+    uint32_t id;
+    if ( i == 0 )
+      id = this->vec[ 0 ]->id;
+    else
+      id = this->vec[ i - 1 ]->id;
+    this->vec[ i ]->prev_id = id;
+    if ( i == this->vec_size - 1 )
+      id = this->vec[ i ]->id;
+    else
+      id = this->vec[ i + 1 ]->id;
+    this->vec[ i ]->next_id = id;
   }
   /* find data by hash, value and remove if found */
   bool remove( uint32_t h,  const void *s,  size_t l ) {
@@ -737,7 +840,11 @@ struct RouteVec {
       i = this->bsearch( h );
     if ( (data = this->vec[ i ]->remove( h, s, l )) != NULL )
       this->try_shrink( i );
-    return data != NULL;
+    if ( data != NULL ) {
+      this->seqno++;
+      return true;
+    }
+    return false;
   }
   /* remove data at location and shrink vec[] */
   bool remove( RouteLoc &loc ) {
@@ -745,29 +852,15 @@ struct RouteVec {
     if ( (data = this->vec[ loc.i ]->remove( loc.j )) != NULL ) {
       this->try_shrink( loc.i );
     }
-    return data != NULL;
+    if ( data != NULL ) {
+      this->seqno++;
+      return true;
+    }
+    return false;
   }
   /* return data from a find result */
   Data *get( RouteLoc &loc ) {
     return this->vec[ loc.i ]->get( loc.j );
-  }
-  /* try to merge vec[ i ] into vec[ i - 1 ] */
-  void try_shrink( uint32_t i ) {
-    if ( i > 0 &&
-         this->vec[ i ]->rem_count * 2 > this->vec[ i ]->count &&
-         this->vec[ i - 1 ]->merge( *this->vec[ i ] ) ) {
-      delete this->vec[ i ];
-      this->max_hash_val[ i - 1 ] = this->max_hash_val[ i ];
-      this->vec_size -= 1;
-      for ( ; i < this->vec_size; i++ ) {
-        this->vec[ i ] = this->vec[ i + 1 ];
-        this->max_hash_val[ i ] = this->max_hash_val[ i + 1 ];
-      }
-      uint32_t * ptr = (uint32_t *) (void *) &this->vec[ this->vec_size ];
-      ::memmove( ptr, this->max_hash_val,
-                 sizeof( uint32_t ) * this->vec_size );
-      this->max_hash_val = ptr;
-    }
   }
   /* find first data element */
   Data *first( uint32_t &v,  uint16_t &off ) {
@@ -797,6 +890,7 @@ struct RouteVec {
   Data *remove_and_next( Data *old,  uint32_t &v,  uint16_t &off ) {
     uint16_t j = this->vec[ v ]->locate_data( old );
     this->vec[ v ]->remove( j, old );
+    this->seqno++;
     return this->next( v, off );
   }
   /* the RouteLoc refers to vec[ i ]->block[ j ], this is different

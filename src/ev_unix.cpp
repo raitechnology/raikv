@@ -28,9 +28,7 @@ EvUnixListen::listen2( const char *path,  int opts,  const char *k ) noexcept
 #ifdef _MSC_VER
   return -1;
 #else
-  static int on = 1;
   struct sockaddr_un sunaddr;
-  struct stat statbuf;
   int sock, status = 0;
 
   this->sock_opts = opts;
@@ -40,15 +38,19 @@ EvUnixListen::listen2( const char *path,  int opts,  const char *k ) noexcept
 
   ::memset( &sunaddr, 0, sizeof( sunaddr ) );
   sunaddr.sun_family = AF_LOCAL;
-  if ( ::stat( path, &statbuf ) == 0 &&
-       statbuf.st_size == 0 ) { /* make sure it's empty */
-    ::unlink( path );
-  }
   ::strncpy( sunaddr.sun_path, path, sizeof( sunaddr.sun_path ) - 1 );
 
-  if ( ::setsockopt( sock, SOL_SOCKET, SO_REUSEADDR, &on, sizeof( on ) ) != 0 )
-    if ( ( opts & OPT_VERBOSE ) != 0 )
-      perror( "warning: SO_REUSEADDR" );
+  if ( (opts & OPT_REUSEADDR) != 0 ) {
+    struct stat statbuf;
+    if ( ::stat( sunaddr.sun_path, &statbuf ) == 0 &&
+         ( statbuf.st_mode & S_IFSOCK ) != 0 &&
+         statbuf.st_size == 0 ) { /* make sure it's empty */
+      if ( ::unlink( sunaddr.sun_path ) != 0 ) {
+        perror( sunaddr.sun_path );
+        goto fail;
+      }
+    }
+  }
   if ( ::bind( sock, (struct sockaddr *) &sunaddr, sizeof( sunaddr ) ) != 0 ) {
     if ( ( opts & OPT_VERBOSE ) != 0 )
       perror( "error: bind" );
@@ -72,7 +74,7 @@ fail:;
 }
 
 bool
-EvUnixListen::accept2( EvConnection &c,  const char *k ) noexcept
+EvUnixListen::accept2( EvConnection &conn,  const char *k ) noexcept
 {
 #ifndef _MSC_VER
   struct sockaddr_un sunaddr;
@@ -87,15 +89,15 @@ EvUnixListen::accept2( EvConnection &c,  const char *k ) noexcept
     goto fail;
   }
   ::fcntl( sock, F_SETFL, O_NONBLOCK | ::fcntl( sock, F_GETFL ) );
-  this->PeerData::init_peer( sock, (struct sockaddr *) &sunaddr, k );
-  if ( this->poll.add_sock( &c ) < 0 ) {
+  conn.PeerData::init_peer( sock, (struct sockaddr *) &sunaddr, k );
+  if ( this->poll.add_sock( &conn ) < 0 ) {
     ::close( sock );
     goto fail;
   }
   return true;
 fail:;
 #endif
-  this->poll.push_free_list( &c );
+  this->poll.push_free_list( &conn );
   return false;
 }
 
@@ -127,6 +129,51 @@ EvUnixConnection::connect( EvConnection &conn,  const char *path,
   if ( (status = conn.poll.add_sock( &conn )) < 0 ) {
   fail:;
     conn.fd = -1;
+    ::close( sock );
+  }
+  return status;
+#endif
+}
+
+int
+EvUnixDgram::bind( const char *path,  int opts,  const char *k ) noexcept
+{
+#ifdef _MSC_VER
+  return -1;
+#else
+  struct sockaddr_un sunaddr;
+  int sock, status = 0;
+
+  this->sock_opts = opts;
+  sock = ::socket( PF_LOCAL, SOCK_DGRAM, 0 );
+  if ( sock < 0 )
+    return this->set_sock_err( EV_ERR_SOCKET, errno );
+
+  ::memset( &sunaddr, 0, sizeof( sunaddr ) );
+  sunaddr.sun_family = AF_LOCAL;
+  ::strncpy( sunaddr.sun_path, path, sizeof( sunaddr.sun_path ) - 1 );
+
+  if ( (opts & OPT_REUSEADDR) != 0 ) {
+    struct stat statbuf;
+    if ( ::stat( sunaddr.sun_path, &statbuf ) == 0 &&
+         ( statbuf.st_mode & S_IFSOCK ) != 0 &&
+         statbuf.st_size == 0 ) { /* make sure it's empty */
+      if ( ::unlink( sunaddr.sun_path ) != 0 ) {
+        perror( sunaddr.sun_path );
+        goto fail;
+      }
+    }
+  }
+  if ( ::bind( sock, (struct sockaddr *) &sunaddr,
+               sizeof( sunaddr ) ) != 0 ) {
+    status = this->set_sock_err( EV_ERR_BIND, errno );
+    goto fail;
+  }
+  ::fcntl( sock, F_SETFL, O_NONBLOCK | ::fcntl( sock, F_GETFL ) );
+  this->PeerData::init_peer( sock, (struct sockaddr *) &sunaddr, k );
+  if ( (status = this->poll.add_sock( this )) < 0 ) {
+  fail:;
+    this->fd = -1;
     ::close( sock );
   }
   return status;

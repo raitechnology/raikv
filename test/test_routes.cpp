@@ -268,7 +268,7 @@ struct TestDB {
   rand::xoroshiro128plus r;     /* random source */
   BloomRoute * brt[ RTE ];
 
-  TestDB() : sub_count( 0 ) {
+  TestDB( BloomDB &db ) : rte( db ), sub_count( 0 ) {
     ::memset( this->cnt, 0, sizeof( this->cnt ) );
     ::memset( this->brt, 0, sizeof( this->brt ) );
     this->r.static_init();      /* init the same rand sequence */
@@ -319,9 +319,12 @@ TestDB::add_bloom_routes( void ) noexcept
     uint32_t h = hash_int( j + 1 );
     for ( uint32_t val = 0; val < RTE; val++ ) {
       if ( this->rdb[ j ].is_member( val ) ) {
-        if ( this->brt[ val ] == NULL )
-          this->brt[ val ] = this->rte.create_bloom_route( val, NULL,
-                                        BloomBits::resize( NULL, 0 ), "test" );
+        if ( this->brt[ val ] == NULL ) {
+          BloomRef * ref = this->rte.create_bloom_ref(
+            NULL, BloomBits::resize( NULL, 0 ), "test",
+            this->rte.g_bloom_db );
+          this->brt[ val ] = this->rte.create_bloom_route( val, ref );
+        }
         if ( this->brt[ val ]->bloom[ 0 ]->add( h ) ) {
           BloomBits * bits = this->brt[ val ]->bloom[ 0 ]->bits;
           bits = BloomBits::resize( bits, 0 );
@@ -381,7 +384,8 @@ TestDB::remove_random( size_t count ) noexcept
 int
 main( int argc, char *argv[] )
 {
-  TestDB test;
+  BloomDB db;
+  TestDB test( db );
 #if 0
   uint32_t ar[ 10 ] = { 10, 11, 31, 32, 33 };
   uint32_t ar2[ 10 ] = { 10, 21, 29 };

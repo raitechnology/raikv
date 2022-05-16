@@ -85,11 +85,10 @@ typedef enum kv_facility_e {
 #define KV_MAXFD_ENV       "KV_MAXFD"
 #define KV_KEEPALIVE_ENV   "KV_KEEPALIVE"
 #define KV_PREFETCH_ENV    "KV_PREFETCH"
-#define KV_BUSYPOLL_ENV    "KV_BUSYPOLL"
 #define KV_REUSEPORT_ENV   "KV_REUSEPORT"
 #define KV_NUM_THREADS_ENV "KV_NUM_THREADS"
 #define KV_IPV4_ONLY_ENV   "KV_IPV4_ONLY"
-#define KV_USE_SIGUSR_ENV  "KV_USE_SIGUSR"
+#define KV_IPC_NAME_ENV    "KV_IPC"
 
 #ifdef __cplusplus
 }
@@ -480,14 +479,16 @@ public:
 };
 
 struct EvShm {
-  HashTab * map;
-  uint32_t  ctx_id,
-            dbx_id;
+  HashTab    * map;
+  uint32_t     ctx_id,
+               dbx_id;
+  const char * ipc_name;
 
   EvShm( HashTab *m = 0 )
-    : map( m ), ctx_id( MAX_CTX_ID ), dbx_id( MAX_STAT_ID ) {}
+    : map( m ), ctx_id( MAX_CTX_ID ), dbx_id( MAX_STAT_ID ), ipc_name( 0 ) {}
   EvShm( EvShm &m )
-    : map( m.map ), ctx_id( m.ctx_id ), dbx_id( m.dbx_id ) {}
+    : map( m.map ), ctx_id( m.ctx_id ), dbx_id( m.dbx_id ),
+      ipc_name( m.ipc_name ) {}
   ~EvShm() noexcept;
 
   int open( const char *map_name    = KV_DEFAULT_SHM,
@@ -502,6 +503,7 @@ struct EvShm {
   void close( void ) noexcept;
 };
 
+const char *get_kv_version( void ) noexcept;
 char *print_map_geom( HashTab *map,  uint32_t ctx_id, char *buf = 0,
                       size_t buflen = 0 ) noexcept;
 } /* namespace kv */
@@ -512,6 +514,7 @@ char *print_map_geom( HashTab *map,  uint32_t ctx_id, char *buf = 0,
 extern "C" {
 #endif
 
+const char *kv_get_version( void );
 kv_hash_tab_t *kv_alloc_map( kv_geom_t *geom );
 kv_hash_tab_t *kv_create_map( const char *map_name,  uint8_t facility,
                               kv_geom_t *geom,  int map_mode );

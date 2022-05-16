@@ -1140,7 +1140,7 @@ EvShm::attach( uint8_t db_num ) noexcept
   uint64_t k;
   k = ::getthrid();
   this->ctx_id = this->map->attach_ctx( k );
-  if ( this->ctx_id != MAX_CTX_ID ) {
+  if ( this->ctx_id < MAX_CTX_ID ) {
     this->dbx_id = this->map->attach_db( this->ctx_id, db_num );
     return 0;
   }
@@ -1151,7 +1151,7 @@ void
 EvShm::detach( void ) noexcept
 {
   if ( this->map != NULL ) {
-    if ( this->ctx_id != MAX_CTX_ID ) {
+    if ( this->ctx_id < MAX_CTX_ID ) {
       this->map->detach_ctx( this->ctx_id );
       this->ctx_id = MAX_CTX_ID;
     }

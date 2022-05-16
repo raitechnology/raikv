@@ -21,12 +21,13 @@
 #include <raikv/ev_net.h>
 #include <raikv/ev_key.h>
 #include <raikv/ev_publish.h>
-/*#include <raikv/kv_pubsub.h>*/
+#include <raikv/kv_pubsub.h>
 #include <raikv/timer_queue.h>
 #include <raikv/pattern_cvt.h>
 
 using namespace rai;
 using namespace kv;
+uint32_t rai::kv::kv_pub_debug;
 
 bool rai::kv::ev_would_block( int err ) noexcept {
   return ( err == EINTR || err == EAGAIN || err == EWOULDBLOCK ||
@@ -35,6 +36,12 @@ bool rai::kv::ev_would_block( int err ) noexcept {
 
 RoutePDB::RoutePDB( EvPoll &p ) noexcept
   : RoutePublish( p, "default" ), timer( p.timer ) {}
+
+RoutePublish::RoutePublish( EvPoll &p,  const char *svc ) noexcept
+            : RouteDB( p.g_bloom_db ), poll( p ), map( 0 ), pubsub( 0 ),
+              keyspace( 0 ), service_name( svc ), route_id( 0 ),
+              ctx_id( (uint32_t) -1 ), dbx_id( (uint32_t) -1 ),
+              key_flags( 0 ) {}
 
 uint8_t
 EvPoll::register_type( const char *s ) noexcept
@@ -66,14 +73,13 @@ struct DbgRouteNotify : public RouteNotify {
 };
 
 int
-EvPoll::init( int numfds,  bool prefetch/*,  bool single*/ ) noexcept
+EvPoll::init( int numfds,  bool prefetch ) noexcept
 {
   uint32_t n   = align<uint32_t>( numfds, 2 ); /* 64 bit boundary */
   uint32_t mfd = EvPoll::ALLOC_INCR;
   size_t   sz  = sizeof( this->ev[ 0 ] ) * n;
   if ( prefetch )
     this->prefetch_queue = EvPrefetchQueue::create();
-  /*this->single_thread = single;*/
   this->init_ns = current_realtime_coarse_ns();
   this->now_ns  = this->init_ns;
 
@@ -103,25 +109,32 @@ EvPoll::init( int numfds,  bool prefetch/*,  bool single*/ ) noexcept
 }
 
 int
-EvPoll::init_shm( EvShm &shm ) noexcept
+RoutePublish::init_shm( EvShm &shm ) noexcept
 {
   this->map    = shm.map;
   this->ctx_id = shm.ctx_id;
   this->dbx_id = shm.dbx_id;
-  if ( this->map != NULL && ! this->map->hdr.ht_read_only ) {
-#if 0
-    if ( (this->pubsub = KvPubSub::create( *this, 254 )) == NULL ) {
+  if ( this->map != NULL && ! shm.map->hdr.ht_read_only ) {
+    uint64_t map_init = shm.map->hdr.create_stamp;
+    if ( (this->pubsub = KvPubSub::create( *this, shm.ipc_name,
+                                                     map_init )) == NULL ) {
       fprintf( stderr, "Unable to open kv pub sub\n" );
       return -1;
     }
-#endif
     void * p = ::malloc( sizeof( RedisKeyspaceNotify ) );
     if ( p == NULL ) {
       perror( "malloc" );
       return -1;
     }
-    this->keyspace = new ( p ) RedisKeyspaceNotify( this->sub_route );
-    this->sub_route.add_route_notify( *this->keyspace );
+    this->keyspace = new ( p ) RedisKeyspaceNotify( *this );
+    this->add_route_notify( *this->keyspace );
+  }
+  else if ( shm.ipc_name != NULL ) {
+    if ( (this->pubsub =
+          KvPubSub::create( *this, shm.ipc_name, 0 )) == NULL ) {
+      fprintf( stderr, "Unable to open kv pub sub\n" );
+      return -1;
+    }
   }
   return 0;
 }
@@ -568,18 +581,18 @@ EvPoll::drain_prefetch( void ) noexcept
 uint64_t
 EvPoll::current_coarse_ns( void ) noexcept
 {
-  if ( this->map != NULL && ! this->map->hdr.ht_read_only )
-    this->now_ns = this->map->hdr.current_stamp;
-  else
-    this->now_ns = current_realtime_coarse_ns();
+  /*if ( this->sub_route.map != NULL && ! this->sub_route.map->hdr.ht_read_only )
+    this->now_ns = this->sub_route.map->hdr.current_stamp;
+  else*/
+  this->now_ns = current_realtime_coarse_ns();
   return this->now_ns;
 }
 
 uint64_t
 EvPoll::create_ns( void ) const noexcept
 {
-  if ( this->map != NULL && ! this->map->hdr.ht_read_only )
-    return this->map->hdr.create_stamp;
+  if ( this->sub_route.map != NULL && ! this->sub_route.map->hdr.ht_read_only )
+    return this->sub_route.map->hdr.create_stamp;
   return this->init_ns;
 }
 
@@ -702,7 +715,6 @@ EvPoll::dispatch( void ) noexcept
 
 namespace rai {
 namespace kv {
-uint32_t kv_debug;
 struct ForwardBase {
   RoutePublish & sub_route;
   uint32_t       total;
@@ -727,7 +739,7 @@ struct ForwardAll : public ForwardBase {
     if ( fd <= this->sub_route.poll.maxfd &&
          (s = this->sub_route.poll.sock[ fd ]) != NULL ) {
       this->total++;
-      if ( kv_debug )
+      if ( kv_pub_debug )
         this->debug_subject( pub, s, "fwd_all" );
       return s->on_msg( pub );
     }
@@ -746,7 +758,7 @@ struct ForwardSome : public ForwardBase {
       if ( fd <= this->sub_route.poll.maxfd &&
            (s = this->sub_route.poll.sock[ fd ]) != NULL ) {
         this->total++;
-        if ( kv_debug )
+        if ( kv_pub_debug )
           this->debug_subject( pub, s, "fwd_som" );
         return s->on_msg( pub );
       }
@@ -763,7 +775,7 @@ struct ForwardExcept : public ForwardBase {
     if ( ! this->fdexcept.is_member( fd ) && fd <= this->sub_route.poll.maxfd &&
          (s = this->sub_route.poll.sock[ fd ]) != NULL ) {
       this->total++;
-      if ( kv_debug )
+      if ( kv_pub_debug )
         this->debug_subject( pub, s, "fwd_exc" );
       return s->on_msg( pub );
     }
@@ -779,7 +791,7 @@ struct ForwardNotFd : public ForwardBase {
     if ( fd != this->not_fd && fd <= this->sub_route.poll.maxfd &&
          (s = this->sub_route.poll.sock[ fd ]) != NULL ) {
       this->total++;
-      if ( kv_debug )
+      if ( kv_pub_debug )
         this->debug_subject( pub, s, "fwd_not" );
       return s->on_msg( pub );
     }
@@ -796,7 +808,7 @@ struct ForwardNotFd2 : public ForwardBase {
          fd <= this->sub_route.poll.maxfd &&
          (s = this->sub_route.poll.sock[ fd ]) != NULL ) {
       this->total++;
-      if ( kv_debug )
+      if ( kv_pub_debug )
         this->debug_subject( pub, s, "fwd_nt2" );
       return s->on_msg( pub );
     }
@@ -825,7 +837,7 @@ publish_one( EvPublish &pub,  RoutePublishData &rpd,  Forward &fwd ) noexcept
   for ( uint32_t i = 0; i < rcount; i++ ) {
     flow_good &= fwd.on_msg( routes[ i ], pub );
   }
-  if ( kv_debug )
+  if ( kv_pub_debug )
     fwd.debug_total( pub );
   return flow_good;
 }
@@ -877,7 +889,7 @@ publish_multi_64( EvPublish &pub,  RoutePublishData *rpd,  uint8_t n,
     pub.prefix_cnt = cnt;
     flow_good &= fwd.on_msg( min_route, pub );
   }
-  if ( kv_debug )
+  if ( kv_pub_debug )
     fwd.debug_total( pub );
 }
 
@@ -923,7 +935,7 @@ publish_multi( EvPublish &pub,  RoutePublishData *rpd,
     pub.prefix_cnt = cnt;
     flow_good &= fwd.on_msg( min_route, pub );
   }
-  if ( kv_debug )
+  if ( kv_pub_debug )
     fwd.debug_total( pub );
 }
 
@@ -970,7 +982,7 @@ publish_queue( EvPublish &pub,  RoutePublishQueue &queue,
     pub.prefix_cnt = cnt;
     flow_good &= fwd.on_msg( min_route, pub );
   }
-  if ( kv_debug )
+  if ( kv_pub_debug )
     fwd.debug_total( pub );
   return flow_good;
 }
@@ -1113,7 +1125,7 @@ RoutePublish::forward_set( EvPublish &pub,  const BitSpace &fdset ) noexcept
           break;
         if ( (s = this->poll.sock[ fd ]) != NULL ) {
           flow_good &= s->on_msg( pub );
-          if ( kv_debug ) {
+          if ( kv_pub_debug ) {
             printf( "fwd_set %u\n", fd );
             cnt++;
           }
@@ -1122,7 +1134,7 @@ RoutePublish::forward_set( EvPublish &pub,  const BitSpace &fdset ) noexcept
       word >>= 1;
     }
   }
-  if ( kv_debug && cnt == 0 )
+  if ( kv_pub_debug && cnt == 0 )
     printf( "fwd_set empty\n" );
 
   return flow_good;
@@ -1150,7 +1162,7 @@ RoutePublish::forward_set_not_fd( EvPublish &pub,  const BitSpace &fdset,
           break;
         if ( (s = this->poll.sock[ fd ]) != NULL ) {
           flow_good &= s->on_msg( pub );
-          if ( kv_debug ) {
+          if ( kv_pub_debug ) {
             printf( "fwd_not_%u %u\n", not_fd, fd );
             cnt++;
           }
@@ -1159,7 +1171,7 @@ RoutePublish::forward_set_not_fd( EvPublish &pub,  const BitSpace &fdset,
       word >>= 1;
     }
   }
-  if ( kv_debug && cnt == 0 )
+  if ( kv_pub_debug && cnt == 0 )
     printf( "fwd_not_%u empty\n", not_fd );
   return flow_good;
 }
@@ -1211,11 +1223,11 @@ RoutePublish::forward_to( EvPublish &pub,  uint32_t fd ) noexcept
   bool       b = true;
   if ( fd <= this->poll.maxfd && (s = this->poll.sock[ fd ]) != NULL ) {
     b = s->on_msg( pub );
-    if ( kv_debug ) {
+    if ( kv_pub_debug ) {
       printf( "fwd_to_%u ok\n", fd );
     }
   }
-  else if ( kv_debug ) {
+  else if ( kv_pub_debug ) {
     printf( "fwd_to_%u empty\n", fd );
   }
   return b;
@@ -1232,7 +1244,7 @@ RoutePublish::hash_to_sub( uint32_t r,  uint32_t h,  char *key,
     b = s->hash_to_sub( h, key, keylen );
   return b;
 }
-
+#if 0
 void
 RoutePublish::resolve_collisions( NotifySub &sub,  RouteRef &rte ) noexcept
 {
@@ -1268,7 +1280,7 @@ RoutePublish::resolve_pcollisions( NotifyPattern &pat,  RouteRef &rte ) noexcept
     }
   }
 }
-
+#endif
 /* modify keyspace route */
 void
 RedisKeyspaceNotify::update_keyspace_route( uint32_t &val,  uint16_t bit,
@@ -1409,6 +1421,15 @@ RouteNotify::on_reassert( uint32_t, RouteVec<RouteSub> &,
                           RouteVec<RouteSub> & ) noexcept
 {
 }
+void
+RouteNotify::on_bloom_ref( BloomRef & ) noexcept
+{
+}
+void
+RouteNotify::on_bloom_deref( BloomRef & ) noexcept
+{
+}
+
 /* shutdown and close all open socks */
 void
 EvPoll::process_quit( void ) noexcept
@@ -1913,7 +1934,7 @@ EvConnection::write( void ) noexcept
 }
 /* use mmsg for udp sockets */
 bool
-EvUdp::alloc_mmsg( void ) noexcept
+EvDgram::alloc_mmsg( void ) noexcept
 {
   static const size_t gsz = sizeof( struct sockaddr_storage ) +
                             sizeof( struct iovec ),
@@ -1966,7 +1987,7 @@ EvUdp::alloc_mmsg( void ) noexcept
 }
 
 int
-EvUdp::discard_pkt( void ) noexcept
+EvDgram::discard_pkt( void ) noexcept
 {
   uint8_t buf[ 64 * 1024 +
                sizeof( struct sockaddr_storage ) +
@@ -1998,7 +2019,7 @@ EvUdp::discard_pkt( void ) noexcept
 
 /* read udp packets */
 void
-EvUdp::read( void ) noexcept
+EvDgram::read( void ) noexcept
 {
   int     nmsgs  = 0;
   ssize_t nbytes = 0;
@@ -2042,6 +2063,8 @@ EvUdp::read( void ) noexcept
     this->in_nmsgs += nmsgs;
     for ( int i = 0; i < nmsgs; i++ )
       this->bytes_recv += this->in_mhdr[ j++ ].msg_len;
+    /* keep recvmmsg packet recv count to 8 at a time, that is close to
+     * the sweet spot of latency vs bandwidth */
     this->in_nsize = ( ( this->in_nmsgs < 8 ) ? this->in_nmsgs + 1 : 8 );
     this->push( EV_PROCESS );
     this->pushpop( EV_READ_LO, EV_READ );
@@ -2070,7 +2093,7 @@ EvUdp::read( void ) noexcept
 }
 /* write udp packets */
 void
-EvUdp::write( void ) noexcept
+EvDgram::write( void ) noexcept
 {
   int nmsgs = 0;
 #if ! defined( NO_SENDMMSG ) && ! defined( _MSC_VER )

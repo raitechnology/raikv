@@ -128,6 +128,7 @@ template <class Int> static inline Int unaligned( const void *p ) {
 
 static const size_t KV_CACHE_ALIGN = 64;
 static inline void *aligned_malloc( size_t sz ) {
+  sz = align<size_t>( sz, KV_CACHE_ALIGN );
 #if defined( _MSC_VER )
   return ::_aligned_malloc( sz, KV_CACHE_ALIGN );
 #elif defined( _ISOC11_SOURCE )

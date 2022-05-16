@@ -19,6 +19,8 @@ struct EvTcpListen : public EvListen {
 namespace EvTcpConnection {
   int connect( EvConnection &conn,  const char *ip,  int port,
                int opts ) noexcept;
+  int connect2( EvConnection &conn,  const char *ip,  int port,
+                int opts,  const char *k ) noexcept;
 }
 
 }

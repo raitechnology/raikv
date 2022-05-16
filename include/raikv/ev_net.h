@@ -26,6 +26,8 @@ struct EvKeyCtx;           /* a key operand, an expr may have multiple keys */
 struct NotifySub;          /* notify a subject subscription */
 struct NotifyPattern;      /* notify a pattern subscription */
 
+extern uint32_t kv_pub_debug, kv_ps_debug;
+
 enum EvState {       /* state bits: */
   EV_READ_HI    = 0, /*   1, listen port accept */
   EV_CLOSE      = 1, /*   2, if close set, do that before write/read */
@@ -57,10 +59,13 @@ enum EvSockOpts {
   /* opts inherited from listener, set in EvTcpListen::set_sock_opts()  */
   ALL_TCP_ACCEPT_OPTS = OPT_TCP_NODELAY | OPT_KEEPALIVE | OPT_LINGER,
 
-  DEFAULT_TCP_LISTEN_OPTS  = 1024|128|64|32|16|8|4|2|1,
-  DEFAULT_TCP_CONNECT_OPTS = 1024|64|32|16|8|4,
-  DEFAULT_UDP_LISTEN_OPTS  = 1024|16|8|2|1,
-  DEFAULT_UDP_CONNECT_OPTS = 1024|16|8
+  DEFAULT_TCP_LISTEN_OPTS   = 1024|128|64|32|16|8|4|2|1,
+  DEFAULT_TCP_CONNECT_OPTS  = 1024|64|32|16|8|4,
+  DEFAULT_UDP_LISTEN_OPTS   = 1024|16|8|2|1,
+  DEFAULT_UDP_CONNECT_OPTS  = 1024|16|8,
+  DEFAULT_UNIX_LISTEN_OPTS  = 1024|1,
+  DEFAULT_UNIX_CONNECT_OPTS = 1024,
+  DEFAULT_UNIX_BIND_OPTS    = 1024|1
 };
 
 enum EvSockFlags {
@@ -105,7 +110,7 @@ enum EvSockBase {
   EV_OTHER_BASE      = 0,
   EV_LISTEN_BASE     = 1,
   EV_CONNECTION_BASE = 2,
-  EV_UDP_BASE        = 3
+  EV_DGRAM_BASE      = 3
 };
 
 struct EvSocket : public PeerData /* fd and address of peer */EV_DBG_INHERIT {
@@ -292,11 +297,8 @@ struct EvPoll {
 
   EvSocket           ** sock;            /* sock array indexed by fd */
   struct epoll_event  * ev;              /* event array used by epoll() */
-  HashTab             * map;             /* the data store */
   TimerQueue            timer;           /* timer events */
   EvPrefetchQueue     * prefetch_queue;  /* ordering keys */
-  KvPubSub            * pubsub;          /* cross process pubsub */
-  RedisKeyspaceNotify * keyspace;        /* update sub_route.key_flags */
   uint64_t              prio_tick,       /* priority queue ticker */
                         wr_timeout_ns,   /* timeout writes in EV_WRITE_POLL */
                         conn_timeout_ns, /* timeout writes in EV_WRITE_POLL */
@@ -304,9 +306,7 @@ struct EvPoll {
                         next_id,         /* unique id for connection */
                         now_ns,          /* updated by current_coarse_ns() */
                         init_ns;         /* when map or poll was created */
-  uint32_t              ctx_id,          /* this thread context */
-                        dbx_id,          /* the db context */
-                        fdcnt,           /* num fds in poll set */
+  uint32_t              fdcnt,           /* num fds in poll set */
                         wr_count,        /* num fds with write set */
                         maxfd,           /* current maximum fd number */
                         nfds;            /* max epoll() fds, array sz ev[] */
@@ -315,11 +315,11 @@ struct EvPoll {
                         quit;            /* when > 0, wants to exit */
   static const size_t   ALLOC_INCR    = 16, /* alloc size of poll socket ar */
                         PREFETCH_SIZE = 8;  /* pipe size of number of pref */
-  size_t                prefetch_pending; /* count of elems in prefetch queue */
-                   /*, prefetch_cnt[ PREFETCH_SIZE + 1 ]*/
+  uint32_t              prefetch_pending; /* count of elems in prefetch queue */
   RoutePDB              sub_route;       /* subscriptions */
   RoutePublishQueue     pub_queue;       /* temp routing queue: */
   PeerStats             peer_stats;      /* accumulator after sock closes */
+  BloomDB               g_bloom_db;
      /* this causes a message matching multiple wildcards to be sent once */
 
   /* socket lists, active and free lists, multiple socks are allocated at a
@@ -337,18 +337,16 @@ struct EvPoll {
                         DEFAULT_NS_CONNECT_TIMEOUT =  1000 * 1000 * 1000;
 
   EvPoll()
-    : sock( 0 ), ev( 0 ), map( 0 ), prefetch_queue( 0 ),
-      pubsub( 0 ), keyspace( 0 ), prio_tick( 0 ),
+    : sock( 0 ), ev( 0 ), prefetch_queue( 0 ), prio_tick( 0 ),
       wr_timeout_ns( DEFAULT_NS_TIMEOUT ),
       conn_timeout_ns( DEFAULT_NS_CONNECT_TIMEOUT ),
       so_keepalive_ns( DEFAULT_NS_TIMEOUT ),
-      next_id( 0 ), now_ns( 0 ), init_ns( 0 ), ctx_id( kv::MAX_CTX_ID ),
-      dbx_id( kv::MAX_STAT_ID ), fdcnt( 0 ), wr_count( 0 ), maxfd( 0 ),
-      nfds( 0 ), efd( -1 ), null_fd( -1 ), quit( 0 ), prefetch_pending( 0 ),
-      sub_route( *this ), sock_mem( 0 ), sock_mem_left( 0 ) {
+      next_id( 0 ), now_ns( 0 ), init_ns( 0 ), fdcnt( 0 ), wr_count( 0 ),
+      maxfd( 0 ), nfds( 0 ), efd( -1 ), null_fd( -1 ), quit( 0 ),
+      prefetch_pending( 0 ), sub_route( *this ), sock_mem( 0 ),
+      sock_mem_left( 0 ) {
     ::memset( this->sock_type_str, 0, sizeof( this->sock_type_str ) );
   }
-  /*bool single_thread; (if kv single threaded) */
   /* alloc ALLOC_INCR(64) elems of the above list elems at a time, aligned 64 */
   template<class T, class... Ts>
   T *get_free_list( const uint8_t sock_type,  Ts... args ) {
@@ -379,9 +377,8 @@ struct EvPoll {
   /* return false if duplicate type */
   uint8_t register_type( const char *s ) noexcept;
   /* initialize epoll */
-  int init( int numfds,  bool prefetch/*,  bool single*/ ) noexcept;
+  int init( int numfds,  bool prefetch ) noexcept;
   /* initialize kv */
-  int init_shm( EvShm &shm ) noexcept;    /* open shm pubsub */
   void add_write_poll( EvSocket *s ) noexcept;
   void remove_write_poll( EvSocket *s ) noexcept;
   int wait( int ms ) noexcept;            /* call epoll() with ms timeout */
@@ -506,12 +503,18 @@ struct EvConnection : public EvSocket, public StreamBuf {
     }
     return false;
   }
+  bool idle_push_write( void ) {
+    size_t buflen = this->StreamBuf::pending();
+    bool flow_good = ( buflen <= this->send_highwater );
+    this->idle_push( flow_good ? EV_WRITE : EV_WRITE_HI );
+    return flow_good;
+  }
   /* PeerData */
   virtual int client_list( char *buf,  size_t buflen ) noexcept;
   virtual bool match( PeerMatchArgs &ka ) noexcept;
 };
 
-struct EvUdp : public EvSocket, public StreamBuf {
+struct EvDgram : public EvSocket, public StreamBuf {
   struct    mmsghdr * in_mhdr,
                     * out_mhdr;
   uint32_t  in_moff,   /* offset from 0 -> in_nmsgs */
@@ -520,7 +523,7 @@ struct EvUdp : public EvSocket, public StreamBuf {
             in_nsize,  /* new array size, ajusted based on activity */
             out_nmsgs;
 
-  EvUdp( EvPoll &p, const uint8_t t ) : EvSocket( p, t, EV_UDP_BASE ),
+  EvDgram( EvPoll &p, const uint8_t t,  const uint8_t b ) : EvSocket( p, t, b ),
     in_mhdr( 0 ), out_mhdr( 0 ), in_moff( 0 ), in_nmsgs( 0 ), in_size( 0 ),
     in_nsize( 1 ), out_nmsgs( 0 ) {}
   void zero( void ) {
@@ -530,8 +533,6 @@ struct EvUdp : public EvSocket, public StreamBuf {
   }
   bool alloc_mmsg( void ) noexcept;
   int discard_pkt( void ) noexcept;
-  int listen2( const char *ip,  int port,  int opts,  const char *k ) noexcept;
-  int connect( const char *ip,  int port,  int opts,  const char *k ) noexcept;
 
   void release_buffers( void ) { /* release all buffs */
     this->clear_buffers();
@@ -555,6 +556,14 @@ struct EvUdp : public EvSocket, public StreamBuf {
     }
     return false;
   }
+};
+
+struct EvUdp : public EvDgram {
+  EvUdp( EvPoll &p, const uint8_t t ) : EvDgram( p, t, EV_DGRAM_BASE ) {}
+
+  int listen2( const char *ip,  int port,  int opts,  const char *k ) noexcept;
+  int connect( const char *ip,  int port,  int opts,  const char *k ) noexcept;
+
   /* PeerData */
   virtual int client_list( char *buf,  size_t buflen ) noexcept;
   virtual bool match( PeerMatchArgs &ka ) noexcept;

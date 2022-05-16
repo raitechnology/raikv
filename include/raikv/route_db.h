@@ -189,10 +189,13 @@ struct RouteZip {
 };
 
 /* Map a subscription hash to a route list using RouteZip */
+typedef ArrayCount<BloomRef *, 128> BloomDB;
+
 struct RouteDB {
   RouteCache    cache;               /* the route arrays indexed by ht */
   BloomList     bloom_list;
   uint32_t      bloom_pref_count[ MAX_RTE ];
+  BloomDB     & g_bloom_db;
   size_t        entry_count;         /* counter of route/hashes indexed */
   RouteZip      zip;
   UIntHashTab * rt_hash[ MAX_RTE ];  /* route hash -> code | ref hash */
@@ -203,7 +206,7 @@ struct RouteDB {
   uint8_t       prefix_len[ MAX_PRE ]; /* current set of prefix lengths */
   uint8_t       pat_bit_count;      /* how many bits in pat_mask are set */
 
-  RouteDB() noexcept;
+  RouteDB( BloomDB &g_db ) noexcept;
 
   /* modify the bits of the prefixes used */
   void add_prefix_len( uint16_t prefix_len,  bool is_rt_hash ) noexcept;
@@ -315,16 +318,23 @@ struct RouteDB {
   uint32_t get_sub_route_count( uint32_t hash ) {
     return this->get_route_count( SUB_RTE, hash );
   }
+#if 0
   BloomRoute * create_bloom_route( uint32_t r,  uint32_t *pref_count,
                                    BloomBits *bits,  const char *nm ) noexcept;
   BloomRoute * create_bloom_route( uint32_t r,  uint32_t seed,
                                    const char *nm ) noexcept;
-  BloomRoute * create_bloom_route( uint32_t r,  BloomRef *ref ) noexcept;
-  static BloomRef * create_bloom_ref( uint32_t *pref_count,  BloomBits *bits,
-                                      const char *nm ) noexcept;
-  static BloomRef * create_bloom_ref( uint32_t seed,  const char *nm ) noexcept;
-  void update_bloom_route( uint32_t *pref_count,  BloomBits *bits,
-                           BloomRoute *b ) noexcept;
+#endif
+  BloomRoute * create_bloom_route( uint32_t r,  BloomRef *ref = NULL ) noexcept;
+
+  void remove_bloom_route( BloomRoute *b ) noexcept;
+
+  BloomRef * create_bloom_ref( uint32_t *pref_count,  BloomBits *bits,
+                               const char *nm,  BloomDB &db ) noexcept;
+  BloomRef * create_bloom_ref( uint32_t seed,  const char *nm,
+                               BloomDB &db ) noexcept;
+  BloomRef * update_bloom_ref( const void *data,  size_t datalen,
+                               uint32_t ref_num,  const char *nm,
+                               BloomDB &db ) noexcept;
   uint32_t get_bloom_count( uint16_t prefix_len,  uint32_t hash ) noexcept;
 
   bool cache_find( uint16_t prefix_len,  uint32_t hash,
@@ -348,8 +358,6 @@ struct RouteDB {
   void cache_purge( uint16_t prefix_len,  uint32_t hash ) noexcept;
   void cache_need( void ) noexcept;
 };
-
-struct BloomRoute;
 
 struct SuffixMatch {
   uint32_t hash;  /* hash of suffix */
@@ -414,7 +422,7 @@ struct BloomDetail {
 };
 
 struct BloomRef {
-  const char  * name;
+  char          name[ 16 ];
   BloomBits   * bits;
   BloomRoute ** links;
   BloomDetail * details;
@@ -422,13 +430,16 @@ struct BloomRef {
                 detail_mask;
   uint32_t      nlinks,
                 ndetails,
-                pref_count[ MAX_RTE ];
+                pref_count[ MAX_RTE ],
+                ref_num;
+  BloomDB     & bloom_db;
 
   void * operator new( size_t, void *ptr ) { return ptr; }
   void operator delete( void *ptr ) { ::free( ptr ); }
 
-  BloomRef( uint32_t seed,  const char *nm ) noexcept;
-  BloomRef( BloomBits *b,  const uint32_t *pref,  const char *nm ) noexcept;
+  BloomRef( uint32_t seed,  const char *nm,  BloomDB &db ) noexcept;
+  BloomRef( BloomBits *b,  const uint32_t *pref,  const char *nm,
+            BloomDB &db,  uint32_t num = (uint32_t) -1 ) noexcept;
   void unlink( bool del_empty_routes ) noexcept;
   void zero( void ) noexcept;
   void add_link( BloomRoute *b ) noexcept;
@@ -450,6 +461,7 @@ struct BloomRef {
                          const SuffixMatch &match ) noexcept;
   void update_route( const uint32_t *pref_count,  BloomBits *bits,
                      BloomDetail *details,  uint32_t ndetails ) noexcept;
+  /*void notify_update( void ) noexcept;*/
 
   bool add( uint32_t hash ) {
     return this->add_route( SUB_RTE, hash );
@@ -548,21 +560,20 @@ struct BloomRoute {
                nblooms;
   uint64_t     pref_mask,
                detail_mask;
-  bool         is_invalid;
+  bool         is_invalid,
+               is_in_list;
 
   void * operator new( size_t, void *ptr ) { return ptr; }
   void operator delete( void *ptr ) { ::free( ptr ); }
 
   BloomRoute( uint32_t fd,  RouteDB &db )
     : next( 0 ), back( 0 ), rdb( db ), bloom( 0 ), r( fd ), nblooms( 0 ),
-      pref_mask( 0 ), detail_mask( 0 ), is_invalid( true ) {}
-  ~BloomRoute() {
-    if ( this->bloom != NULL )
-      ::free( this->bloom );
-  }
+      pref_mask( 0 ), detail_mask( 0 ), is_invalid( true ),
+      is_in_list( false ) {}
+  ~BloomRoute();
 
   void add_bloom_ref( BloomRef *ref ) noexcept;
-  void del_bloom_ref( BloomRef *ref ) noexcept;
+  BloomRef *del_bloom_ref( BloomRef *ref ) noexcept;
   void invalid( void ) noexcept;
   void update_masks( void ) noexcept;
 };
@@ -878,29 +889,26 @@ struct NotifySub {
                src_fd,
                sub_count;
   void       * src;
+  RouteRef   * ref;
+  BloomRef   * bref;
   uint8_t      hash_collision;
   char         src_type;
 
-  bool is_start( void ) const {
-    return this->sub_count == 1 && this->hash_collision == 0;
-  }
-  bool is_stop( void ) const {
-    return this->sub_count == 0 && this->hash_collision == 0;
-  }
   NotifySub( const char *s,  size_t slen,
              const char *r,  size_t rlen,
-             uint32_t hash,  uint32_t fd,
+             uint32_t shash,  uint32_t fd,
              bool coll,  char t,  void *source = NULL ) :
     subject( s ), reply( r ), subject_len( (uint16_t) slen ),
-    reply_len( (uint16_t) rlen ), subj_hash( hash ), src_fd( fd ),
-    sub_count( 0 ), src( source ), hash_collision( coll ), src_type( t ) {}
+    reply_len( (uint16_t) rlen ), subj_hash( shash ), src_fd( fd ),
+    sub_count( 0 ), src( source ), ref( 0 ), bref( 0 ), hash_collision( coll ),
+    src_type( t ) {}
 
   NotifySub( const char *s,  size_t slen,
-             uint32_t hash,  uint32_t fd,
+             uint32_t shash,  uint32_t fd,
              bool coll,  char t,  void *source = NULL ) :
     subject( s ), reply( 0 ), subject_len( (uint16_t) slen ), reply_len( 0 ),
-    subj_hash( hash ), src_fd( fd ), sub_count( 0 ), src( source ),
-    hash_collision( coll ), src_type( t ) {}
+    subj_hash( shash ), src_fd( fd ), sub_count( 0 ), src( source ), ref( 0 ),
+    bref( 0 ), hash_collision( coll ), src_type( t ) {}
 };
 
 struct NotifyPattern {
@@ -913,25 +921,28 @@ struct NotifyPattern {
                      src_fd,
                      sub_count;
   void             * src;
+  RouteRef         * ref;
+  BloomRef         * bref;
   uint8_t            hash_collision;
   char               src_type;
 
   NotifyPattern( const PatternCvt &c,
                  const char *s,  size_t slen,
                  const char *r,  size_t rlen,
-                 uint32_t hash,  uint32_t fd,
+                 uint32_t phash,  uint32_t fd,
                  bool coll,  char t,  void *source = NULL ) :
     cvt( c ), pattern( s ), reply( r ), pattern_len( (uint16_t) slen ),
-    reply_len( (uint16_t) rlen ), prefix_hash( hash ), src_fd( fd ),
-    sub_count( 0 ), src( source ), hash_collision( coll ), src_type( t ) {}
+    reply_len( (uint16_t) rlen ), prefix_hash( phash ), src_fd( fd ),
+    sub_count( 0 ), src( source ), ref( 0 ), bref( 0 ), hash_collision( coll ),
+    src_type( t ) {}
 
   NotifyPattern( const PatternCvt &c,
                  const char *s,  size_t slen,
-                 uint32_t hash,  uint32_t fd,
+                 uint32_t phash,  uint32_t fd,
                  bool coll,  char t,  void *source = NULL ) :
     cvt( c ), pattern( s ), reply( 0 ), pattern_len( (uint16_t) slen ),
-    reply_len( 0 ), prefix_hash( hash ), src_fd( fd ), sub_count( 0 ),
-    src( source ), hash_collision( coll ), src_type( t ) {}
+    reply_len( 0 ), prefix_hash( phash ), src_fd( fd ), sub_count( 0 ),
+    src( source ), ref( 0 ), bref( 0 ), hash_collision( coll ), src_type( t ) {}
 };
 
 struct RoutePublish;
@@ -950,6 +961,8 @@ struct RouteNotify {
   virtual void on_punsub( NotifyPattern &pat ) noexcept;
   virtual void on_reassert( uint32_t fd,  RouteVec<RouteSub> &sub_db,
                             RouteVec<RouteSub> &pat_db ) noexcept;
+  virtual void on_bloom_ref( BloomRef &ref ) noexcept;
+  virtual void on_bloom_deref( BloomRef &ref ) noexcept;
 };
 
 struct RedisKeyspaceNotify : public RouteNotify {
@@ -978,17 +991,28 @@ struct RedisKeyspaceNotify : public RouteNotify {
                             RouteVec<RouteSub> &pat_db ) noexcept;
 };
 
-/*struct KvPrefHash;*/
 struct EvPoll;
+struct KvPubSub; /* manages pubsub through kv shm */
+struct HashTab;
+struct EvShm;
+
 struct RoutePublish : public RouteDB {
   EvPoll  & poll;
-  kv::DLinkList<RouteNotify> notify_list;
+  HashTab * map;             /* the data store */
+
+  DLinkList<RouteNotify> notify_list;
+  KvPubSub             * pubsub;   /* cross process pubsub */
+  RedisKeyspaceNotify  * keyspace; /* update sub_route.key_flags */
+
   const char * service_name;
-  uint32_t route_id;  /* id used by endpoints to identify route */
-  uint16_t key_flags; /* bits set for key subs above:
+  uint32_t     route_id,  /* id used by endpoints to identify route */
+               ctx_id,    /* this thread context */
+               dbx_id;    /* the db context */
+  uint16_t     key_flags; /* bits set for key subs above:
                          EKF_KEYSPACE_FWD | EKF_KEYEVENT_FWD |
                          EKF_LISTBLKD_NOT | EKF_ZSETBLKD_NOT |
                          EKF_STRMBLKD_NOT | EKF_MONITOR */
+  int init_shm( EvShm &shm ) noexcept;
 
   void do_notify_sub( NotifySub &sub ) {
     for ( RouteNotify *p = this->notify_list.hd; p != NULL; p = p->next )
@@ -1006,9 +1030,18 @@ struct RoutePublish : public RouteDB {
     for ( RouteNotify *p = this->notify_list.hd; p != NULL; p = p->next )
       p->on_punsub( pat );
   }
+  void do_notify_bloom_ref( BloomRef &ref ) {
+    for ( RouteNotify *p = this->notify_list.hd; p != NULL; p = p->next )
+      p->on_bloom_ref( ref );
+  }
+  void do_notify_bloom_deref( BloomRef &ref ) {
+    for ( RouteNotify *p = this->notify_list.hd; p != NULL; p = p->next )
+      p->on_bloom_deref( ref );
+  }
+#if 0
   void resolve_collisions( NotifySub &sub,  RouteRef &rte ) noexcept;
   void resolve_pcollisions( NotifyPattern &pat,  RouteRef &rte ) noexcept;
-
+#endif
   void add_sub( NotifySub &sub ) {
     RouteRef rte( *this, this->zip.route_spc[ SUB_RTE ] );
     if ( sub.hash_collision == 0 )
@@ -1017,9 +1050,11 @@ struct RoutePublish : public RouteDB {
       sub.sub_count = this->ref_route( SUB_RTE, sub.subj_hash, rte );
     else
       sub.sub_count = 1;
-    if ( sub.sub_count > 1 )
-      this->resolve_collisions( sub, rte );
+    /*if ( sub.sub_count > 1 )
+      this->resolve_collisions( sub, rte );*/
+    sub.ref = &rte;
     this->do_notify_sub( sub );
+    sub.ref = NULL;
   }
 
   void del_sub( NotifySub &sub ) {
@@ -1030,9 +1065,11 @@ struct RoutePublish : public RouteDB {
       sub.sub_count = this->ref_route( SUB_RTE, sub.subj_hash, rte );
     else
       sub.sub_count = 0;
-    if ( sub.sub_count > 0 )
-      this->resolve_collisions( sub, rte );
+    /*if ( sub.sub_count > 0 )
+      this->resolve_collisions( sub, rte );*/
+    sub.ref = &rte;
     this->do_notify_unsub( sub );
+    sub.ref = NULL;
   }
 
   void add_pat( NotifyPattern &pat ) {
@@ -1045,9 +1082,11 @@ struct RoutePublish : public RouteDB {
       pat.sub_count = this->ref_route( prefix_len, pat.prefix_hash, rte );
     else
       pat.sub_count = 1;
-    if ( pat.sub_count > 1 )
-      this->resolve_pcollisions( pat, rte );
+    /*if ( pat.sub_count > 1 )
+      this->resolve_pcollisions( pat, rte );*/
+    pat.ref = &rte;
     this->do_notify_psub( pat );
+    pat.ref = NULL;
   }
 
   void del_pat( NotifyPattern &pat ) {
@@ -1060,9 +1099,11 @@ struct RoutePublish : public RouteDB {
       pat.sub_count = this->ref_route( prefix_len, pat.prefix_hash, rte ) - 1;
     else
       pat.sub_count = 0;
-    if ( pat.sub_count > 0 )
-      this->resolve_pcollisions( pat, rte );
+    /*if ( pat.sub_count > 0 )
+      this->resolve_pcollisions( pat, rte );*/
+    pat.ref = &rte;
     this->do_notify_punsub( pat );
+    pat.ref = NULL;
   }
 
   bool forward_msg( EvPublish &pub ) noexcept;
@@ -1100,8 +1141,7 @@ struct RoutePublish : public RouteDB {
   void * operator new( size_t, void *ptr ) { return ptr; }
   void operator delete( void *ptr ) { ::free( ptr ); }
 
-  RoutePublish( EvPoll &p,  const char *svc )
-    : poll( p ), service_name( svc ), route_id( 0 ), key_flags( 0 ) {}
+  RoutePublish( EvPoll &p,  const char *svc ) noexcept;
 };
 
 /* callbacks cannot disappear between epochs, fd based connections that can

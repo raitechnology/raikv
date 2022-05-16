@@ -336,8 +336,15 @@ int
 EvTcpConnection::connect( EvConnection &conn,  const char *ip,  int port,
                           int opts ) noexcept
 {
-  /* for setsockopt() */
   static const char k[] = "tcp_client";
+  return EvTcpConnection::connect2( conn, ip, port, opts, k );
+}
+
+int
+EvTcpConnection::connect2( EvConnection &conn,  const char *ip,  int port,
+                           int opts,  const char *k ) noexcept
+{
+  /* for setsockopt() */
   static int  off = 0;
   int    status = 0;
   SOCKET sock = INVALID_SOCKET;
