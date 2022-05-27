@@ -12,7 +12,6 @@ struct EvTcpListen : public EvListen {
   virtual int listen( const char *ip,  int port,  int opts ) noexcept;
   virtual int listen2( const char *ip,  int port,  int opts,
                        const char *k ) noexcept;
-  virtual bool accept( void ) noexcept { return false; }
   virtual bool accept2( EvConnection &c,  const char *k ) noexcept;
 };
 

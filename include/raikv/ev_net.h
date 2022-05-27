@@ -423,7 +423,7 @@ struct EvListen : public EvSocket {
 
   EvListen( EvPoll &p,  const char *lname,  const char *name );
 
-  virtual bool accept( void ) noexcept = 0;
+  virtual EvSocket *accept( void ) noexcept = 0;
   virtual void write( void ) noexcept;
   virtual void read( void ) noexcept; /* do accept */
   virtual void process( void ) noexcept;

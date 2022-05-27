@@ -11,7 +11,6 @@ struct EvUnixListen : public EvListen {
     : EvListen( p, lname, name ) {}
   virtual int listen( const char *path,  int opts ) noexcept;
   virtual int listen2( const char *path,  int opts,  const char *k ) noexcept;
-  virtual bool accept( void ) noexcept { return false; }
   virtual bool accept2( EvConnection &c,  const char *k ) noexcept;
 };
 

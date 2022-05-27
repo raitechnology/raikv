@@ -1068,6 +1068,26 @@ EvShm::open( const char *map_name,  uint8_t db_num ) noexcept
 }
 
 int
+EvShm::open_rdonly( void ) noexcept
+{
+  kv_geom_t geom;
+  geom.map_size         = sizeof( HashTab ) + 1024;
+  geom.max_value_size   = 0;
+  geom.hash_entry_size  = 64;
+  geom.hash_value_ratio = 1;
+  geom.cuckoo_buckets   = 0;
+  geom.cuckoo_arity     = 0;
+  this->map = HashTab::alloc_map( geom );
+  if ( this->map != NULL ) {
+    this->map->hdr.ht_read_only = 1;
+    this->ctx_id = 0;
+    this->dbx_id = 0;
+    return 0;
+  }
+  return -1;
+}
+
+int
 EvShm::create( const char *map_name,  kv_geom_t *geom,  int map_mode,
                uint8_t db_num ) noexcept
 {

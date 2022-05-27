@@ -11,7 +11,7 @@ using namespace kv;
 struct TcpListen : public EvTcpListen {
   TcpListen( EvPoll &p ) noexcept;
 
-  virtual bool accept( void ) noexcept;
+  virtual EvSocket *accept( void ) noexcept;
 };
 
 struct TcpConn : public EvConnection {
@@ -37,18 +37,18 @@ struct TcpPing : public EvConnection {
 TcpListen::TcpListen( EvPoll &p ) noexcept
          : EvTcpListen( p, "tcp_listen", "tcp_conn" ) {}
 
-bool
+EvSocket *
 TcpListen::accept( void ) noexcept
 {
   TcpConn *c = this->poll.get_free_list<TcpConn>( this->accept_sock_type );
   if ( c == NULL )
-    return false;
+    return NULL;
   if ( this->accept2( *c, "tcp_accept" ) ) {
     printf( "accept %.*s\n", (int) c->get_peer_address_strlen(),
             c->peer_address.buf );
-    return true;
+    return c;
   }
-  return false;
+  return NULL;
 }
 
 void

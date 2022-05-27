@@ -281,7 +281,6 @@ struct Runner {
 #ifndef _MSC_VER
     else {
       shm.detach(); /* each child will attach */
-      signal( SIGUSR2, SIG_IGN );
       r.sighndl.install(); /* catch sig int */
 
       for ( i = 0; i < this->num_thr && i < MAX_THREADS; i++ )

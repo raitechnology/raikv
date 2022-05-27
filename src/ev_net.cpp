@@ -117,7 +117,7 @@ RoutePublish::init_shm( EvShm &shm ) noexcept
   if ( this->map != NULL && ! shm.map->hdr.ht_read_only ) {
     uint64_t map_init = shm.map->hdr.create_stamp;
     if ( (this->pubsub = KvPubSub::create( *this, shm.ipc_name,
-                                                     map_init )) == NULL ) {
+                                           map_init, shm.ctx_name )) == NULL ) {
       fprintf( stderr, "Unable to open kv pub sub\n" );
       return -1;
     }
@@ -131,7 +131,7 @@ RoutePublish::init_shm( EvShm &shm ) noexcept
   }
   else if ( shm.ipc_name != NULL ) {
     if ( (this->pubsub =
-          KvPubSub::create( *this, shm.ipc_name, 0 )) == NULL ) {
+          KvPubSub::create( *this, shm.ipc_name, 0, shm.ctx_name )) == NULL ) {
       fprintf( stderr, "Unable to open kv pub sub\n" );
       return -1;
     }
@@ -495,7 +495,7 @@ EvListen::EvListen( EvPoll &p,  const char *lname,  const char *name )
 void
 EvListen::read( void ) noexcept
 {
-  if ( this->accept() )
+  if ( this->accept() != NULL )
     this->accept_cnt++;
 }
 
@@ -1704,8 +1704,7 @@ EvListen::client_list( char *buf,  size_t buflen ) noexcept
   int i = this->EvSocket::client_list( buf, buflen );
   if ( i >= 0 ) {
     i += ::snprintf( &buf[ i ], buflen - (size_t) i,
-                     "acpt=%" PRIu64 " ",
-                     this->accept_cnt );
+                     "acpt=%" PRIu64 " ", this->accept_cnt );
   }
   return i;
 }

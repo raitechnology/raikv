@@ -23,13 +23,18 @@ uint32_t rai::kv::kv_ps_debug = 0;
 static const char KVPS_MAGIC[] = "PsCtrlFile.1";
 
 KvPubSub::KvPubSub( RoutePublish &sr,  PsCtrlFile &cf,  const char *ipc_nm,
-                    uint64_t ipc_tok ) noexcept
+                    uint64_t ipc_tok,  const char *nm ) noexcept
   : KVPS_LISTEN( sr.poll, "pubsub_listen", "pusub_conn" ),
     RouteNotify( sr ), sub_route( sr ), ctrl( cf ), init_ns( 0 ),
     sub_seqno( 1 ), serial( 0 ), ctx_id( KVPS_CTRL_CTX_SIZE ),
     ipc_name( ipc_nm ), ipc_token( ipc_tok ),
     peer_sock_type( sr.poll.register_type( "kv_pub_sub_peer" ) )
 {
+  size_t len = ::strlen( nm );
+  if ( len > sizeof( this->ctx_name ) - 1 )
+    len = sizeof( this->ctx_name ) - 1;
+  ::memset( this->ctx_name, 0, sizeof( this->ctx_name ) );
+  ::memcpy( this->ctx_name, nm, len );
 }
 
 KvPubSubPeer::KvPubSubPeer( EvPoll &p,  uint8_t st,  KvPubSub &m ) noexcept
@@ -41,7 +46,7 @@ KvPubSubPeer::KvPubSubPeer( EvPoll &p,  uint8_t st,  KvPubSub &m ) noexcept
 
 KvPubSub *
 KvPubSub::create( RoutePublish &sr,  const char *ipc_name,
-                  uint64_t ipc_token ) noexcept
+                  uint64_t ipc_token,  const char *ctx_name ) noexcept
 {
   if ( ipc_name == NULL )
     ipc_name = "raikv";
@@ -102,7 +107,7 @@ KvPubSub::create( RoutePublish &sr,  const char *ipc_name,
   }
   if ( ret ) {
     ps = new ( aligned_malloc( sizeof( KvPubSub ) ) )
-               KvPubSub( sr, *ctrl, ipc_name, ipc_token );
+               KvPubSub( sr, *ctrl, ipc_name, ipc_token, ctx_name );
     ret = ps->init();
   }
   kv_release_fence();
@@ -257,6 +262,7 @@ KvPubSub::init( void ) noexcept
   if ( ret ) {
     this->sub_tab.time_ns = this->init_ns;
     this->sub_tab.sub_upd = this->ctrl.ctx[ this->ctx_id ].sub_upd;
+    this->PeerData::set_name( this->ipc_name, ::strlen( this->ipc_name ) );
     return true;
   }
   return false;
@@ -309,6 +315,7 @@ KvPubSub::send_hello( KvPubSubPeer &c ) noexcept
        .data( code.ptr, code.code_sz * 4 );
 
       c.append_iov( (void *) m.msg(), m.len() );
+      c.msgs_sent++;
     }
   }
   c.idle_push_write();
@@ -319,6 +326,7 @@ KvPubSub::bcast_msg( KvMsg &m ) noexcept
 {
   for ( KvPubSubPeer * c = this->peer_list.hd; c != NULL; c = c->next ) {
     c->append( m.msg(), m.len() );
+    c->msgs_sent++;
     c->idle_push_write();
   }
 }
@@ -340,6 +348,7 @@ KvPubSubPeer::process( void ) noexcept
       return;
     }
     (this->*dispatch[ msg.type ])( msg );
+    this->msgs_recv++;
     this->off += msg.len;
   }
   this->pop( EV_PROCESS );
@@ -358,6 +367,7 @@ KvPubSubPeer::process_shutdown( void ) noexcept
     m.ctx_id( this->me.ctx_id )
      .time_ns( this->me.init_ns );
     this->append( m.msg(), m.len() );
+    this->msgs_sent++;
     this->push( EV_WRITE );
   }
   else {
@@ -435,6 +445,7 @@ KvPubSubPeer::on_msg( EvPublish &pub ) noexcept
    .msg_enc  ( pub.msg_enc )
    .data     ( pub.msg, pub.msg_len );
   this->append_iov( (void *) m.msg(), m.len() );
+  this->msgs_sent++;
   return this->idle_push_write();
 }
 
@@ -980,6 +991,7 @@ KvPubSub::attach_ctx( void ) noexcept
       el.time_ns = this->init_ns;
       el.serial  = this->serial;
       el.pid     = ::getpid();
+      ::memcpy( el.name, this->ctx_name, sizeof( el.name ) );
       guard.mark( this->init_ns );
       return true;
     }
@@ -1033,23 +1045,23 @@ KvPubSub::release( void ) noexcept
 #endif
 }
 
-bool
+EvSocket *
 KvPubSub::accept( void ) noexcept
 {
   KvPubSubPeer * c =
     this->poll.get_free_list<KvPubSubPeer, KvPubSub &>( this->peer_sock_type,
                                                         *this );
   if ( c == NULL )
-    return false;
+    return NULL;
   if ( this->accept2( *c, "pubsub_peer" ) ) {
     if ( kv_ps_debug )
       printf( "accept from %s\n", this->peer_address.buf );
     this->peer_list.push_tl( c );
     this->peer_set.add( c->fd );
     this->send_hello( *c );
-    return true;
+    return c;
   }
-  return false;
+  return NULL;
 }
 
 KvMsg &
@@ -1290,6 +1302,7 @@ KvPubSub::on_bloom_ref( BloomRef &ref ) noexcept
      .data( code.ptr, code.code_sz * 4 );
 
     c->append_iov( (void *) m.msg(), m.len() );
+    this->msgs_sent++;
     c->idle_push_write();
   }
 }
@@ -1308,6 +1321,7 @@ KvPubSub::on_bloom_deref( BloomRef &ref ) noexcept
      .ref_num( ref.ref_num );
 
     c->append_iov( (void *) m.msg(), m.len() );
+    this->msgs_sent++;
     c->idle_push_write();
   }
 }

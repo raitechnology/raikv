@@ -11,7 +11,7 @@ using namespace kv;
 struct UnixListen : public EvUnixListen {
   UnixListen( EvPoll &p ) noexcept;
 
-  virtual bool accept( void ) noexcept;
+  virtual EvSocket *accept( void ) noexcept;
   virtual void release( void ) noexcept;
   virtual void process_close( void ) noexcept;
 };
@@ -39,18 +39,18 @@ struct UnixPing : public EvConnection {
 UnixListen::UnixListen( EvPoll &p ) noexcept
          : EvUnixListen( p, "unix_listen", "unix_conn" ) {}
 
-bool
+EvSocket *
 UnixListen::accept( void ) noexcept
 {
   UnixConn *c = this->poll.get_free_list<UnixConn>( this->accept_sock_type );
   if ( c == NULL )
-    return false;
+    return NULL;
   if ( this->accept2( *c, "unix_accept" ) ) {
     printf( "accept %.*s\n", (int) c->get_peer_address_strlen(),
             c->peer_address.buf );
-    return true;
+    return c;
   }
-  return false;
+  return NULL;
 }
 
 void

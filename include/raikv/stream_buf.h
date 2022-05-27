@@ -38,7 +38,16 @@ struct StreamBuf {
     StreamBuf & strm;
     BufList   * hd,
               * tl;
-    BufQueue( StreamBuf &s ) : strm( s ), hd( 0 ), tl( 0 ) {}
+    size_t      pad_sz,
+                min_sz;
+    BufQueue( StreamBuf &s,  size_t p,  size_t sz )
+      : strm( s ) { this->init( p, sz ); }
+    void init( size_t p,  size_t sz ) {
+      this->hd     = NULL;
+      this->tl     = NULL;
+      this->pad_sz = p;
+      this->min_sz = sz;
+    }
     /* put used into this->tl */
     void append_list( BufQueue &q ) {
       if ( q.hd != NULL ) {
@@ -57,21 +66,12 @@ struct StreamBuf {
     }
     /* allocate a new BufList that fits at least len and append to list */
     BufList * append_buf( size_t len ) noexcept;
-    /* a nil string: $-1\r\n or *-1\r\n if is_null true */
-    size_t append_nil( bool is_null = false ) noexcept;
-    /* a zero length array: *0\r\n */
-    size_t append_zero_array( void ) noexcept;
-    /* one string item, appended with decorations: $<strlen>\r\n<string>\r\n */
-    size_t append_string( const void *str,  size_t len,  const void *str2=0,
-                          size_t len2=0 ) noexcept;
-    /* an int, appended with decorations: :<val>\r\n */
-    size_t append_uint( uint64_t val ) noexcept;
+    /* allocate a new BufList with pad offset  */
+    BufList * append_buf2( size_t len,  size_t pad ) noexcept;
     /* arbitrary bytes, no formatting */
     size_t append_bytes( const void *buf,  size_t len ) noexcept;
-    /* make array: [item1, item2, ...], prepends decorations *<arraylen>\r\n */
-    size_t prepend_array( size_t nitems ) noexcept;
-    /* cursor is two arrays: [cursor,[items]] */
-    size_t prepend_cursor_array( size_t curs,  size_t nitems ) noexcept;
+    /* allocate prefix buffer */
+    char * prepend_buf( size_t len ) noexcept;
   };
 
   static const size_t SND_BUFSIZE = 32 * 1024;

@@ -47,19 +47,22 @@ struct PsSubTab : public RouteVec<PsSub> {
   void unmap_vec_data( void ) noexcept;
 };
 
+#define KVPS_CTRL_NAME_SIZE ( 64 - ( 2 * 8 + 4 * 4 ) )
+
 struct PsCtrlCtx {
   AtomUInt64 key;         /* a time_ns spin lock */
   uint64_t   time_ns;     /* unizue time prefix used for connect and shm */
   uint32_t   pid,         /* pid of ctx */
              serial,      /* order of new ctx */
              sub_upd[ 2 ];/* last id and update count */
-  uint8_t    unused[ 64 - ( sizeof( uint64_t ) * 2 + sizeof( uint32_t ) * 4 ) ];
+  uint8_t    name[ KVPS_CTRL_NAME_SIZE ];
   void zero( void ) {
     this->time_ns      = 0;
     this->pid          = 0;
     this->serial       = 0;
     this->sub_upd[ 0 ] = 0;
     this->sub_upd[ 1 ] = 0;
+    ::memset( this->name, 0, sizeof( this->name ) );
   }
 };
 
@@ -103,6 +106,7 @@ struct PsCtrlFile {
 #if __cplusplus >= 201103L
   /* 1024b align */
   static_assert( KVPS_CTRL_SIZE == sizeof( PsCtrlFile ), "ps ctrl file" );
+  static_assert( 64 == sizeof( PsCtrlCtx ), "ps ctrl ctx" );
 #endif
 
 struct KvPubSub;
@@ -162,13 +166,14 @@ struct KvPubSub : public KVPS_LISTEN, public RouteNotify {
   const char  *  ipc_name;
   uint64_t       ipc_token;
   uint8_t        peer_sock_type;
+  char           ctx_name[ KVPS_CTRL_NAME_SIZE ];
 
   void * operator new( size_t, void *ptr ) { return ptr; }
   KvPubSub( RoutePublish &sr,  PsCtrlFile &cf,  const char *ipc_nm,
-            uint64_t ipc_tok ) noexcept;
+            uint64_t ipc_tok,  const char *ctx_name ) noexcept;
   static KvPubSub *create( RoutePublish &sr,  const char *ipc_name,
-                           uint64_t ipc_token ) noexcept;
-  virtual bool accept( void ) noexcept;
+                           uint64_t ipc_token,  const char *ctx_name ) noexcept;
+  virtual EvSocket *accept( void ) noexcept;
   virtual void release( void ) noexcept;
 
   bool init( void ) noexcept;

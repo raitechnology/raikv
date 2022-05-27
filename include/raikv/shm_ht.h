@@ -482,13 +482,15 @@ struct EvShm {
   HashTab    * map;
   uint32_t     ctx_id,
                dbx_id;
-  const char * ipc_name;
+  const char * ipc_name,
+             * ctx_name;
 
-  EvShm( HashTab *m = 0 )
-    : map( m ), ctx_id( MAX_CTX_ID ), dbx_id( MAX_STAT_ID ), ipc_name( 0 ) {}
-  EvShm( EvShm &m )
+  EvShm( const char *nm,  HashTab *m = 0 )
+    : map( m ), ctx_id( MAX_CTX_ID ), dbx_id( MAX_STAT_ID ), ipc_name( 0 ),
+      ctx_name( nm ) {}
+  EvShm( const char *nm,  EvShm &m )
     : map( m.map ), ctx_id( m.ctx_id ), dbx_id( m.dbx_id ),
-      ipc_name( m.ipc_name ) {}
+      ipc_name( m.ipc_name ), ctx_name( nm ) {}
   ~EvShm() noexcept;
 
   int open( const char *map_name    = KV_DEFAULT_SHM,
@@ -497,6 +499,7 @@ struct EvShm {
               kv_geom_t  * geom     = NULL,
               int          map_mode = 0660,
               uint8_t      db_num   = 0 ) noexcept;
+  int open_rdonly( void ) noexcept;
   void print( void ) noexcept;
   int attach( uint8_t db_num ) noexcept;
   void detach( void ) noexcept;
