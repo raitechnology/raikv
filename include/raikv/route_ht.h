@@ -896,6 +896,7 @@ struct RouteVec {
   /* the RouteLoc refers to vec[ i ]->block[ j ], this is different
    * from find usage, which are vec[ i ]->entry[ j ] */
   Data *first( RouteLoc &loc ) {
+    loc.init();
     return this->first( loc.i, loc.j );
   }
   /* iterate by data location */
