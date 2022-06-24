@@ -298,7 +298,7 @@ EvLogger::process( void ) noexcept
 bool
 EvLogger::start( int fd,  const char *name ) noexcept
 {
-  this->PeerData::init_peer( fd, NULL, name );
+  this->PeerData::init_peer( fd, -1, NULL, name );
   return this->poll.add_sock( this ) == 0;
 }
 

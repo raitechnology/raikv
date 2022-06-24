@@ -181,13 +181,13 @@ main( int argc, char *argv[] )
   
   if ( argc > 1 && ::strcmp( argv[ 1 ], "-c" ) == 0 ) {
     if ( ping.connect( ( argc > 2 ? argv[ 2 ] : NULL ), 9000,
-                       DEFAULT_UDP_CONNECT_OPTS, "udp_ping" ) != 0 )
+                       DEFAULT_UDP_CONNECT_OPTS, "udp_ping", -1 ) != 0 )
       return 1;
     ping.send_ping();
     poll.timer.add_timer_seconds( ping.fd, 1, 1, 1 );
   }
   else {
-    if ( test.listen2( NULL, 9000, DEFAULT_UDP_LISTEN_OPTS, "udp_svc" ) != 0 )
+    if ( test.listen2( NULL, 9000, DEFAULT_UDP_LISTEN_OPTS, "udp_svc", -1 ) != 0 )
       return 1;
   }
   sighndl.install();

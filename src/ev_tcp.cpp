@@ -90,11 +90,11 @@ tcp_set_sock_opts( EvPoll &poll,  int sock,  int opts ) noexcept
 
 static int
 finish_init( int sock,  EvPoll &poll,  EvSocket &me,  struct sockaddr *addr,
-             const char *k ) noexcept
+             const char *k,  uint32_t rte_id ) noexcept
 {
   int status;
   set_nonblock( sock );
-  me.PeerData::init_peer( sock, addr, k );
+  me.PeerData::init_peer( sock, rte_id, addr, k );
   if ( (status = poll.add_sock( &me )) != 0 )
     me.fd = -1;
   return status;
@@ -170,12 +170,12 @@ tcp_set_sock_opts( EvPoll &poll,  SOCKET sock,  int opts ) noexcept
 
 static int
 finish_init( SOCKET sock,  EvPoll &poll,  EvSocket &me,  struct sockaddr *addr,
-             const char *k ) noexcept
+             const char *k,  uint32_t rte_id ) noexcept
 {
   int status, fd;
   set_nonblock( sock );
   fd = wp_register_fd( sock );
-  me.PeerData::init_peer( fd, addr, k );
+  me.PeerData::init_peer( fd, rte_id, addr, k );
   if ( (status = poll.add_sock( &me )) != 0 ) {
     wp_unregister_fd( fd );
     me.fd = -1;
@@ -187,13 +187,13 @@ finish_init( SOCKET sock,  EvPoll &poll,  EvSocket &me,  struct sockaddr *addr,
 int
 EvTcpListen::listen( const char *ip,  int port,  int opts ) noexcept
 {
-  return this->listen2( ip, port, opts, "tcp_listen" );
+  return this->listen2( ip, port, opts, "tcp_listen", -1 );
 }
 
 
 int
 EvTcpListen::listen2( const char *ip,  int port,  int opts,
-                      const char *k ) noexcept
+                      const char *k,  uint32_t rte_id ) noexcept
 {
   static int on = 1, off = 0;
   int    status = 0;
@@ -285,7 +285,7 @@ break_loop:;
   if ( ::getsockname( sock, (struct sockaddr *) &addr, &addrlen ) == 0 )
     peer_addr = (struct sockaddr *) &addr;
 
-  status = finish_init( sock, this->poll, *this, peer_addr, k );
+  status = finish_init( sock, this->poll, *this, peer_addr, k, rte_id );
   if ( status != 0 ) {
 fail:;
     if ( ! invalid_socket( sock ) )
@@ -321,7 +321,8 @@ EvTcpListen::accept2( EvConnection &c,  const char *k ) noexcept
   }
   tcp_set_sock_opts( this->poll, sock, this->sock_opts );
 
-  status = finish_init( sock, this->poll, c, (struct sockaddr *) &addr, k );
+  status = finish_init( sock, this->poll, c, (struct sockaddr *) &addr,
+                        k, this->route_id );
   if ( status != 0 ) {
     closesocket( sock );
     goto fail;
@@ -337,12 +338,12 @@ EvTcpConnection::connect( EvConnection &conn,  const char *ip,  int port,
                           int opts ) noexcept
 {
   static const char k[] = "tcp_client";
-  return EvTcpConnection::connect2( conn, ip, port, opts, k );
+  return EvTcpConnection::connect2( conn, ip, port, opts, k, -1 );
 }
 
 int
 EvTcpConnection::connect2( EvConnection &conn,  const char *ip,  int port,
-                           int opts,  const char *k ) noexcept
+                           int opts,  const char *k,  uint32_t rte_id ) noexcept
 {
   /* for setsockopt() */
   static int  off = 0;
@@ -425,7 +426,7 @@ break_loop:;
   else
     peer_addr = p->ai_addr;
 
-  status = finish_init( sock, conn.poll, conn, peer_addr, k );
+  status = finish_init( sock, conn.poll, conn, peer_addr, k, rte_id );
   if ( status != 0 ) {
 fail:;
     if ( ! invalid_socket( sock ) )

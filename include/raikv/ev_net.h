@@ -561,9 +561,10 @@ struct EvDgram : public EvSocket, public StreamBuf {
 struct EvUdp : public EvDgram {
   EvUdp( EvPoll &p, const uint8_t t ) : EvDgram( p, t, EV_DGRAM_BASE ) {}
 
-  int listen2( const char *ip,  int port,  int opts,  const char *k ) noexcept;
-  int connect( const char *ip,  int port,  int opts,  const char *k ) noexcept;
-
+  int listen2( const char *ip,  int port,  int opts,  const char *k,
+               uint32_t rte_id ) noexcept;
+  int connect( const char *ip,  int port,  int opts,  const char *k,
+               uint32_t rte_id ) noexcept;
   /* PeerData */
   virtual int client_list( char *buf,  size_t buflen ) noexcept;
   virtual bool match( PeerMatchArgs &ka ) noexcept;

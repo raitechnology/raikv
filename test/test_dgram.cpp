@@ -182,13 +182,13 @@ main( int argc, char *argv[] )
   poll.init( 5, false );
   
   if ( argc > 1 && ::strcmp( argv[ 1 ], "-c" ) == 0 ) {
-    if ( ping.bind( "/tmp/ping_clnt", DEFAULT_UNIX_BIND_OPTS, "unix_ping" ) !=0)
+    if ( ping.bind( "/tmp/ping_clnt", DEFAULT_UNIX_BIND_OPTS, "unix_ping", -1 ) !=0)
       return 1;
     ping.send_ping();
     poll.timer.add_timer_seconds( ping.fd, 1, 1, 1 );
   }
   else {
-    if ( test.bind( "/tmp/ping_svc", DEFAULT_UNIX_BIND_OPTS, "unix_svc" ) != 0 )
+    if ( test.bind( "/tmp/ping_svc", DEFAULT_UNIX_BIND_OPTS, "unix_svc", -1 ) != 0 )
       return 1;
   }
   sighndl.install();

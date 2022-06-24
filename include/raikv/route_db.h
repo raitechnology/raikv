@@ -831,8 +831,8 @@ struct PeerAddrStr {
 struct PeerData {
   PeerData   * next,       /* dbl link list */
              * back;
-  int32_t      fd,         /* fildes */
-               pad;        /* 64 * 3 */
+  int32_t      fd;         /* fildes */
+  uint32_t     route_id;   /* 64 * 3 */
   uint64_t     id,         /* identifies peer */
                start_ns,   /* start time */
                active_ns;  /* last read time */
@@ -841,19 +841,22 @@ struct PeerData {
   PeerAddrStr  peer_address; /* ip4 1.2.3.4:p, ip6 [ab::cd]:p, other */
 
   PeerData() : next( 0 ), back( 0 ) {
-    this->init_peer( -1, NULL, NULL );
+    this->init_peer( -1, -1, NULL, NULL );
   }
   /* no address, attached directly to shm */
-  void init_ctx( int fildes,  uint32_t ctx_id,  const char *k ) {
-    this->init_peer( fildes, NULL, k );
+  void init_ctx( int fildes,  uint32_t rte_id,  uint32_t ctx_id,
+                 const char *k ) {
+    this->init_peer( fildes, rte_id, NULL, k );
     this->peer_address.init_ctx( ctx_id );
   }
   void set_addr( const struct sockaddr *sa ) {
     this->peer_address.set_address( sa );
   }
   /* connected via ip address */
-  void init_peer( int fildes,  const sockaddr *sa,  const char *k ) {
+  void init_peer( int fildes,  uint32_t rte_id,  const sockaddr *sa,
+                  const char *k ) {
     this->fd = fildes;
+    this->route_id = rte_id;
     this->id = 0;
     this->start_ns = this->active_ns = 0;
     this->kind = k;
@@ -1005,7 +1008,8 @@ struct RoutePublish : public RouteDB {
   RedisKeyspaceNotify  * keyspace; /* update sub_route.key_flags */
 
   const char * service_name;
-  uint32_t     route_id,  /* id used by endpoints to identify route */
+  uint32_t     svc_id,
+               route_id,  /* id used by endpoints to identify route */
                ctx_id,    /* this thread context */
                dbx_id;    /* the db context */
   uint16_t     key_flags; /* bits set for key subs above:
@@ -1109,6 +1113,8 @@ struct RoutePublish : public RouteDB {
   bool forward_msg( EvPublish &pub ) noexcept;
   bool forward_with_cnt( EvPublish &pub,  uint32_t &rcnt ) noexcept;
   bool forward_except( EvPublish &pub,  const BitSpace &fdexcpt ) noexcept;
+  bool forward_except_with_cnt( EvPublish &pub,  const BitSpace &fdexcpt,
+                                uint32_t &rcnt ) noexcept;
 #if 0
   bool forward_msg( EvPublish &pub,  uint32_t *rcount_total,  uint8_t pref_cnt,
                     KvPrefHash *ph ) noexcept;
@@ -1119,6 +1125,8 @@ struct RoutePublish : public RouteDB {
                         uint32_t not_fd2 ) noexcept;
   bool forward_all( EvPublish &pub, uint32_t *routes, uint32_t rcnt ) noexcept;
   bool forward_set( EvPublish &pub,  const BitSpace &fdset ) noexcept;
+  bool forward_set_with_cnt( EvPublish &pub,  const BitSpace &fdset,
+                             uint32_t &rcnt ) noexcept;
   bool forward_set_not_fd( EvPublish &pub,  const BitSpace &fdset,
                            uint32_t not_fd ) noexcept;
   bool forward_to( EvPublish &pub,  uint32_t fd ) noexcept;
@@ -1141,7 +1149,8 @@ struct RoutePublish : public RouteDB {
   void * operator new( size_t, void *ptr ) { return ptr; }
   void operator delete( void *ptr ) { ::free( ptr ); }
 
-  RoutePublish( EvPoll &p,  const char *svc ) noexcept;
+  RoutePublish( EvPoll &p,  const char *svc,  uint32_t svc_num,
+                uint32_t rte_id ) noexcept;
 };
 
 /* callbacks cannot disappear between epochs, fd based connections that can
@@ -1201,7 +1210,8 @@ struct RoutePDB : public RoutePublish {
   TimerQueue           & timer;
   RouteVec<RouteService> svc_db;
   RoutePDB( EvPoll &p ) noexcept;
-  RoutePublish & get_service( const char *svc,  uint32_t num = 0 ) noexcept;
+  RoutePublish & get_service( const char *svc,  uint32_t svc_num,
+                              uint32_t rte_id ) noexcept;
 };
 
 }

@@ -9,15 +9,16 @@ using namespace rai;
 using namespace kv;
 
 RoutePublish &
-RoutePDB::get_service( const char *svc,  uint32_t num ) noexcept
+RoutePDB::get_service( const char *svc,  uint32_t svc_num,
+                       uint32_t rte_id ) noexcept
 {
   if ( svc == NULL || ::strcmp( svc, "default" ) == 0 )
     return *this;
   size_t   len = ::strlen( svc );
   char   * s   = (char *) ::malloc( len + 10 );
-  uint32_t h   = kv_crc_c( svc, len, num );
-  if ( num > 0 ) {
-    len = ::snprintf( s, len + 10, "%s.%x", svc, num );
+  uint32_t h   = kv_crc_c( svc, len, svc_num );
+  if ( svc_num > 0 ) {
+    len = ::snprintf( s, len + 10, "%s.%x", svc, svc_num );
   }
   else {
     ::memcpy( s, svc, len );
@@ -27,7 +28,7 @@ RoutePDB::get_service( const char *svc,  uint32_t num ) noexcept
   RouteService * rt = this->svc_db.upsert( h, s, (uint16_t) len, loc );
   if ( loc.is_new ) {
     void * m = aligned_malloc( sizeof( RoutePublish ) );
-    rt->sub_route = new ( m ) RoutePublish( this->poll, s );
+    rt->sub_route = new ( m ) RoutePublish( this->poll, s, svc_num, rte_id );
   }
   return *rt->sub_route;
 }

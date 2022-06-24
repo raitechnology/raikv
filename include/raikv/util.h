@@ -273,7 +273,7 @@ inline uint32_t neg32( int32_t v ) {
 template <class UInt>
 inline size_t uint_to_string( UInt v,  char *buf,  size_t len ) {
   buf[ len ] = '\0';
-  for ( size_t pos = len; v >= 10; ) {
+  for ( size_t pos = len; pos > 1; ) {
     const UInt q = v / 10,
                r = v % 10;
     buf[ --pos ] = '0' + (char) r;

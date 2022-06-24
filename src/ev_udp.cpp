@@ -37,11 +37,11 @@ static inline int get_errno( void ) {
 
 static int
 finish_init( int sock,  EvPoll &poll,  EvSocket &me,  struct sockaddr *addr,
-             const char *k ) noexcept
+             const char *k,  uint32_t rte_id ) noexcept
 {
   int status;
   set_nonblock( sock );
-  me.PeerData::init_peer( sock, addr, k );
+  me.PeerData::init_peer( sock, rte_id, addr, k );
   if ( (status = poll.add_sock( &me )) != 0 )
     me.fd = -1;
   return status;
@@ -64,12 +64,12 @@ static inline int get_errno( void ) {
 
 static int
 finish_init( SOCKET sock,  EvPoll &poll,  EvSocket &me,  struct sockaddr *addr,
-             const char *k ) noexcept
+             const char *k,  uint32_t rte_id ) noexcept
 {
   int status, fd;
   set_nonblock( sock );
   fd = wp_register_fd( sock );
-  me.PeerData::init_peer( fd, addr, k );
+  me.PeerData::init_peer( fd, rte_id, addr, k );
   if ( (status = poll.add_sock( &me )) != 0 ) {
     wp_unregister_fd( fd );
     me.fd = -1;
@@ -79,7 +79,8 @@ finish_init( SOCKET sock,  EvPoll &poll,  EvSocket &me,  struct sockaddr *addr,
 #endif
 
 int
-EvUdp::listen2( const char *ip,  int port,  int opts,  const char *k ) noexcept
+EvUdp::listen2( const char *ip,  int port,  int opts,  const char *k,
+                uint32_t rte_id ) noexcept
 {
   static int on = 1, off = 0;
   int    status = 0;
@@ -158,7 +159,7 @@ break_loop:;
     status = this->set_sock_err( EV_ERR_SOCKET, get_errno() );
     goto fail;
   }
-  status = finish_init( sock, this->poll, *this, p->ai_addr, k );
+  status = finish_init( sock, this->poll, *this, p->ai_addr, k, rte_id );
   if ( status != 0 ) {
 fail:;
     if ( ! invalid_socket( sock ) )
@@ -170,7 +171,8 @@ fail:;
 }
 
 int
-EvUdp::connect( const char *ip,  int port,  int opts,  const char *k ) noexcept
+EvUdp::connect( const char *ip,  int port,  int opts,  const char *k,
+                uint32_t rte_id ) noexcept
 {
   static int off = 0;
   int    status = 0;
@@ -235,7 +237,7 @@ break_loop:;
     status = this->set_sock_err( EV_ERR_SOCKET, get_errno() );
     goto fail;
   }
-  status = finish_init( sock, this->poll, *this, p->ai_addr, k );
+  status = finish_init( sock, this->poll, *this, p->ai_addr, k, rte_id );
   if ( status != 0 ) {
 fail:;
     if ( ! invalid_socket( sock ) )

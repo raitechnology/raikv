@@ -11,7 +11,7 @@ struct EvTcpListen : public EvListen {
     : EvListen( p, lname, name ) {}
   virtual int listen( const char *ip,  int port,  int opts ) noexcept;
   virtual int listen2( const char *ip,  int port,  int opts,
-                       const char *k ) noexcept;
+                       const char *k,  uint32_t rte_id ) noexcept;
   virtual bool accept2( EvConnection &c,  const char *k ) noexcept;
 };
 
@@ -19,7 +19,7 @@ namespace EvTcpConnection {
   int connect( EvConnection &conn,  const char *ip,  int port,
                int opts ) noexcept;
   int connect2( EvConnection &conn,  const char *ip,  int port,
-                int opts,  const char *k ) noexcept;
+                int opts,  const char *k,  uint32_t rte_id ) noexcept;
 }
 
 }

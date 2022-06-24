@@ -61,7 +61,7 @@ EvTimerQueue::create_timer_queue( EvPoll &p ) noexcept
     return NULL;
   }
   EvTimerQueue * q = new ( m ) EvTimerQueue( p );
-  q->PeerData::init_peer( tfd, NULL, "timer" );
+  q->PeerData::init_peer( tfd, -1, NULL, "timer" );
   q->last   = current_monotonic_time_ns();
   q->epoch  = q->last;
   q->delta  = 0;

@@ -199,12 +199,12 @@ KvPubSub::init( void ) noexcept
     ::snprintf( path, sizeof( path ), "/tmp/%s/%lx", this->ipc_name,
                 this->init_ns );
     if ( this->listen2( path, DEFAULT_UNIX_LISTEN_OPTS,
-                        "kv_pubsub" ) == 0 )
+                        "kv_pubsub", this->sub_route.route_id ) == 0 )
       break;
 #else
     uint16_t port = (uint16_t) ( this->init_ns | 0x8000 );
     if ( this->listen2( "127.0.0.1", port, DEFAULT_TCP_LISTEN_OPTS,
-                        "kv_pubsub") == 0 )
+                        "kv_pubsub", this->sub_route.route_id ) == 0 )
       break;
 #endif
   }
@@ -243,12 +243,14 @@ KvPubSub::init( void ) noexcept
                       peer_ns );
           status = EvUnixConnection::connect( *c, path,
                                               DEFAULT_UNIX_CONNECT_OPTS,
-                                             "kv_pubsub_peer" );
+                                             "kv_pubsub_peer",
+                                             this->sub_route.route_id );
 #else
           uint16_t port = (uint16_t) ( peer_ns | 0x8000 );
           status = EvTcpConnection::connect2( *c, "127.0.0.1", port,
                                               DEFAULT_TCP_CONNECT_OPTS,
-                                              "kv_pubsub_peer");
+                                              "kv_pubsub_peer",
+                                              this->sub_route.route_id );
 #endif
           if ( status == 0 ) {
             this->peer_list.push_tl( c );

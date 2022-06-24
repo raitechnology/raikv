@@ -48,6 +48,10 @@ struct StreamBuf {
       this->pad_sz = p;
       this->min_sz = sz;
     }
+    void reset( void ) {
+      this->hd = NULL;
+      this->tl = NULL;
+    }
     /* put used into this->tl */
     void append_list( BufQueue &q ) {
       if ( q.hd != NULL ) {
@@ -198,6 +202,16 @@ struct StreamBuf {
       this->expand_iov();
     this->iov[ this->idx ].iov_base  = p;
     this->iov[ this->idx++ ].iov_len = amt;
+    this->wr_pending += amt;
+  }
+  void insert_iov( size_t i,  void *p,  size_t amt ) {
+    if ( this->idx == this->vlen )
+      this->expand_iov();
+    ::memmove( &this->iov[ i + 1 ], &this->iov[ i ],
+               sizeof( this->iov[ 0 ] ) * ( this->idx - i ) );
+    this->idx++;
+    this->iov[ i ].iov_base = p;
+    this->iov[ i ].iov_len  = amt;
     this->wr_pending += amt;
   }
   void append_iov( BufQueue &q ) {

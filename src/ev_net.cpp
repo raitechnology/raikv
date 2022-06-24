@@ -35,13 +35,14 @@ bool rai::kv::ev_would_block( int err ) noexcept {
 }
 
 RoutePDB::RoutePDB( EvPoll &p ) noexcept
-  : RoutePublish( p, "default" ), timer( p.timer ) {}
+  : RoutePublish( p, "default", -1, -1 ), timer( p.timer ) {}
 
-RoutePublish::RoutePublish( EvPoll &p,  const char *svc ) noexcept
+RoutePublish::RoutePublish( EvPoll &p,  const char *svc,  uint32_t svc_num,
+                            uint32_t rte_id ) noexcept
             : RouteDB( p.g_bloom_db ), poll( p ), map( 0 ), pubsub( 0 ),
-              keyspace( 0 ), service_name( svc ), route_id( 0 ),
-              ctx_id( (uint32_t) -1 ), dbx_id( (uint32_t) -1 ),
-              key_flags( 0 ) {}
+              keyspace( 0 ), service_name( svc ), svc_id( svc_num ),
+              route_id( rte_id ), ctx_id( (uint32_t) -1 ),
+              dbx_id( (uint32_t) -1 ), key_flags( 0 ) {}
 
 uint8_t
 EvPoll::register_type( const char *s ) noexcept
@@ -766,6 +767,22 @@ struct ForwardSome : public ForwardBase {
     return true;
   }
 };
+struct ForwardSet : public ForwardBase {
+  const BitSpace & fdset;
+  ForwardSet( RoutePublish &p,  const BitSpace &b )
+    : ForwardBase( p ), fdset( b ) {}
+  bool on_msg( uint32_t fd,  EvPublish &pub ) {
+    EvSocket * s;
+    if ( this->fdset.is_member( fd ) && fd <= this->sub_route.poll.maxfd &&
+         (s = this->sub_route.poll.sock[ fd ]) != NULL ) {
+      this->total++;
+      if ( kv_pub_debug )
+        this->debug_subject( pub, s, "fwd_set" );
+      return s->on_msg( pub );
+    }
+    return true;
+  }
+};
 struct ForwardExcept : public ForwardBase {
   const BitSpace & fdexcept;
   ForwardExcept( RoutePublish &p,  const BitSpace &b )
@@ -1031,6 +1048,24 @@ RoutePublish::forward_except( EvPublish &pub,
 {
   ForwardExcept fwd( *this, fdexcept );
   return forward_message<ForwardExcept>( pub, *this, fwd );
+}
+bool
+RoutePublish::forward_except_with_cnt( EvPublish &pub, const BitSpace &fdexcept,
+                                       uint32_t &rcnt ) noexcept
+{
+  ForwardExcept fwd( *this, fdexcept );
+  bool b = forward_message<ForwardExcept>( pub, *this, fwd );
+  rcnt = fwd.total;
+  return b;
+}
+bool
+RoutePublish::forward_set_with_cnt( EvPublish &pub, const BitSpace &fdset,
+                                    uint32_t &rcnt ) noexcept
+{
+  ForwardSet fwd( *this, fdset );
+  bool b = forward_message<ForwardSet>( pub, *this, fwd );
+  rcnt = fwd.total;
+  return b;
 }
 #if 0
 /* match subject against route db and forward msg to fds subscribed, route

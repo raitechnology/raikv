@@ -171,7 +171,7 @@ main( int argc, char *argv[] )
   if ( argc > 1 && ::strcmp( argv[ 1 ], "-c" ) == 0 ) {
     if ( EvUnixConnection::connect( ping,
          ( argc > 2 ? argv[ 2 ] : "/tmp/test_unix" ),
-         DEFAULT_UNIX_CONNECT_OPTS | OPT_CONNECT_NB, "ping" ) != 0 )
+         DEFAULT_UNIX_CONNECT_OPTS | OPT_CONNECT_NB, "ping", -1 ) != 0 )
       return 1;
     ping.send_ping();
     poll.timer.add_timer_seconds( ping.fd, 1, 1, 1 );
