@@ -491,6 +491,14 @@ struct EvShm {
   EvShm( const char *nm,  EvShm &m )
     : map( m.map ), ctx_id( m.ctx_id ), dbx_id( m.dbx_id ),
       ipc_name( m.ipc_name ), ctx_name( nm ) {}
+  EvShm( EvShm &m,  bool cpy )
+    : map( m.map ), ctx_id( MAX_CTX_ID ), dbx_id( MAX_STAT_ID ),
+      ipc_name( m.ipc_name ), ctx_name( m.ctx_name ) {
+    if ( cpy ) {
+      this->ctx_id = m.ctx_id;
+      this->dbx_id = m.dbx_id;
+    }
+  }
   ~EvShm() noexcept;
 
   int open( const char *map_name    = KV_DEFAULT_SHM,

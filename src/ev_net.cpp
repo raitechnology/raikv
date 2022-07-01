@@ -472,6 +472,8 @@ void
 EvSocket::process_close( void ) noexcept
 {
   /* after this, close fd */
+  this->poll.remove_sock( this );
+  this->poll.push_free_list( this );
 }
 
 /* thsee are optional, but not necessary for a working protocol */
@@ -683,9 +685,7 @@ EvPoll::dispatch( void ) noexcept
         break;
       case EV_CLOSE:
         s->popall();
-        this->remove_sock( s );
         s->process_close();
-        this->push_free_list( s );
         goto next_tick; /* sock is no longer valid */
       case EV_BUSY_POLL:
         ret |= BUSY_POLL;

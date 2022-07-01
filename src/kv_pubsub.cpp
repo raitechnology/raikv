@@ -365,6 +365,7 @@ KvPubSubPeer::process_shutdown( void ) noexcept
     this->is_shutdown = true;
     if ( this->poll.quit )
       this->time_ns = 0;
+    this->sock_opts &= ~OPT_VERBOSE; /* may be disconnected */
     KvMsg m( KV_MSG_BYE );
     m.ctx_id( this->me.ctx_id )
      .time_ns( this->me.init_ns );
@@ -776,12 +777,21 @@ KvPubSubPeer::do_psub_msg( KvMsgIn &msg,  bool is_sub ) noexcept
 }
 
 void
+KvPubSubPeer::process_close( void ) noexcept
+{
+  if ( kv_ps_debug )
+    printf( "kv_pubsub: close %u\n", this->ctx_id );
+  this->client_stats( this->sub_route.peer_stats );
+  this->EvSocket::process_close();
+}
+
+void
 KvPubSubPeer::release( void ) noexcept
 {
   if ( kv_ps_debug )
-    printf( "release %lx\n", this->time_ns );
+    printf( "kv_pubsub: release %u %lx\n", this->ctx_id, this->time_ns );
   if ( this->time_ns != 0 )
-    fprintf( stderr, "peer did not msg bye\n" );
+    fprintf( stderr, "kv_pubsub: peer did not msg bye\n" );
   if ( this->bloom_rt != NULL )
     this->drop_bloom_refs();
   if ( this->time_ns != 0 )
@@ -798,10 +808,11 @@ KvPubSubPeer::assert_subs( void *data,  uint32_t data_len ) noexcept
   if ( sub_tab.load( data, data_len ) ) {
     uint32_t count = this->iter_sub_tab( sub_tab, true );
     if ( kv_ps_debug )
-      printf( "assert %u from sub_tab %lx\n", count, this->time_ns );
+      printf( "kv_pubsub: assert %u from sub_tab %lx\n", count, this->time_ns );
   }
   else {
-    fprintf( stderr, "failed to assert sub_tab %lx\n", this->time_ns );
+    fprintf( stderr, "kv_pubsub: failed to assert sub_tab %lx\n",
+             this->time_ns );
   }
   sub_tab.release_vec();
 }
@@ -816,11 +827,12 @@ KvPubSubPeer::drop_sub_tab( void ) noexcept
     if ( sub_tab.recover_lost_subs() ) {
       uint32_t count = this->iter_sub_tab( sub_tab, false );
       sub_tab.unmap_vec_data();
-      fprintf( stderr, "recovered %u from lost sub_tab %lx\n", count,
+      fprintf( stderr, "kv_pubsub: recovered %u from lost sub_tab %lx\n", count,
                this->time_ns );
     }
     else {
-      fprintf( stderr, "failed to load lost sub_tab %lx\n", this->time_ns );
+      fprintf( stderr, "kv_pubsub: failed to load lost sub_tab %lx\n",
+               this->time_ns );
     }
   }
   sub_tab.release_vec();
@@ -1033,6 +1045,13 @@ KvPubSub::detach_ctx( void ) noexcept
   el.serial = 0;
   guard.release();
   this->sub_tab.release();
+}
+
+void
+KvPubSub::process_close( void ) noexcept
+{
+  this->client_stats( this->sub_route.peer_stats );
+  this->EvSocket::process_close();
 }
 
 void

@@ -1154,7 +1154,6 @@ EvShm::~EvShm() noexcept
 int
 EvShm::attach( uint8_t db_num ) noexcept
 {
-  /* centos don't have gettid() */
   if ( this->map == NULL )
     return -1;
   uint64_t k;

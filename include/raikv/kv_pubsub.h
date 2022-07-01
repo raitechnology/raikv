@@ -133,6 +133,7 @@ struct KvPubSubPeer : public EvConnection {
   void drop_sub_tab( void ) noexcept;
   virtual void process( void ) noexcept;
   virtual void release( void ) noexcept;
+  virtual void process_close( void ) noexcept;
   virtual void process_shutdown( void ) noexcept;
   virtual bool on_msg( EvPublish &pub ) noexcept;
   void hello_msg( KvMsgIn &msg ) noexcept;
@@ -174,6 +175,7 @@ struct KvPubSub : public KVPS_LISTEN, public RouteNotify {
   static KvPubSub *create( RoutePublish &sr,  const char *ipc_name,
                            uint64_t ipc_token,  const char *ctx_name ) noexcept;
   virtual EvSocket *accept( void ) noexcept;
+  virtual void process_close( void ) noexcept;
   virtual void release( void ) noexcept;
 
   bool init( void ) noexcept;

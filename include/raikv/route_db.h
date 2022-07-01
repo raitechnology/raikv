@@ -1016,6 +1016,8 @@ struct RoutePublish : public RouteDB {
                          EKF_KEYSPACE_FWD | EKF_KEYEVENT_FWD |
                          EKF_LISTBLKD_NOT | EKF_ZSETBLKD_NOT |
                          EKF_STRMBLKD_NOT | EKF_MONITOR */
+  PeerStats    peer_stats; /* retired sockets, updated in process_close() */
+
   int init_shm( EvShm &shm ) noexcept;
 
   void do_notify_sub( NotifySub &sub ) {

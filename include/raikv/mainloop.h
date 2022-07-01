@@ -178,7 +178,7 @@ struct MainLoop {
   void * operator new( size_t, void *ptr ) { return ptr; }
   MainLoop( EvShm &m,  MAIN_LOOP_ARGS &args,  size_t num,
             initialize_func_t ini )
-    : shm( m ), r( args ) {
+    : shm( m, num == 0 ), r( args ) {
     uint8_t * b = (uint8_t *) (void *) &this->thr_num;
     ::memset( b, 0, (uint8_t *) (void *) &this[ 1 ] -  b );
     this->initialize = ini;
@@ -186,7 +186,7 @@ struct MainLoop {
   }
   /* initialize poll event */
   bool poll_init( void ) {
-    if ( this->r.num_threads > 1 ) {
+    if ( this->thr_num > 0 ) {
       if ( this->shm.attach( this->r.db_num ) != 0 )
         return false;
     }
@@ -239,6 +239,7 @@ struct MainLoop {
       this->r.thr_exit++;
       this->r.thr_start++;
     }
+    this->detach();
     this->done = true;
   }
   /* detach from shared memory */
@@ -280,7 +281,6 @@ struct Runner {
     }
 #ifndef _MSC_VER
     else {
-      shm.detach(); /* each child will attach */
       r.sighndl.install(); /* catch sig int */
 
       for ( i = 0; i < this->num_thr && i < MAX_THREADS; i++ )
@@ -294,7 +294,6 @@ struct Runner {
       for ( i = 0; i < this->num_thr && i < MAX_THREADS; i++ )
         pthread_join( this->tid[ i ], nullptr );
     }
-    shm.detach();
 #endif
     printf( "\nbye\n" );
   }
