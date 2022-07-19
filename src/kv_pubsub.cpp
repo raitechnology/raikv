@@ -294,7 +294,7 @@ KvPubSub::send_hello( KvPubSubPeer &c ) noexcept
   }
   c.append_iov( (void *) m.msg(), m.len() );
 
-  for ( BloomRoute *rt = this->sub_route.bloom_list.hd; rt != NULL;
+  for ( BloomRoute *rt = this->sub_route.bloom_list.hd( 0 ); rt != NULL;
         rt = rt->next ) {
     if ( this->peer_set.is_member( rt->r ) )
       continue;
@@ -587,7 +587,7 @@ KvPubSubPeer::bloom_msg( KvMsgIn &msg ) noexcept
                                                        ref_num, name,
                                                        this->bloom_db );
     if ( this->bloom_rt == NULL )
-      this->bloom_rt = this->sub_route.create_bloom_route( this->fd, ref );
+      this->bloom_rt = this->sub_route.create_bloom_route( this->fd, ref, 0 );
     else if ( ! ref->has_link( this->fd ) )
       this->bloom_rt->add_bloom_ref( ref );
   }

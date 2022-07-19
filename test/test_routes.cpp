@@ -46,7 +46,7 @@ void print_routedb( RouteDB &rte )
     } while ( rte.zip.zht->next( i ) );
   }
   printf( "bloom:\n" );
-  for ( BloomRoute *b = rte.bloom_list.hd; b != NULL; b = b->next ) {
+  for ( BloomRoute *b = rte.bloom_list.hd( 0 ); b != NULL; b = b->next ) {
     BloomCodec c, c2;
     b->bloom[ 0 ]->encode( c );
     uint32_t pref[ MAX_RTE ];
@@ -112,7 +112,7 @@ arg_equal( const char *arg,  size_t len,  const char *match ) noexcept
 void
 bloom_add( RouteDB &rte,  uint32_t hash,  uint32_t r ) noexcept
 {
-  for ( BloomRoute *b = rte.bloom_list.hd; b != NULL; b = b->next ) {
+  for ( BloomRoute *b = rte.bloom_list.hd( 0 ); b != NULL; b = b->next ) {
     if ( b->r == r ) {
       b->bloom[ 0 ]->add( hash );
       return;
@@ -124,7 +124,7 @@ bloom_add( RouteDB &rte,  uint32_t hash,  uint32_t r ) noexcept
 void
 bloom_del( RouteDB &rte,  uint32_t hash,  uint32_t r ) noexcept
 {
-  for ( BloomRoute *b = rte.bloom_list.hd; b != NULL; b = b->next ) {
+  for ( BloomRoute *b = rte.bloom_list.hd( 0 ); b != NULL; b = b->next ) {
     if ( b->r == r ) {
       b->bloom[ 0 ]->del( hash );
       return;
@@ -181,7 +181,7 @@ interactive_update( RouteDB &rte ) noexcept
         if ( arg_equal( args[ 0 ], arglen[ 0 ], "get" ) ) {
           uint32_t *routes;
           uint32_t cnt = 0;
-          n = rte.get_sub_route( hash, routes, cnt );
+          n = rte.get_sub_route( hash, routes, cnt, 0 );
           if ( n == 0 )
             printf( "not found\n" );
           else {
@@ -323,7 +323,7 @@ TestDB::add_bloom_routes( void ) noexcept
           BloomRef * ref = this->rte.create_bloom_ref(
             NULL, BloomBits::resize( NULL, 0 ), "test",
             this->rte.g_bloom_db );
-          this->brt[ val ] = this->rte.create_bloom_route( val, ref );
+          this->brt[ val ] = this->rte.create_bloom_route( val, ref, 0 );
         }
         if ( this->brt[ val ]->bloom[ 0 ]->add( h ) ) {
           BloomBits * bits = this->brt[ val ]->bloom[ 0 ]->bits;
@@ -347,7 +347,7 @@ TestDB::verify_routes( void ) noexcept
   uint32_t *routes, false_pos = 0, total = 0, cnt = 0;
   /* verify the rte are the same as rdb */
   for ( uint32_t i = 0; i < SUB; i++ ) {
-    uint32_t k = this->rte.get_sub_route( hash_int( i + 1 ), routes, cnt );
+    uint32_t k = this->rte.get_sub_route( hash_int( i + 1 ), routes, cnt, 0 );
     if ( k != this->cnt[ i ] ) {
       printf( "failed %u k %u cnt %u\n", i, k, this->cnt[ i ] );
       false_pos += k - this->cnt[ i ];

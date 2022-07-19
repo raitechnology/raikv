@@ -35,7 +35,7 @@ RoutePDB::get_service( const char *svc,  uint32_t svc_num,
 
 RouteDB::RouteDB( BloomDB &g_db ) noexcept
        : g_bloom_db( g_db ), entry_count( 0 ), pat_mask( 0 ), rt_mask( 0 ),
-         pat_bit_count( 0 )
+         pat_bit_count( 0 ), bloom_mem( 0 )
 {
   for ( size_t i = 0; i < sizeof( this->rt_hash ) /
                           sizeof( this->rt_hash[ 0 ] ); i++ ) {
@@ -377,10 +377,10 @@ RouteDB::add_route( uint16_t prefix_len,  uint32_t hash,  uint32_t r,
                 exists;
 
   exists = xht->find( hash, pos, val );
-  if ( this->cache_find( prefix_len, hash, routes, rcnt ) ) {
+  if ( this->cache_find( prefix_len, hash, routes, rcnt, 0 ) ) {
     route_cached = true;
     /* if bloom routes exist, don't use cached route */
-    if ( this->bloom_list.is_empty() ) {
+    if ( this->bloom_list.is_empty( 0 ) ) {
       rte.copy_cached( routes, rcnt, 1 );
       decompress_route = false;
       if ( exists && DeltaCoder::is_not_encoded( val ) )
@@ -429,10 +429,10 @@ RouteDB::del_route( uint16_t prefix_len,  uint32_t hash,  uint32_t r,
 
   if ( ! xht->find( hash, pos, val ) )
     return 0;
-  if ( this->cache_find( prefix_len, hash, routes, rcnt ) ) {
+  if ( this->cache_find( prefix_len, hash, routes, rcnt, 0 ) ) {
     route_cached = true;
     /* if bloom routes exist, don't use cached route */
-    if ( this->bloom_list.is_empty() ) {
+    if ( this->bloom_list.is_empty( 0 ) ) {
       rte.copy_cached( routes, rcnt, 0 );
       decompress_route = false;
       if ( DeltaCoder::is_not_encoded( val ) )
@@ -475,8 +475,8 @@ RouteDB::ref_route( uint16_t prefix_len,  uint32_t hash,
   if ( ! xht->find( hash, pos, val ) )
     return 0;
   /* if bloom routes exist, don't use cached route */
-  if ( this->bloom_list.is_empty() ) {
-    if ( this->cache_find( prefix_len, hash, routes, rcnt ) ) {
+  if ( this->bloom_list.is_empty( 0 ) ) {
+    if ( this->cache_find( prefix_len, hash, routes, rcnt, 0 ) ) {
       rte.copy_cached( routes, rcnt, 0 );
       return rcnt;
     }
@@ -486,22 +486,24 @@ RouteDB::ref_route( uint16_t prefix_len,  uint32_t hash,
 
 uint32_t
 RouteDB::get_route_slow( uint32_t hash,  uint32_t val,
-                         uint32_t *&routes ) noexcept
+                         uint32_t *&routes,  uint32_t shard ) noexcept
 {
   RouteRef rte( *this, this->zip.route_spc[ SUB_RTE ] );
   uint32_t rcnt = rte.decompress( val, 0 );
   routes = rte.routes;
-  return this->get_bloom_route( hash, routes, rcnt );
+  return this->get_bloom_route( hash, routes, rcnt, shard );
 }
 
 uint32_t
-RouteDB::get_bloom_route( uint32_t hash, uint32_t *&routes,
-                          uint32_t merge_cnt ) noexcept
+RouteDB::get_bloom_route( uint32_t hash,  uint32_t *&routes,
+                          uint32_t merge_cnt,  uint32_t shard ) noexcept
 {
   RouteSpace & spc   = this->zip.bloom_spc[ SUB_RTE ];
   uint32_t     count = 0;
 
-  for ( BloomRoute *b = this->bloom_list.hd; b != NULL; b = b->next ) {
+  for ( BloomRoute *b = this->bloom_list.hd( shard ); b != NULL; b = b->next ) {
+    if ( b->in_list != shard + 1 )
+      continue;
     for ( uint32_t i = 0; i < b->nblooms; i++ ) {
       BloomRef * r = b->bloom[ i ];
       if ( r->pref_count[ SUB_RTE ] != 0 && r->bits->is_member( hash ) ) {
@@ -512,14 +514,14 @@ RouteDB::get_bloom_route( uint32_t hash, uint32_t *&routes,
     }
   }
   if ( count == 0 ) {
-    this->cache_save( SUB_RTE, hash, routes, merge_cnt );
+    this->cache_save( SUB_RTE, hash, routes, merge_cnt, shard );
     return merge_cnt;
   }
   if ( merge_cnt > 0 ) {
     spc.make( count + merge_cnt );
     count = merge_route( spc.ptr, count, routes, merge_cnt );
   }
-  this->cache_save( SUB_RTE, hash, spc.ptr, count );
+  this->cache_save( SUB_RTE, hash, spc.ptr, count, shard );
   routes = spc.ptr;
   return count;
 }
@@ -528,27 +530,30 @@ uint32_t
 RouteDB::get_route_slow2( const char *sub,  uint16_t sublen,
                           uint16_t prefix_len,  uint64_t mask,  uint32_t hash,
                           uint32_t val,  uint32_t *&routes,
-                          uint32_t subj_hash ) noexcept
+                          uint32_t subj_hash,  uint32_t shard ) noexcept
 {
   RouteRef rte( *this, this->zip.route_spc[ prefix_len ] );
   uint32_t rcnt = rte.decompress( val, 0 );
   routes = rte.routes;
   return this->get_bloom_route2( sub, sublen, prefix_len, mask, hash, routes,
-                                 rcnt, subj_hash );
+                                 rcnt, subj_hash, shard );
 }
 
 uint32_t
 RouteDB::get_bloom_route2( const char *sub,  uint16_t sublen,
                            uint16_t prefix_len,  uint64_t mask,  uint32_t hash,
                            uint32_t *&routes,  uint32_t merge_cnt,
-                           uint32_t subj_hash ) noexcept
+                           uint32_t subj_hash,  uint32_t shard ) noexcept
 {
   RouteSpace & spc        = this->zip.bloom_spc[ prefix_len ];
   uint32_t     count      = 0;
   bool         has_detail = false;
 
   if ( ( mask & this->bloom_mask ) != 0 ) {
-    for ( BloomRoute *b = this->bloom_list.hd; b != NULL; b = b->next ) {
+    for ( BloomRoute *b = this->bloom_list.hd( shard ); b != NULL; b = b->next){
+      if ( b->in_list != shard + 1 )
+        continue;
+
       if ( b->is_invalid )
         b->update_masks();
 
@@ -585,7 +590,7 @@ RouteDB::get_bloom_route2( const char *sub,  uint16_t sublen,
   }
   if ( count == 0 ) {
     if ( ! has_detail )
-      this->cache_save( prefix_len, hash, routes, merge_cnt );
+      this->cache_save( prefix_len, hash, routes, merge_cnt, shard );
     return merge_cnt;
   }
   if ( merge_cnt > 0 ) {
@@ -593,7 +598,7 @@ RouteDB::get_bloom_route2( const char *sub,  uint16_t sublen,
     count = merge_route( spc.ptr, count, routes, merge_cnt );
   }
   if ( ! has_detail )
-    this->cache_save( prefix_len, hash, spc.ptr, count );
+    this->cache_save( prefix_len, hash, spc.ptr, count, shard );
   routes = spc.ptr;
   return count;
 }
@@ -612,63 +617,46 @@ BloomRoute::update_masks( void ) noexcept
 }
 
 uint32_t
-RouteDB::get_bloom_count( uint16_t prefix_len,  uint32_t hash ) noexcept
+RouteDB::get_bloom_count( uint16_t prefix_len,  uint32_t hash,
+                          uint32_t shard ) noexcept
 {
   if ( this->bloom_pref_count[ prefix_len ] == 0 )
     return 0;
   BloomRoute * b;
   BloomRef   * r;
   uint32_t     rcnt = 0;
-  for ( b = this->bloom_list.hd; b != NULL; b = b->next ) {
-    for ( uint32_t i = 0; i < b->nblooms; i++ ) {
-      r = b->bloom[ i ];
-      if ( r->pref_count[ prefix_len ] != 0 && r->bits->is_member( hash ) ) {
-        rcnt++;
-        break;
+  for ( b = this->bloom_list.hd( shard ); b != NULL; b = b->next ) {
+    if ( b->in_list == shard + 1 ) {
+      for ( uint32_t i = 0; i < b->nblooms; i++ ) {
+        r = b->bloom[ i ];
+        if ( r->pref_count[ prefix_len ] != 0 && r->bits->is_member( hash ) ) {
+          rcnt++;
+          break;
+        }
       }
     }
   }
   return rcnt;
 }
-#if 0
-BloomRoute *
-RouteDB::create_bloom_route( uint32_t r,  uint32_t *pref_count,
-                             BloomBits *bits,  const char *nm,
-                             BloomDB &db ) noexcept
-{
-  return this->create_bloom_route( r,
-           this->create_bloom_ref( pref_count, bits, nm, db ) );
-}
 
 BloomRoute *
-RouteDB::create_bloom_route( uint32_t r,  uint32_t seed,
-                             const char *nm,  BloomDB &db ) noexcept
+RouteDB::create_bloom_route( uint32_t r,  BloomRef *ref,
+                             uint32_t shard ) noexcept
 {
-  return this->create_bloom_route( r, this->create_bloom_ref( seed, nm, db ) );
-}
-#endif
-BloomRoute *
-RouteDB::create_bloom_route( uint32_t r,  BloomRef *ref ) noexcept
-{
-  void       * m;
   BloomRoute * b = NULL;
 
-  for ( BloomRoute *p = this->bloom_list.hd; ; p = p->next ) {
+  for ( BloomRoute *p = this->bloom_list.hd( shard ); ; p = p->next ) {
     if ( p == NULL ) {
-      m = ::malloc( sizeof( BloomRoute ) );
-      b = new ( m ) BloomRoute( r, *this );
-      this->bloom_list.push_tl( b );
-      b->is_in_list = true;
+      b = new ( this->alloc_bloom() ) BloomRoute( r, *this, shard + 1 );
+      this->bloom_list.get_list( shard ).push_tl( b );
       break;
     }
-    if ( p->r >= r ) {
-      if ( p->r == r )
+    if ( p->r > r || ( p->r == r && p->in_list >= shard + 1 ) ) {
+      if ( p->r == r && p->in_list == shard + 1 )
         b = p;
       else {
-        m = ::malloc( sizeof( BloomRoute ) );
-        b = new ( m ) BloomRoute( r, *this );
-        this->bloom_list.insert_before( b, p );
-        b->is_in_list = true;
+        b = new ( this->alloc_bloom() ) BloomRoute( r, *this, shard + 1 );
+        this->bloom_list.get_list( shard ).insert_before( b, p );
       }
       break;
     }
@@ -678,12 +666,45 @@ RouteDB::create_bloom_route( uint32_t r,  BloomRef *ref ) noexcept
   return b;
 }
 
+void *
+RouteDB::alloc_bloom( void ) noexcept
+{
+  static const size_t BLOOM_BLOCK_SIZE = 32,
+                      alloc_sz = sizeof( BloomRoute ) * BLOOM_BLOCK_SIZE +
+                                 sizeof( BloomRoute * );
+  if ( this->bloom_mem == NULL ) {
+    this->bloom_mem = ::malloc( alloc_sz );
+    ::memset( this->bloom_mem, 0, alloc_sz );
+  }
+  BloomRoute * block = (BloomRoute *) this->bloom_mem;
+  for (;;) {
+    for ( size_t i = 0; i < BLOOM_BLOCK_SIZE; i++ ) {
+      if ( block[ i ].in_list == 0 )
+        return &block[ i ];
+    }
+    void ** next = (void **) &block[ BLOOM_BLOCK_SIZE ];
+    if ( *next == NULL ) {
+      *next = ::malloc( alloc_sz );
+      ::memset( *next, 0, alloc_sz );
+    }
+    block = (BloomRoute *) *next;
+  }
+}
+
 void
 RouteDB::remove_bloom_route( BloomRoute *b ) noexcept
 {
-  if ( b->is_in_list ) {
-    this->bloom_list.pop( b );
-    b->is_in_list = false;
+  if ( b->nblooms > 0 ) {
+    fprintf( stderr, "bloom ref still exist in route %u\n", b->r );
+    return;
+  }
+  if ( b->in_list ) {
+    this->bloom_list.get_list( b->in_list - 1 ).pop( b );
+    if ( b->bloom != NULL ) {
+      ::free( b->bloom );
+      b->bloom = NULL;
+    }
+    b->in_list = 0;
   }
 }
 
@@ -775,7 +796,6 @@ BloomRoute::add_bloom_ref( BloomRef *ref ) noexcept
   for ( prefix_len = 0; prefix_len < MAX_RTE; prefix_len++ ) {
     if ( ref->pref_count[ prefix_len ] != 0 ) {
       if ( this->rdb.bloom_pref_count[ prefix_len ]++ == 0 ) {
-        /*if ( this->rdb.rt_hash[ prefix_len ]->is_empty() )*/
         this->rdb.add_prefix_len( prefix_len, false );
       }
     }
@@ -793,7 +813,6 @@ BloomRef::unlink( bool del_empty_routes ) noexcept
     b->del_bloom_ref( this );
     if ( del_empty_routes && b->nblooms == 0 ) {
       b->rdb.remove_bloom_route( b );
-      delete b;
     }
   }
 }
@@ -813,25 +832,28 @@ BloomRef::zero( void ) noexcept
 BloomRef *
 BloomRoute::del_bloom_ref( BloomRef *ref ) noexcept
 {
-  uint32_t i, n;
+  uint32_t i, n = this->nblooms;
+
   this->invalid();
-  n = this->nblooms;
-  for ( i = n; ; i-- ) {
-    if ( i == 0 )
+  if ( ref == NULL ) {
+    if ( n == 0 )
       return NULL;
-    if ( ref == NULL )
-      ref = this->bloom[ i - 1 ];
-    else if ( this->bloom[ i - 1 ] != ref )
-      continue;
-    if ( i != n )
-      ::memmove( &this->bloom[ i - 1 ], &this->bloom[ i ],
-                 sizeof( this->bloom[ 0 ] ) * ( n - i ) );
-    this->nblooms = n - 1;
-    /*printf( "del_bloom_ref %s -> %s:%u (cnt=%u)\n", ref->name,
-             ((RoutePublish &) this->rdb).service_name, this->r, n-1 );*/
-    ref->del_link( this );
-    break;
+    ref = this->bloom[ n - 1 ];
   }
+  else {
+    for ( i = n; ; i-- ) {
+      if ( i == 0 )
+        return NULL;
+      if ( this->bloom[ i - 1 ] != ref )
+        continue;
+      if ( i != n )
+        ::memmove( &this->bloom[ i - 1 ], &this->bloom[ i ],
+                   sizeof( this->bloom[ 0 ] ) * ( n - i ) );
+      break;
+    }
+  }
+  this->nblooms = n - 1;
+  ref->del_link( this );
 
   uint16_t prefix_len;
   for ( prefix_len = 0; prefix_len < MAX_RTE; prefix_len++ ) {
@@ -842,12 +864,6 @@ BloomRoute::del_bloom_ref( BloomRef *ref ) noexcept
     }
   }
   return ref;
-}
-
-BloomRoute::~BloomRoute()
-{
-  if ( this->bloom != NULL )
-    ::free( this->bloom );
 }
 
 void
@@ -878,14 +894,14 @@ BloomRef::del_link( BloomRoute *b ) noexcept
 }
 
 BloomRoute *
-BloomRef::get_bloom_by_fd( uint32_t fd ) noexcept
+BloomRef::get_bloom_by_fd( uint32_t fd,  uint32_t shard ) noexcept
 {
   uint32_t i, n = this->nlinks;
   for ( i = n; ; i-- ) {
     if ( i == 0 )
       break;
     BloomRoute *b = this->links[ i - 1 ];
-    if ( b->r == fd )
+    if ( b->r == fd && b->in_list == shard + 1 )
       return b;
   }
   return NULL;
@@ -1142,7 +1158,8 @@ BloomDetail::from_pattern( const PatternCvt &cvt ) noexcept
 
 void
 RouteDB::cache_save( uint16_t prefix_len,  uint32_t hash,
-                     uint32_t *routes,  uint32_t rcnt ) noexcept
+                     uint32_t *routes,  uint32_t rcnt,
+                     uint32_t shard ) noexcept
 {
   if ( this->cache.is_invalid || this->cache.free * 2 > this->cache.end ||
        this->cache.end > RouteCache::MAX_CACHE ) {
@@ -1171,7 +1188,8 @@ RouteDB::cache_save( uint16_t prefix_len,  uint32_t hash,
   this->cache.end += rcnt;
   ::memcpy( &ptr[ val.off ], routes, sizeof( routes[ 0 ] ) * rcnt );
 
-  h = ( (uint64_t) prefix_len << 32 ) | (uint64_t) hash;
+  h = ( (uint64_t) shard << 48 ) | ( (uint64_t) prefix_len << 32 ) |
+        (uint64_t) hash;
   this->cache.ht->upsert( h, val ); /* save rcnt, off at hash */
   this->cache.count++;
 
@@ -1302,7 +1320,7 @@ RouteDB::is_member( uint16_t prefix_len,  uint32_t hash,  uint32_t r ) noexcept
   }
 
   uint32_t * routes, rcnt;
-  if ( this->cache_find( prefix_len, hash, routes, rcnt ) ) {
+  if ( this->cache_find( prefix_len, hash, routes, rcnt, 0 ) ) {
     uint32_t i = bsearch_route( r, routes, rcnt );
     if ( i < rcnt && r == routes[ i ] )
       return true;

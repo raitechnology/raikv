@@ -97,7 +97,19 @@ struct CodeRefPtr {
 
 struct BloomRoute;
 struct BloomRef;
-typedef kv::DLinkList<BloomRoute> BloomList;
+struct BloomList {
+  kv::DLinkList<BloomRoute> list[ 4 ];
+  BloomList() {}
+  bool is_empty( uint32_t shard ) const {
+    return this->list[ shard & 3 ].is_empty();
+  }
+  BloomRoute *hd( uint32_t shard ) {
+    return this->list[ shard & 3 ].hd;
+  }
+  kv::DLinkList<BloomRoute> & get_list( uint32_t shard ) {
+    return this->list[ shard & 3 ];
+  }
+};
 
 struct RouteDB;
 struct RouteRef {
@@ -205,6 +217,7 @@ struct RouteDB {
                 bloom_mask;
   uint8_t       prefix_len[ MAX_PRE ]; /* current set of prefix lengths */
   uint8_t       pat_bit_count;      /* how many bits in pat_mask are set */
+  void        * bloom_mem;
 
   RouteDB( BloomDB &g_db ) noexcept;
 
@@ -272,60 +285,56 @@ struct RouteDB {
   uint32_t get_route( const char *sub,  uint16_t sublen,
                       uint16_t prefix_len,  uint32_t hash,
                       uint32_t *&routes,  uint32_t &ref,
-                      uint32_t subj_hash ) {
+                      uint32_t subj_hash,  uint32_t shard ) {
     uint32_t rcnt, val;
     size_t   pos;
-    if ( this->cache_find( prefix_len, hash, routes, rcnt ) ) {
+    if ( this->cache_find( prefix_len, hash, routes, rcnt, shard ) ) {
       this->cache.busy++;
       ref++;
       return rcnt;
     }
     uint64_t mask = (uint64_t) 1 << prefix_len;
-    if ( ( this->rt_mask & mask ) != 0 ) {
+    if ( shard == 0 && ( this->rt_mask & mask ) != 0 ) {
       if ( this->rt_hash[ prefix_len ]->find( hash, pos, val ) )
         return this->get_route_slow2( sub, sublen, prefix_len, mask, hash, val,
-                                      routes, subj_hash );
+                                      routes, subj_hash, 0 );
     }
     return this->get_bloom_route2( sub, sublen, prefix_len, mask, hash, routes,
-                                   0, subj_hash );
+                                   0, subj_hash, shard );
   }
-  uint32_t get_sub_route( uint32_t hash,  uint32_t *&routes,  uint32_t &ref ) {
+  uint32_t get_sub_route( uint32_t hash,  uint32_t *&routes,  uint32_t &ref,
+                          uint32_t shard ) {
     uint32_t rcnt, val;
     size_t   pos;
-    if ( this->cache_find( SUB_RTE, hash, routes, rcnt ) ) {
+    if ( this->cache_find( SUB_RTE, hash, routes, rcnt, shard ) ) {
       this->cache.busy++;
       ref++;
       return rcnt;
     }
-    if ( this->rt_hash[ SUB_RTE ]->find( hash, pos, val ) )
-      return this->get_route_slow( hash, val, routes );
-    return this->get_bloom_route( hash, routes, 0 );
+    if ( shard == 0 && this->rt_hash[ SUB_RTE ]->find( hash, pos, val ) )
+      return this->get_route_slow( hash, val, routes, 0 );
+    return this->get_bloom_route( hash, routes, 0, shard );
   }
   uint32_t get_route_slow( uint32_t hash, uint32_t val,
-                           uint32_t *&routes ) noexcept;
+                           uint32_t *&routes,  uint32_t shard ) noexcept;
   uint32_t get_bloom_route( uint32_t hash,  uint32_t *&routes,
-                            uint32_t merge_cnt ) noexcept;
+                            uint32_t merge_cnt,  uint32_t shard ) noexcept;
   uint32_t get_route_slow2( const char *sub,  uint16_t sublen,
                             uint16_t prefix_len,  uint64_t mask,  uint32_t hash,
                             uint32_t val,  uint32_t *&routes,
-                            uint32_t subj_hash ) noexcept;
+                            uint32_t subj_hash,  uint32_t shard ) noexcept;
   uint32_t get_bloom_route2( const char *sub,  uint16_t sublen,
                              uint16_t prefix_len,  uint64_t mask, uint32_t hash,
                              uint32_t *&routes,  uint32_t merge_cnt,
-                             uint32_t subj_hash ) noexcept;
+                             uint32_t subj_hash,  uint32_t shard ) noexcept;
   uint32_t get_route_count( uint16_t prefix_len,  uint32_t hash ) noexcept;
 
   uint32_t get_sub_route_count( uint32_t hash ) {
     return this->get_route_count( SUB_RTE, hash );
   }
-#if 0
-  BloomRoute * create_bloom_route( uint32_t r,  uint32_t *pref_count,
-                                   BloomBits *bits,  const char *nm ) noexcept;
-  BloomRoute * create_bloom_route( uint32_t r,  uint32_t seed,
-                                   const char *nm ) noexcept;
-#endif
-  BloomRoute * create_bloom_route( uint32_t r,  BloomRef *ref = NULL ) noexcept;
-
+  BloomRoute * create_bloom_route( uint32_t r,  BloomRef *ref,
+                                   uint32_t shard ) noexcept;
+  void * alloc_bloom( void ) noexcept;
   void remove_bloom_route( BloomRoute *b ) noexcept;
 
   BloomRef * create_bloom_ref( uint32_t *pref_count,  BloomBits *bits,
@@ -335,15 +344,17 @@ struct RouteDB {
   BloomRef * update_bloom_ref( const void *data,  size_t datalen,
                                uint32_t ref_num,  const char *nm,
                                BloomDB &db ) noexcept;
-  uint32_t get_bloom_count( uint16_t prefix_len,  uint32_t hash ) noexcept;
-
+  uint32_t get_bloom_count( uint16_t prefix_len,  uint32_t hash,
+                            uint32_t shard ) noexcept;
   bool cache_find( uint16_t prefix_len,  uint32_t hash,
-                   uint32_t *&routes,  uint32_t &rcnt ) {
+                   uint32_t *&routes,  uint32_t &rcnt,
+                   uint32_t shard ) {
     if ( this->cache.is_invalid )
       return false;
     if ( ! this->cache.busy && this->cache.need )
       this->cache_need();
-    uint64_t    h = ( (uint64_t) prefix_len << 32 ) | (uint64_t) hash;
+    uint64_t    h = ( (uint64_t) shard << 48 ) |
+                    ( (uint64_t) prefix_len << 32 ) | (uint64_t) hash;
     size_t      pos;
     RteCacheVal val;
 
@@ -354,7 +365,7 @@ struct RouteDB {
     return true;
   }
   void cache_save( uint16_t prefix_len,  uint32_t hash,
-                   uint32_t *routes,  uint32_t rcnt ) noexcept;
+                   uint32_t *routes,  uint32_t rcnt,  uint32_t shard ) noexcept;
   void cache_purge( uint16_t prefix_len,  uint32_t hash ) noexcept;
   void cache_need( void ) noexcept;
 };
@@ -444,7 +455,7 @@ struct BloomRef {
   void zero( void ) noexcept;
   void add_link( BloomRoute *b ) noexcept;
   void del_link( BloomRoute *b ) noexcept;
-  BloomRoute *get_bloom_by_fd( uint32_t fd ) noexcept;
+  BloomRoute *get_bloom_by_fd( uint32_t fd,  uint32_t shard ) noexcept;
   bool has_link( uint32_t fd ) noexcept;
   void ref_pref_count( uint16_t prefix_len ) noexcept;
   void deref_pref_count( uint16_t prefix_len ) noexcept;
@@ -555,27 +566,29 @@ struct BloomRoute {
   BloomRoute * next,
              * back;
   RouteDB    & rdb;
-  BloomRef  ** bloom;
-  uint32_t     r,
-               nblooms;
-  uint64_t     pref_mask,
-               detail_mask;
-  bool         is_invalid,
-               is_in_list;
+  BloomRef  ** bloom;       /* the blooms that are filtering this route */
+  uint32_t     r,           /* the fd to route for blooms */
+               nblooms;     /* count of bloom[] */
+  uint64_t     pref_mask,   /* prefix mask for blooms */
+               detail_mask; /* shard/suffix mask */
+  uint32_t     in_list;     /* whether in bloom_list and what shard */
+  bool         is_invalid;  /* whether to recalculate masks after sub ob */
 
   void * operator new( size_t, void *ptr ) { return ptr; }
-  void operator delete( void *ptr ) { ::free( ptr ); }
+  void operator delete( void * ) {} /* no delete, in rdb.bloom_mem */
 
-  BloomRoute( uint32_t fd,  RouteDB &db )
+  BloomRoute( uint32_t fd,  RouteDB &db,  uint32_t lst )
     : next( 0 ), back( 0 ), rdb( db ), bloom( 0 ), r( fd ), nblooms( 0 ),
-      pref_mask( 0 ), detail_mask( 0 ), is_invalid( true ),
-      is_in_list( false ) {}
-  ~BloomRoute();
+      pref_mask( 0 ), detail_mask( 0 ), in_list( lst ), is_invalid( true ) {}
 
   void add_bloom_ref( BloomRef *ref ) noexcept;
   BloomRef *del_bloom_ref( BloomRef *ref ) noexcept;
   void invalid( void ) noexcept;
   void update_masks( void ) noexcept;
+  void remove_if_empty( void ) {
+    if ( this->nblooms == 0 )
+      this->rdb.remove_bloom_route( this );
+  }
 };
 
 struct EvPublish;
@@ -611,10 +624,10 @@ struct RoutePublishCache {
                    ref;
 
   RoutePublishCache( RouteDB &db,  const char *subject,
-                     size_t subject_len,  uint32_t subj_hash )
+                     size_t subject_len,  uint32_t subj_hash,  uint32_t shard )
       : rdb( db ), n( 0 ), ref( 0 ) {
     uint32_t * routes;
-    uint32_t   rcount = db.get_sub_route( subj_hash, routes, this->ref );
+    uint32_t   rcount = db.get_sub_route( subj_hash, routes, this->ref, shard );
 
     if ( rcount > 0 )
       this->rpd[ this->n++ ].set( SUB_RTE, rcount, subj_hash, routes );
@@ -628,7 +641,7 @@ struct RoutePublishCache {
     /* prefix len 0 matches all */
     if ( x > 0 && keylen[ 0 ] == 0 ) {
       rcount = db.get_route( subject, (uint16_t) subject_len, 0, hash[ 0 ],
-                             routes, this->ref, subj_hash );
+                             routes, this->ref, subj_hash, shard );
       if ( rcount > 0 )
         this->rpd[ this->n++ ].set( 0, rcount, hash[ 0 ], routes );
       k = 1;
@@ -639,62 +652,14 @@ struct RoutePublishCache {
       do {
         rcount = db.get_route( subject, (uint16_t) subject_len,
                                (uint16_t) keylen[ k ], hash[ k ], routes,
-                               this->ref, subj_hash );
+                               this->ref, subj_hash, shard );
         if ( rcount > 0 )
           this->rpd[ this->n++ ].set( (uint8_t) keylen[ k ], rcount, hash[ k ],
                                       routes );
       } while ( ++k < x );
     }
   }
-#if 0
-  RoutePublishCache( RouteDB &db,  const char *subject,
-                     size_t subject_len,  uint32_t subj_hash,
-                     uint8_t pref_cnt,  KvPrefHash *ph )
-     : rdb( db ), n( 0 ), ref( 0 ) {
-    uint32_t * routes;
-    uint32_t   rcount = db.get_sub_route( subj_hash, routes, this->ref );
 
-    if ( rcount > 0 )
-      this->rpd[ this->n++ ].set( SUB_RTE, rcount, subj_hash, routes );
-
-    const char * key[ MAX_PRE ];
-    size_t       keylen[ MAX_PRE ];
-    uint32_t     hash[ MAX_PRE ];
-    uint8_t      j = 0, k = 0,
-                 x = db.setup_prefix_hash( subject, subject_len, key, keylen,
-                                           hash );
-    /* prefix len 0 matches all */
-    if ( x > 0 && keylen[ 0 ] == 0 ) {
-      rcount = db.get_route( subject, subject_len, 0, hash[ 0 ], routes,
-                             this->ref, subj_hash );
-      if ( rcount > 0 )
-        this->rpd[ this->n++ ].set( 0, rcount, hash[ 0 ], routes );
-      k = 1;
-    }
-    /* process the precomputed hashes */
-    while ( k < x && j < pref_cnt ) {
-      if ( ph[ j ].pref == keylen[ k ] ) {
-        uint32_t h = ph[ j ].get_hash();
-        rcount = db.get_route( subject, subject_len, keylen[ k ], h, routes,
-                               this->ref, subj_hash );
-        if ( rcount > 0 )
-          this->rpd[ this->n++ ].set( keylen[ k ], rcount, h, routes );
-        k++;
-      }
-      j++;
-    }
-    /* the rest of the prefixes are hashed */
-    if ( k < x ) {
-      kv_crc_c_array( (const void **) &key[ k ], &keylen[ k ], &hash[ k ], x-k);
-      do {
-        rcount = db.get_route( subject, subject_len, keylen[ k ], hash[ k ],
-                               routes, this->ref, subj_hash );
-        if ( rcount > 0 )
-          this->rpd[ this->n++ ].set( keylen[ k ], rcount, hash[ k ], routes );
-      } while ( ++k < x );
-    }
-  }
-#endif
   ~RoutePublishCache() {
     this->rdb.cache.busy -= this->ref;
   }

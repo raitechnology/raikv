@@ -8,6 +8,179 @@ namespace rai {
 namespace kv {
 
 template <class T>
+struct BitSpaceT : public ArraySpace<T, 2> {
+  static const size_t WORD_BITS = sizeof( T ) * 8;
+
+  size_t bit_size( void ) const {
+    return this->size * WORD_BITS;
+  }
+  void extend( uint32_t b ) {
+    if ( (size_t) b >= this->size * WORD_BITS )
+      this->make( align<size_t>( b + 1, WORD_BITS ) / WORD_BITS, true );
+  }
+  uint64_t & ref( uint32_t b,  uint64_t &mask ) const {
+    mask = ( (uint64_t) 1 ) << ( b % WORD_BITS );
+    return this->ptr[ b / WORD_BITS ];
+  }
+  void add( uint32_t b ) {
+    this->extend( b );
+    uint64_t mask, & w = this->ref( b, mask );
+    w |= mask;
+  }
+  void add( const uint32_t *b,  size_t bcnt ) {
+    for ( size_t i = 0; i < bcnt; i++ )
+      this->add( b[ i ] );
+  }
+  void remove( uint32_t b ) {
+    if ( b < this->size * WORD_BITS ) {
+      uint64_t mask, & w = this->ref( b, mask );
+      w &= ~mask;
+    }
+  }
+  bool is_member( uint32_t b ) const {
+    if ( b < this->size * WORD_BITS ) {
+      uint64_t mask, & w = this->ref( b, mask );
+      return ( w & mask ) != 0;
+    }
+    return false;
+  }
+  bool test_set( uint32_t b ) {
+    this->extend( b );
+    uint64_t mask, & w = this->ref( b, mask );
+    bool     is_set = ( w & mask ) != 0;
+    w |= mask;
+    return is_set;
+  }
+  bool test_clear( uint32_t b ) {
+    if ( (size_t) b >= this->size * WORD_BITS )
+      return false;
+    uint64_t mask, & w = this->ref( b, mask );
+    bool     is_set = ( w & mask ) != 0;
+    w &= ~mask;
+    return is_set;
+  }
+  bool is_empty( void ) const {
+    for ( size_t i = 0; i < this->size; i++ )
+      if ( this->ptr[ i ] != 0 )
+        return false;
+    return true;
+  }
+  size_t count( void ) const {
+    size_t cnt = 0;
+    for ( size_t i = 0; i < this->size; i++ )
+      if ( this->ptr[ i ] != 0 )
+        cnt += kv_popcountl( this->ptr[ i ] );
+    return cnt;
+  }
+  void and_bits( const BitSpaceT &b1,  const BitSpaceT &b2 ) {
+    size_t min_sz = min_int<size_t>( b1.size, b2.size );
+    this->make( min_sz, false );
+    for ( size_t i = 0; i < min_sz; i++ )
+      this->ptr[ i ] = b1.ptr[ i ] & b2.ptr[ i ];
+    if ( this->size > min_sz )
+      ::memset( &this->ptr[ min_sz ], 0,
+                ( this->size - min_sz ) * sizeof( this->ptr[ 0 ] ) );
+  }
+  void or_bits( const BitSpaceT &b1,  const BitSpaceT &b2 ) {
+    size_t min_sz = min_int<size_t>( b1.size, b2.size ),
+           max_sz = max_int<size_t>( b1.size, b2.size ), i;
+    this->make( max_sz, false );
+    for ( i = 0; i < min_sz; i++ )
+      this->ptr[ i ] = b1.ptr[ i ] | b2.ptr[ i ];
+    for ( ; i < max_sz && i < b1.size; i++ )
+      this->ptr[ i ] = b1.ptr[ i ];
+    for ( ; i < max_sz && i < b2.size; i++ )
+      this->ptr[ i ] = b2.ptr[ i ];
+  }
+  void xor_bits( const BitSpaceT &b1,  const BitSpaceT &b2 ) {
+    size_t min_sz = min_int<size_t>( b1.size, b2.size ),
+           max_sz = max_int<size_t>( b1.size, b2.size ), i;
+    this->make( max_sz, false );
+    for ( i = 0; i < min_sz; i++ )
+      this->ptr[ i ] = b1.ptr[ i ] ^ b2.ptr[ i ];
+    for ( ; i < max_sz && i < b1.size; i++ )
+      this->ptr[ i ] = b1.ptr[ i ];
+    for ( ; i < max_sz && i < b2.size; i++ )
+      this->ptr[ i ] = b2.ptr[ i ];
+  }
+  bool first( uint32_t &b ) const {
+    b = 0;
+    if ( this->size == 0 )
+      return false;
+    return this->scan( b );
+  }
+  bool next( uint32_t &b ) const {
+    if ( ++b >= this->size * WORD_BITS )
+      return false;
+    return this->scan( b );
+  }
+  bool scan( uint32_t &b ) const {
+    uint32_t off = b / WORD_BITS;
+    for (;;) {
+      uint64_t x = this->ptr[ off ] >> ( b % WORD_BITS );
+      if ( x == 0 ) {
+        b = ++off * WORD_BITS;
+        if ( (size_t) off >= this->size )
+          return false;
+      }
+      else {
+        if ( ( x & 1 ) != 0 )
+          return true;
+        b += kv_ffsl( x ) - 1;
+        return true;
+      }
+    }
+  }
+  bool intersects( const BitSpaceT &x ) const {
+    size_t min_sz = min_int<size_t>( x.size, this->size ), i;
+    for ( i = 0; i < min_sz; i++ ) {
+      if ( ( x.ptr[ i ] & this->ptr[ i ] ) != 0 )
+        return true;
+    }
+    return false;
+  }
+  bool superset( const BitSpaceT &x ) const {
+    size_t min_sz = min_int<size_t>( x.size, this->size ),
+           max_sz = max_int<size_t>( x.size, this->size ), i;
+    for ( i = 0; i < min_sz; i++ ) {
+      if ( ( x.ptr[ i ] | this->ptr[ i ] ) != this->ptr[ i ] )
+        return false;
+    }
+    for ( ; i < max_sz && i < x.size; i++ )
+      if ( x.ptr[ i ] != 0 )
+        return false;
+    return true;
+  }
+  bool equals( const BitSpaceT &x ) const {
+    size_t min_sz = min_int<size_t>( x.size, this->size ),
+           max_sz = max_int<size_t>( x.size, this->size ), i;
+    for ( i = 0; i < min_sz; i++ ) {
+      if ( x.ptr[ i ] != this->ptr[ i ] )
+        return false;
+    }
+    for ( ; i < max_sz && i < x.size; i++ )
+      if ( x.ptr[ i ] != 0 )
+        return false;
+    for ( ; i < max_sz && i < this->size; i++ )
+      if ( this->ptr[ i ] != 0 )
+        return false;
+    return true;
+  }
+  bool operator==( const BitSpaceT &x ) const {
+    return this->equals( x );
+  }
+  bool operator!=( const BitSpaceT &x ) const {
+    return ! this->equals( x );
+  }
+};
+
+struct BitSpace : public BitSpaceT<uint64_t> {
+  void * operator new( size_t, void *ptr ) { return ptr; }
+  void operator delete( void *ptr ) { ::free( ptr ); }
+  BitSpace() {}
+};
+
+template <class T>
 struct BitSetT {
   static const uint32_t WORD_BITS = sizeof( T ) * 8;
   T * ptr;
@@ -119,183 +292,77 @@ struct BitSetT {
         cnt += kv_popcountl( this->ptr[ off ] );
     return cnt;
   }
+  static uint32_t size( uint32_t max_bit ) {
+    return ( WORD_BITS - 1 + max_bit ) / WORD_BITS;
+  }
   void zero( uint32_t max_bit ) {
     for ( uint32_t off = 0; off * WORD_BITS < max_bit; off++ )
       this->ptr[ off ] = 0;
   }
+  bool is_empty( uint32_t max_bit ) const {
+    for ( uint32_t off = 0; off * WORD_BITS < max_bit; off++ )
+      if ( this->ptr[ off ] != 0 )
+        return false;
+    return true;
+  }
+  void and_bits( const BitSetT &b1,  size_t bsz1,
+                 const BitSetT &b2,  size_t bsz2 ) {
+    size_t min_sz = min_int<size_t>( bsz1, bsz2 );
+    for ( size_t i = 0; i * WORD_BITS < min_sz; i++ )
+      this->ptr[ i ] = b1.ptr[ i ] & b2.ptr[ i ];
+  }
+  void mask_bits( const BitSetT &mask,  size_t mask_bsz,
+                  const BitSetT &b2,  size_t bsz2 ) {
+    size_t min_sz = min_int<size_t>( mask_bsz, bsz2 ),
+           max_sz = max_int<size_t>( mask_bsz, bsz2 ), i;
+    for ( i = 0; i * WORD_BITS < min_sz; i++ )
+      this->ptr[ i ] = ~mask.ptr[ i ] & b2.ptr[ i ];
+    for ( ; i * WORD_BITS < max_sz && i * WORD_BITS < bsz2; i++ )
+      this->ptr[ i ] = b2.ptr[ i ];
+  }
+  void or_bits( const BitSetT &b1,  size_t bsz1,
+                const BitSetT &b2,  size_t bsz2 ) {
+    size_t min_sz = min_int<size_t>( bsz1, bsz2 ),
+           max_sz = max_int<size_t>( bsz1, bsz2 ), i;
+    for ( i = 0; i * WORD_BITS < min_sz; i++ )
+      this->ptr[ i ] = b1.ptr[ i ] | b2.ptr[ i ];
+    for ( ; i * WORD_BITS < max_sz && i * WORD_BITS < bsz1; i++ )
+      this->ptr[ i ] = b1.ptr[ i ];
+    for ( ; i * WORD_BITS < max_sz && i * WORD_BITS < bsz2; i++ )
+      this->ptr[ i ] = b2.ptr[ i ];
+  }
+  void xor_bits( const BitSetT &b1,  size_t bsz1,
+                 const BitSetT &b2,  size_t bsz2 ) {
+    size_t min_sz = min_int<size_t>( bsz1, bsz2 ),
+           max_sz = max_int<size_t>( bsz1, bsz2 ), i;
+    for ( i = 0; i < min_sz; i++ )
+      this->ptr[ i ] = b1.ptr[ i ] ^ b2.ptr[ i ];
+    for ( ; i < max_sz && i < bsz1; i++ )
+      this->ptr[ i ] = b1.ptr[ i ];
+    for ( ; i < max_sz && i < bsz2; i++ )
+      this->ptr[ i ] = b2.ptr[ i ];
+  }
+  void and_bits( const BitSetT &b1,  size_t bsz1,
+                 const BitSpaceT<T> &bs ) {
+    BitSetT<T> b2( bs.ptr );
+    size_t min_sz = min_int<size_t>( bsz1, bs.bit_size() );
+    return this->and_bits( b1, min_sz, b2, min_sz );
+  }
+  void or_bits( const BitSetT &b1,  size_t bsz1,
+                const BitSpaceT<T> &bs ) {
+    BitSetT<T> b2( bs.ptr );
+    size_t min_sz = min_int<size_t>( bsz1, bs.bit_size() );
+    return this->or_bits( b1, bsz1, b2, min_sz );
+  }
+  void mask_bits( const BitSetT &mask,  size_t mask_bsz,
+                  const BitSpaceT<T> &bs ) {
+    BitSetT<T> b2( bs.ptr );
+    size_t min_sz = min_int<size_t>( mask_bsz, bs.bit_size() );
+    return this->mask_bits( mask, mask_bsz, b2, min_sz );
+  }
 };
 
 typedef BitSetT<uint64_t> UIntBitSet;
-
-struct BitSpace : public ArraySpace<uint64_t, 2> {
-  static const size_t WORD_BITS = sizeof( uint64_t ) * 8;
-  void * operator new( size_t, void *ptr ) { return ptr; }
-  void operator delete( void *ptr ) { ::free( ptr ); }
-  BitSpace() {}
-
-  void extend( uint32_t b ) {
-    if ( (size_t) b >= this->size * WORD_BITS )
-      this->make( align<size_t>( b + 1, WORD_BITS ) / WORD_BITS, true );
-  }
-  uint64_t & ref( uint32_t b,  uint64_t &mask ) const {
-    mask = ( (uint64_t) 1 ) << ( b % WORD_BITS );
-    return this->ptr[ b / WORD_BITS ];
-  }
-  void add( uint32_t b ) {
-    this->extend( b );
-    uint64_t mask, & w = this->ref( b, mask );
-    w |= mask;
-  }
-  void add( const uint32_t *b,  size_t bcnt ) {
-    for ( size_t i = 0; i < bcnt; i++ )
-      this->add( b[ i ] );
-  }
-  void remove( uint32_t b ) {
-    if ( b < this->size * WORD_BITS ) {
-      uint64_t mask, & w = this->ref( b, mask );
-      w &= ~mask;
-    }
-  }
-  bool is_member( uint32_t b ) const {
-    if ( b < this->size * WORD_BITS ) {
-      uint64_t mask, & w = this->ref( b, mask );
-      return ( w & mask ) != 0;
-    }
-    return false;
-  }
-  bool test_set( uint32_t b ) {
-    this->extend( b );
-    uint64_t mask, & w = this->ref( b, mask );
-    bool     is_set = ( w & mask ) != 0;
-    w |= mask;
-    return is_set;
-  }
-  bool test_clear( uint32_t b ) {
-    if ( (size_t) b >= this->size * WORD_BITS )
-      return false;
-    uint64_t mask, & w = this->ref( b, mask );
-    bool     is_set = ( w & mask ) != 0;
-    w &= ~mask;
-    return is_set;
-  }
-  bool is_empty( void ) const {
-    for ( size_t i = 0; i < this->size; i++ )
-      if ( this->ptr[ i ] != 0 )
-        return false;
-    return true;
-  }
-  size_t count( void ) const {
-    size_t cnt = 0;
-    for ( size_t i = 0; i < this->size; i++ )
-      if ( this->ptr[ i ] != 0 )
-        cnt += kv_popcountl( this->ptr[ i ] );
-    return cnt;
-  }
-  void and_bits( const BitSpace &b1,  const BitSpace &b2 ) {
-    size_t min_sz = min_int<size_t>( b1.size, b2.size );
-    this->make( min_sz, false );
-    for ( size_t i = 0; i < min_sz; i++ )
-      this->ptr[ i ] = b1.ptr[ i ] & b2.ptr[ i ];
-    if ( this->size > min_sz )
-      ::memset( &this->ptr[ min_sz ], 0,
-                ( this->size - min_sz ) * sizeof( this->ptr[ 0 ] ) );
-  }
-  void or_bits( const BitSpace &b1,  const BitSpace &b2 ) {
-    size_t min_sz = min_int<size_t>( b1.size, b2.size ),
-           max_sz = max_int<size_t>( b1.size, b2.size ), i;
-    this->make( max_sz, false );
-    for ( i = 0; i < min_sz; i++ )
-      this->ptr[ i ] = b1.ptr[ i ] | b2.ptr[ i ];
-    for ( ; i < max_sz && i < b1.size; i++ )
-      this->ptr[ i ] = b1.ptr[ i ];
-    for ( ; i < max_sz && i < b2.size; i++ )
-      this->ptr[ i ] = b2.ptr[ i ];
-  }
-  void xor_bits( const BitSpace &b1,  const BitSpace &b2 ) {
-    size_t min_sz = min_int<size_t>( b1.size, b2.size ),
-           max_sz = max_int<size_t>( b1.size, b2.size ), i;
-    this->make( max_sz, false );
-    for ( i = 0; i < min_sz; i++ )
-      this->ptr[ i ] = b1.ptr[ i ] ^ b2.ptr[ i ];
-    for ( ; i < max_sz && i < b1.size; i++ )
-      this->ptr[ i ] = b1.ptr[ i ];
-    for ( ; i < max_sz && i < b2.size; i++ )
-      this->ptr[ i ] = b2.ptr[ i ];
-  }
-  bool first( uint32_t &b ) const {
-    b = 0;
-    if ( this->size == 0 )
-      return false;
-    return this->scan( b );
-  }
-  bool next( uint32_t &b ) const {
-    if ( ++b >= this->size * WORD_BITS )
-      return false;
-    return this->scan( b );
-  }
-  bool scan( uint32_t &b ) const {
-    uint32_t off = b / WORD_BITS;
-    for (;;) {
-      uint64_t x = this->ptr[ off ] >> ( b % WORD_BITS );
-      if ( x == 0 ) {
-        b = ++off * WORD_BITS;
-        if ( (size_t) off >= this->size )
-          return false;
-      }
-      else {
-        if ( ( x & 1 ) != 0 )
-          return true;
-        b += kv_ffsl( x ) - 1;
-        return true;
-      }
-    }
-  }
-#if 0
-  bool rotate( uint32_t &b ) const {
-    if ( this->size == 0 )
-      return false;
-    size_t off = ++b / WORD_BITS,
-           cnt = 0;
-    if ( off >= this->size ) {
-      off = 0;
-      b   = 0;
-    }
-    for (;;) {
-      uint64_t x = this->ptr[ off ] >> ( b % WORD_BITS );
-      if ( x != 0 ) {
-        if ( ( x & 1 ) != 0 )
-          return true;
-        b += kv_ffsl( x ) - 1;
-        return true;
-      }
-      if ( ++off == this->size ) {
-        off = 0;
-        if ( ++cnt == 2 )
-          return false;
-      }
-      b = off * WORD_BITS;
-    }
-  }
-#endif
-  bool operator==( const BitSpace &x ) const {
-    size_t min_sz = min_int<size_t>( x.size, this->size ),
-           max_sz = max_int<size_t>( x.size, this->size ), i;
-    for ( i = 0; i < min_sz; i++ ) {
-      if ( x.ptr[ i ] != this->ptr[ i ] )
-        return false;
-    }
-    for ( ; i < max_sz && i < x.size; i++ )
-      if ( x.ptr[ i ] != 0 )
-        return false;
-    for ( ; i < max_sz && i < this->size; i++ )
-      if ( this->ptr[ i ] != 0 )
-        return false;
-    return true;
-  }
-  bool operator!=( const BitSpace &x ) const {
-    return ! ( *this == x );
-  }
-};
 
 struct BitIter64 {
   const uint64_t w;
@@ -346,6 +413,11 @@ struct UIntArray {
   }
   size_t index_word_size( size_t i ) {
     return UIntArray::index_word_size( this->bits, i );
+  }
+  void zero( size_t i ) {
+    size_t w = UIntArray::index_word_size( this->bits, i );
+    for ( i = 0; i < w; i++ )
+      this->ptr[ i ] = 0;
   }
   static size_t index_word_size( uint8_t bits,  size_t i ) {
     return ( i * (size_t) bits + 63 ) / 64;

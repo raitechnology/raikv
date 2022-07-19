@@ -1010,7 +1010,7 @@ forward_message( EvPublish &pub,  RoutePublish &sub_route,
                  Forward &fwd ) noexcept
 {
   RoutePublishCache cache( sub_route, pub.subject, pub.subject_len,
-                           pub.subj_hash );
+                           pub.subj_hash, pub.shard );
   /* likely cases <= 3 wildcard matches, most likely <= 1 match */
   if ( cache.n == 0 )
     return true;
