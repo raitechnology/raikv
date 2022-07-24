@@ -88,7 +88,7 @@ server_defines = -DKV_VER=$(ver_build)
 
 libraikv_files := key_ctx ht_linear ht_cuckoo key_hash msg_ctx ht_stats \
                   ht_init scratch_mem util rela_ts radix_sort print \
-		  ev_net route_db timer_queue stream_buf \
+		  ev_net route_db timer_queue stream_buf array_out \
 		  bloom monitor ev_tcp ev_udp ev_unix logger kv_pubsub
 libraikv_cfile := \
           $(foreach file, $(libraikv_files), $(wildcard src/$(file).cpp)) \

@@ -1,6 +1,8 @@
 #ifndef __rai_raikv__array_space_h__
 #define __rai_raikv__array_space_h__
 
+#include <raikv/util.h>
+
 namespace rai {
 namespace kv {
 
@@ -68,6 +70,19 @@ struct ArrayCount : public kv::ArraySpace<T, arsz> {
     this->ArraySpace<T, arsz>::zero();
     this->count = 0;
   }
+};
+
+struct ArrayOutput : public ArrayCount< char, 8192 > {
+  int puts( const char *s ) noexcept;
+  void putchar( char c ) noexcept;
+  int printf( const char *fmt,  ... ) noexcept __attribute__((format(printf,2,3)));
+  int vprintf( const char *fmt, va_list args ) noexcept;
+
+  ArrayOutput &nil( void ) noexcept;
+  ArrayOutput &s( const char *buf ) noexcept;
+  ArrayOutput &b( const char *buf,  size_t buf_len ) noexcept;
+  ArrayOutput &u( uint64_t n ) noexcept;
+  ArrayOutput &i( uint32_t n ) noexcept;
 };
 
 }
