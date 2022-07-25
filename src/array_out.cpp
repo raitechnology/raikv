@@ -55,25 +55,30 @@ ArrayOutput::vprintf( const char *fmt, va_list args ) noexcept
 ArrayOutput &
 ArrayOutput::nil( void ) noexcept
 {
-  *this->ptr++ = '\0';
+  char *p = this->make( this->count + 1 );
+  p[ this->count++ ] = '\0';
   return *this;
 }
 
 ArrayOutput &
 ArrayOutput::s( const char *buf ) noexcept
 {
-  this->count += ::strlen( buf );
-  this->make( this->count );
-  while ( *buf != 0 ) { *this->ptr++ = *buf++; }
+  if ( buf != NULL ) {
+    char * p = this->make( this->count + ::strlen( buf ) + 1 );
+    while ( *buf != 0 ) { p[ this->count++ ] = *buf++; }
+    p[ this->count ] = '\0';
+  }
   return *this;
 }
 
 ArrayOutput &
 ArrayOutput::b( const char *buf, size_t buf_len ) noexcept
 {
-  this->count += buf_len;
-  this->make( this->count );
-  while ( buf_len != 0 ) { *this->ptr++ = *buf++; buf_len -= 1; }
+  if ( buf != NULL && buf_len != 0 ) {
+    char * p = this->make( this->count + buf_len + 1 );
+    while ( buf_len != 0 ) { p[ this->count++ ] = *buf++; buf_len--; }
+    p[ this->count ] = '\0';
+  }
   return *this;
 }
 
@@ -81,10 +86,10 @@ ArrayOutput &
 ArrayOutput::u( uint64_t n ) noexcept
 {
   size_t len = uint64_digits( n );
+  char * p   = this->make( this->count + len + 1 );
+  uint64_to_string( n, &p[ this->count ], len );
   this->count += len;
-  this->make( this->count );
-  uint64_to_string( n, this->ptr, len );
-  this->ptr += len;
+  p[ this->count ] = '\0';
   return *this;
 }
 
@@ -92,10 +97,10 @@ ArrayOutput &
 ArrayOutput::i( uint32_t n ) noexcept
 {
   size_t len = uint32_digits( n );
+  char * p   = this->make( this->count + len + 1 );
+  uint32_to_string( n, &p[ this->count ], len );
   this->count += len;
-  this->make( this->count );
-  uint32_to_string( n, this->ptr, len );
-  this->ptr += len;
+  p[ this->count ] = '\0';
   return *this;
 }
 
