@@ -52,6 +52,12 @@ struct StreamBuf {
       this->hd = NULL;
       this->tl = NULL;
     }
+    size_t used_size( void ) {
+      size_t sz = 0;
+      for ( BufList *p = this->hd; p != NULL; p = p->next )
+        sz += p->used;
+      return sz;
+    }
     /* put used into this->tl */
     void append_list( BufQueue &q ) {
       if ( q.hd != NULL ) {
