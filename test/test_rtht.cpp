@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <assert.h>
 #include <raikv/route_ht.h>
+#include <raikv/key_hash.h>
 #include <raikv/util.h>
 #include <raikv/os_file.h>
 #include <raikv/array_space.h>
@@ -18,16 +19,8 @@
 using namespace rai;
 using namespace kv;
 
-uint32_t
-djb( const char *s,  size_t len )
-{
-  uint32_t key = 5381;
-  for ( ; len > 0; len -= 1 ) {
-    uint8_t c = (uint8_t) *s++;
-    key = (uint32_t) c ^ ( ( key << 5 ) + key );
-  }
-  return key;
-}
+#define hash_f( x, y ) kv_crc_c( x, y, 0 )
+/*#define hash_f( x, y ) kv_djb( x, y, 0 )*/
 
 struct SubTab : public RouteVec<RouteSub> {
   virtual void * new_vec_data( uint32_t id,  size_t sz ) noexcept {
@@ -158,7 +151,7 @@ main( int argc, char *argv[] )
           break;
         len = (const char *) p - w;
         if ( len > 0 ) {
-          h = djb( w, len );
+          h = hash_f( w, len );
           if ( vec.upsert( h, w, len ) != NULL )
             cnt++;
         }
@@ -183,7 +176,7 @@ main( int argc, char *argv[] )
         break;
       len = (const char *) p - w;
       if ( len > 0 ) {
-        h = djb( w, len );
+        h = hash_f( w, len );
         if ( vec.find( h, w, len ) != NULL )
           cnt++;
       }
@@ -205,7 +198,7 @@ main( int argc, char *argv[] )
         break;
       len = (const char *) p - w;
       if ( len > 0 ) {
-        h = djb( w, len );
+        h = hash_f( w, len );
         if ( vec.remove( h, w, len ) )
           cnt++;
       }
@@ -223,7 +216,7 @@ main( int argc, char *argv[] )
   if ( fail != NULL ) {
     char buf[ 8192 ];
     memcpy( buf, "one.", 5 );
-    h = djb( buf, 4 );
+    h = hash_f( buf, 4 );
     i = 0;
     isum = 0;
     for (;;) {
@@ -248,7 +241,7 @@ main( int argc, char *argv[] )
     }
     ::memcpy( buf, "anotherone", 11 );
     len = ::strlen( buf );
-    h = djb( buf, len );
+    h = hash_f( buf, len );
     if ( vec.upsert( h, buf, len ) == NULL ) {
       printf( "failed upsert\n" );
     }

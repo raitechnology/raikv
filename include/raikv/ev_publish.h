@@ -50,6 +50,15 @@ namespace kv {
  * Z  :  dictionary rpc request
  */
 
+enum EvPubStatus {
+  /* > 0 is count of messages lost when sequence skipped */
+  EV_PUB_NORMAL  = 0,  /* in sequence */
+  EV_MAX_LOSS    = 0x7fff, /* <= MAX_LOSS is message loss */
+  EV_PUB_START   = 0x8000, /* new stream started (from unique publisher) */
+  EV_PUB_CYCLE   = 0x8001, /* stream cycle, new start */
+  EV_PUB_RESTART = 0x8002  /* stream interrupted, restarted */
+};
+
 struct RoutePublish;
 struct EvPublish {
   const char   * subject;     /* target subject */
@@ -65,6 +74,7 @@ struct EvPublish {
                  shard;       /* route to shard */
   uint8_t        pub_type,    /* type of publish above */
                  prefix_cnt;  /* count of prefix[] */
+  uint16_t       pub_status;  /* EvPubStatus, if msg loss */
   uint32_t     * hash;        /* the prefix hashes which match */
   uint8_t      * prefix;      /* the prefixes which match */
 
@@ -72,13 +82,15 @@ struct EvPublish {
              const void *repl,  size_t repl_len,
              const void *mesg,  size_t mesg_len,
              RoutePublish &sub_rt,  uint32_t src,  uint32_t shash,
-             uint32_t msg_encoding,  uint8_t publish_type )
+             uint32_t msg_encoding,  uint8_t publish_type,
+             uint16_t status = 0 )
     : subject( subj ), reply( repl ), msg( mesg ),
       sub_route( sub_rt ), subject_len( (uint16_t) subj_len ),
       reply_len( (uint16_t) repl_len ), msg_len( (uint32_t) mesg_len ),
       subj_hash( shash ), src_route( src ),
-      msg_enc( msg_encoding ), shard( 0 ), pub_type( publish_type ),
-      prefix_cnt( 0 ), hash( 0 ), prefix( 0 ) {}
+      msg_enc( msg_encoding ), shard( 0 ),
+      pub_type( publish_type ), prefix_cnt( 0 ), pub_status( status ),
+      hash( 0 ), prefix( 0 ) {}
 
   EvPublish( const EvPublish &p )
     : subject( p.subject ), reply( p.reply ), msg( p.msg ),
@@ -86,7 +98,7 @@ struct EvPublish {
       reply_len( p.reply_len ), msg_len( p.msg_len ),
       subj_hash( p.subj_hash ), src_route( p.src_route ),
       msg_enc( p.msg_enc ), shard( p.shard ), pub_type( p.pub_type ),
-      prefix_cnt( 0 ), hash( 0 ), prefix( 0 ) {}
+      prefix_cnt( 0 ), pub_status( p.pub_status ), hash( 0 ), prefix( 0 ) {}
 };
 
 }

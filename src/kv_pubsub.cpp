@@ -435,18 +435,21 @@ KvPubSubPeer::on_msg( EvPublish &pub ) noexcept
   if ( pub.pub_type == 'K' )
     return true;
   KvEst e;
-  e.subject  ( pub.subject_len )
-   .reply    ( pub.reply_len )
-   .subj_hash()
-   .msg_enc  ()
-   .data     ( pub.msg_len );
+  e.subject    ( pub.subject_len )
+   .reply      ( pub.reply_len )
+   .subj_hash  ()
+   .msg_enc    ()
+   .pub_status ()
+   .data       ( pub.msg_len );
 
   KvMsg &m = *(new ( this->alloc_temp( e.len() ) ) KvMsg( KV_MSG_FWD ));
   m.subject  ( pub.subject, pub.subject_len )
    .reply    ( pub.reply, pub.reply_len )
    .subj_hash( pub.subj_hash )
-   .msg_enc  ( pub.msg_enc )
-   .data     ( pub.msg, pub.msg_len );
+   .msg_enc  ( pub.msg_enc );
+  if ( pub.pub_status != 0 )
+    m.pub_status( pub.pub_status );
+  m.data     ( pub.msg, pub.msg_len );
   this->append_iov( (void *) m.msg(), m.len() );
   this->msgs_sent++;
   return this->idle_push_write();
@@ -468,6 +471,8 @@ KvPubSubPeer::fwd_msg( KvMsgIn &msg ) noexcept
     msg.print();
   EvPublish pub( subject, subject_len, reply, reply_len, data, data_len,
                  this->sub_route, this->fd, subj_hash, msg_enc, 'K' );
+  if ( msg.is_set( KV_FLD_PUB_STATUS ) )
+    pub.pub_status = msg.get<uint16_t>( KV_FLD_PUB_STATUS );
   this->sub_route.forward_msg( pub );
 }
 
@@ -477,20 +482,21 @@ static const struct {
   bool p;
   const char *nm;
 } print_fld[] = {
-  { KV_FLD_CTX_ID,    4, 1, "ctx_id" },
-  { KV_FLD_TIME_NS,   8, 1, "time_ns" },
-  { KV_FLD_SUB_SEQNO, 8, 1, "sub_seqno" },
-  { KV_FLD_SUBJECT,   0, 1, "subject" },
-  { KV_FLD_REPLY,     0, 1, "reply" },
-  { KV_FLD_SUBJ_HASH, 4, 1, "subj_hash" },
-  { KV_FLD_SUB_COUNT, 4, 1, "sub_count" },
-  { KV_FLD_HASH_COLL, 1, 1, "hash_coll" },
-  { KV_FLD_PATTERN,   0, 1, "pattern" },
-  { KV_FLD_PAT_FMT,   1, 1, "pat_fmt" },
-  { KV_FLD_MSG_ENC,   4, 1, "msg_enc" },
-  { KV_FLD_DATA,      0, 0, "data" },
-  { KV_FLD_REF_NUM,   4, 1, "ref_num" },
-  { KV_FLD_NAME,      0, 1, "name" }
+  { KV_FLD_CTX_ID,      4, 1, "ctx_id" },
+  { KV_FLD_TIME_NS,     8, 1, "time_ns" },
+  { KV_FLD_SUB_SEQNO,   8, 1, "sub_seqno" },
+  { KV_FLD_SUBJECT,     0, 1, "subject" },
+  { KV_FLD_REPLY,       0, 1, "reply" },
+  { KV_FLD_SUBJ_HASH,   4, 1, "subj_hash" },
+  { KV_FLD_SUB_COUNT,   4, 1, "sub_count" },
+  { KV_FLD_HASH_COLL,   1, 1, "hash_coll" },
+  { KV_FLD_PATTERN,     0, 1, "pattern" },
+  { KV_FLD_PAT_FMT,     1, 1, "pat_fmt" },
+  { KV_FLD_MSG_ENC,     4, 1, "msg_enc" },
+  { KV_FLD_DATA,        0, 0, "data" },
+  { KV_FLD_REF_NUM,     4, 1, "ref_num" },
+  { KV_FLD_NAME,        0, 1, "name" },
+  { KV_FLD_PUB_STATUS,  2, 1, "pub_status" }
 };
 static const char * print_msg_name[] = kv_msg_name;
 

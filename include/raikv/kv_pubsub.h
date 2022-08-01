@@ -231,21 +231,22 @@ enum KvMsgType {
 }
 
 enum KvFieldType {
-  KV_FLD_CTX_ID    = 0,
-  KV_FLD_TIME_NS   = 1,
-  KV_FLD_SUB_SEQNO = 2,
-  KV_FLD_SUBJECT   = 3,
-  KV_FLD_REPLY     = 4,
-  KV_FLD_SUBJ_HASH = 5,
-  KV_FLD_SUB_COUNT = 6,
-  KV_FLD_HASH_COLL = 7,
-  KV_FLD_PATTERN   = 8,
-  KV_FLD_PAT_FMT   = 9,
-  KV_FLD_MSG_ENC   = 10,
-  KV_FLD_DATA      = 11,
-  KV_FLD_REF_NUM   = 12,
-  KV_FLD_NAME      = 13,
-  KV_FLD_MAX       = 14
+  KV_FLD_CTX_ID     = 0,
+  KV_FLD_TIME_NS    = 1,
+  KV_FLD_SUB_SEQNO  = 2,
+  KV_FLD_SUBJECT    = 3,
+  KV_FLD_REPLY      = 4,
+  KV_FLD_SUBJ_HASH  = 5,
+  KV_FLD_SUB_COUNT  = 6,
+  KV_FLD_HASH_COLL  = 7,
+  KV_FLD_PATTERN    = 8,
+  KV_FLD_PAT_FMT    = 9,
+  KV_FLD_MSG_ENC    = 10,
+  KV_FLD_DATA       = 11,
+  KV_FLD_REF_NUM    = 12,
+  KV_FLD_NAME       = 13,
+  KV_FLD_PUB_STATUS = 14,
+  KV_FLD_MAX        = 15
 };
 
 /* KvMsg :
@@ -294,27 +295,28 @@ struct KvMsg {
     this->off += 3 + sz;
     return *this;
   }
-  KvMsg & ctx_id( uint32_t i )    { return this->u( KV_FLD_CTX_ID, &i, 4 ); }
-  KvMsg & time_ns( uint64_t t )   { return this->u( KV_FLD_TIME_NS, &t, 8 ); }
-  KvMsg & sub_seqno( uint64_t n ) { return this->u( KV_FLD_SUB_SEQNO, &n, 8 ); }
+  KvMsg & ctx_id( uint32_t i )   { return this->u( KV_FLD_CTX_ID, &i, 4 ); }
+  KvMsg & time_ns( uint64_t t )  { return this->u( KV_FLD_TIME_NS, &t, 8 ); }
+  KvMsg & sub_seqno( uint64_t n ){ return this->u( KV_FLD_SUB_SEQNO, &n, 8 ); }
   KvMsg & subject( const char *s,  uint16_t len ) {
     return this->v16( KV_FLD_SUBJECT, len, s );
   }
   KvMsg & reply( const void *s,  uint16_t len ) {
     return this->v16( KV_FLD_REPLY, len, s );
   }
-  KvMsg & subj_hash( uint32_t h ) { return this->u( KV_FLD_SUBJ_HASH, &h, 4 ); }
-  KvMsg & sub_count( uint32_t n ) { return this->u( KV_FLD_SUB_COUNT, &n, 4 ); }
-  KvMsg & hash_coll( uint8_t c )  { return this->u( KV_FLD_HASH_COLL, &c, 1 ); }
+  KvMsg & subj_hash( uint32_t h ){ return this->u( KV_FLD_SUBJ_HASH, &h, 4 ); }
+  KvMsg & sub_count( uint32_t n ){ return this->u( KV_FLD_SUB_COUNT, &n, 4 ); }
+  KvMsg & hash_coll( uint8_t c ) { return this->u( KV_FLD_HASH_COLL, &c, 1 ); }
   KvMsg & pattern( const char *s,  uint16_t len ) {
     return this->v16( KV_FLD_PATTERN, len, s );
   }
-  KvMsg & pat_fmt( uint8_t f )    { return this->u( KV_FLD_PAT_FMT, &f, 1 ); }
-  KvMsg & msg_enc( uint32_t e )   { return this->u( KV_FLD_MSG_ENC, &e, 4 ); }
+  KvMsg & pat_fmt( uint8_t f )   { return this->u( KV_FLD_PAT_FMT, &f, 1 ); }
+  KvMsg & msg_enc( uint32_t e )  { return this->u( KV_FLD_MSG_ENC, &e, 4 ); }
+  KvMsg & pub_status( int16_t s ){ return this->u( KV_FLD_PUB_STATUS, &s, 2 ); }
   KvMsg & data( const void *s,  uint32_t len ) {
     return this->v32( KV_FLD_DATA, len, s );
   }
-  KvMsg & ref_num( uint32_t n )   { return this->u( KV_FLD_REF_NUM, &n, 4 ); }
+  KvMsg & ref_num( uint32_t n )  { return this->u( KV_FLD_REF_NUM, &n, 4 ); }
   KvMsg & name( const char *s,  uint32_t len ) {
     return this->v16( KV_FLD_NAME, len, s );
   }
@@ -345,6 +347,7 @@ struct KvEst {
   KvEst & pattern( uint16_t len ) { return this->u( len + 2 ); }
   KvEst & pat_fmt( void )         { return this->u( 1 ); }
   KvEst & msg_enc( void )         { return this->u( 4 ); }
+  KvEst & pub_status( void )      { return this->u( 2 ); }
   KvEst & data( uint32_t len )    { return this->u( len + 4 ); }
   KvEst & ref_num( void )         { return this->u( 4 ); }
   KvEst & name( uint32_t len )    { return this->u( len + 2 ); }
