@@ -12,6 +12,7 @@
 #endif
 #include <errno.h>
 #include <raikv/ev_net.h>
+#include <raikv/ev_tcp.h>
 
 using namespace rai;
 using namespace kv;
@@ -78,95 +79,276 @@ finish_init( SOCKET sock,  EvPoll &poll,  EvSocket &me,  struct sockaddr *addr,
 }
 #endif
 
-int
-EvUdp::listen2( const char *ip,  int port,  int opts,  const char *k,
-                uint32_t rte_id ) noexcept
+/* split dev;mcast-ip */
+static bool
+split_mcast( const char *ip, const char *&dev_ip, const char *&mcast_ip,
+             char *mcast_buf,  size_t buflen,  bool &is_hostname ) noexcept
 {
-  static int on = 1, off = 0;
-  int    status = 0;
-  SOCKET sock = INVALID_SOCKET;
-  char   svc[ 16 ];
-  struct addrinfo hints, * ai = NULL, * p = NULL;
+  const char *p;
+  if ( (p = ::strchr( ip, ';' )) == NULL )
+    return false;
+  size_t len = p - ip;
+  if ( len >= buflen )
+    return false;
+  if ( len == 0 ) { /* use hostname */
+    is_hostname = true;
+    if ( ::gethostname( mcast_buf, buflen ) != 0 )
+      return false;
+    len = ::strlen( mcast_buf );
+  }
+  else {
+    is_hostname = false;
+    ::memcpy( mcast_buf, ip, len );
+    mcast_buf[ len ] = '\0';
+  }
+  dev_ip = mcast_buf;
+  mcast_buf = &mcast_buf[ len + 1 ];
+  buflen -= len + 1;
+  len = ::strlen( p + 1 );
+  if ( len >= buflen )
+    return false;
+  ::memcpy( mcast_buf, p + 1, len );
+  mcast_buf[ len ] = '\0';
+  mcast_ip = mcast_buf;
+  return true;
+}
 
-  this->sock_opts = opts;
-  ::snprintf( svc, sizeof( svc ), "%d", port );
-  ::memset( &hints, 0, sizeof( struct addrinfo ) );
-  hints.ai_socktype = SOCK_DGRAM;
-  hints.ai_protocol = IPPROTO_UDP;
-  hints.ai_flags    = AI_PASSIVE;
-  switch ( opts & ( OPT_AF_INET6 | OPT_AF_INET ) ) {
-    case OPT_AF_INET:
-      hints.ai_family = AF_INET;
-      break;
-    case OPT_AF_INET6:
-      hints.ai_family = AF_INET6;
-      break;
-    default:
-    case OPT_AF_INET | OPT_AF_INET6:
-      hints.ai_family = AF_UNSPEC;
-      break;
-  }   
-  status = ::getaddrinfo( ip, svc, &hints, &ai );
-  if ( status != 0 )
-    return this->set_sock_err( EV_ERR_GETADDRINFO, get_errno() );
+namespace {
+struct UdpData {
+  EvUdp      & udp;
+  const char * ip;
+  AddrInfo     info;
+  struct sockaddr * ai_addr;
+  SOCKET sock;
+  int    port, opts, status;
+  bool   is_connect;
+  char   mcast_buf[ 256 ];
 
+  UdpData( EvUdp &udp_sock,  const char *ipaddr,  int p,
+           int sock_opts,  bool conn )
+    : udp( udp_sock ), ip( ipaddr ), ai_addr( 0 ),
+      sock( INVALID_SOCKET ), port( p ), opts( sock_opts ), status( 0 ),
+      is_connect( conn ) {}
+
+  bool multicast_setup( void ) noexcept;
+  bool unicast_setup( void ) noexcept;
+};
+}
+
+bool
+UdpData::multicast_setup( void ) noexcept
+{
+  const char * dev_ip, *mcast_ip;
+  struct addrinfo * p = NULL;
+  bool is_hostname = false;
+
+  if ( this->ip == NULL ||
+       ! split_mcast( this->ip, dev_ip, mcast_ip, this->mcast_buf,
+                      sizeof( this->mcast_buf ), is_hostname ) )
+    return false;
+
+  int op = this->opts | OPT_UDP;
+  if ( is_hostname ) /* allow gethostname() resolution */
+    op &= ~OPT_NO_DNS;
+  if ( this->is_connect )
+    op &= ~OPT_LISTEN;
+  else
+    op |= OPT_LISTEN;
+  this->status = this->info.get_address( dev_ip, port, op );
+
+  if ( this->status == 0 ) {
+    for ( p = this->info.ai; p != NULL; p = p->ai_next )
+      if ( p->ai_family == AF_INET )
+        break;
+  }
+  if ( p == NULL ) {
+    this->status = this->udp.set_sock_err( EV_ERR_GETADDRINFO, get_errno() );
+    if ( this->status == 0 )
+      this->status = -2;
+    return true;
+  }
+  uint32_t if_addr = ((struct sockaddr_in *) p->ai_addr)->sin_addr.s_addr;
+  struct ip_mreq mr;
+  ::memset( &mr, 0, sizeof( mr ) );
+  mr.imr_interface.s_addr = if_addr;
+
+  this->sock = ::socket( AF_INET, SOCK_DGRAM, IPPROTO_UDP );
+  if ( invalid_socket( this->sock ) )
+    return true;
+  this->status = ::setsockopt( this->sock, IPPROTO_IP, IP_MULTICAST_IF, (void *)
+                               &mr.imr_interface, sizeof( mr.imr_interface ) );
+  if ( this->status != 0 ) {
+    this->status = this->udp.set_sock_err( EV_ERR_MULTI_IF, get_errno() );
+    return true;
+  }
+  op |= OPT_NO_DNS;
+  this->status = this->info.get_address( mcast_ip, port, op );
+  if ( this->status != 0 ) {
+    this->status = this->udp.set_sock_err( EV_ERR_GETADDRINFO, get_errno() );
+    return true;
+  }
+  for ( p = this->info.ai; p != NULL; p = p->ai_next )
+    if ( p->ai_family == AF_INET )
+      break;
+  if ( p == NULL ) {
+    if ( ( op & OPT_VERBOSE ) != 0 )
+      show_error( "no address matches mcast" );
+    this->status = -3;
+    return true;
+  }
+  this->udp.PeerData::set_addr( p->ai_addr );
+  this->ai_addr = p->ai_addr;
+
+  struct sockaddr_in sa;
+  if ( this->is_connect ) {
+    ::memset( &sa, 0, sizeof( sa ) );
+    sa.sin_family = AF_INET;
+    sa.sin_addr.s_addr = if_addr;
+    sa.sin_port = 0;
+    this->status = bind_socket( this->sock, AF_INET, op,
+                                (struct sockaddr *) &sa, sizeof( sa ) );
+    if ( this->status != 0 ) {
+      this->status = this->udp.set_sock_err( EV_ERR_BIND, get_errno() );
+      return true;
+    }
+    status = ::connect( this->sock, p->ai_addr, (int) p->ai_addrlen );
+    if ( this->status != 0  ) {
+      this->status = this->udp.set_sock_err( EV_ERR_CONNECT, get_errno() );
+      return true;
+    }
+    this->udp.mode = EvUdp::MCAST_CONNECT;
+  }
+  else {
+    uint32_t mc_addr = ((struct sockaddr_in *) p->ai_addr)->sin_addr.s_addr;
+    ::memset( &sa, 0, sizeof( sa ) );
+    sa.sin_family = AF_INET;
+    sa.sin_addr.s_addr = mc_addr;
+    sa.sin_port = htons( this->port );
+    this->status = bind_socket( this->sock, AF_INET, op,
+                                (struct sockaddr *) &sa, sizeof( sa ) );
+    if ( this->status != 0 ) {
+      this->status = this->udp.set_sock_err( EV_ERR_BIND, get_errno() );
+      return true;
+    }
+    mr.imr_multiaddr.s_addr = mc_addr;
+    this->status = ::setsockopt( this->sock, IPPROTO_IP, IP_ADD_MEMBERSHIP,
+                                 (void *) &mr, sizeof( mr ) );
+    if ( this->status != 0 ) {
+      this->status = this->udp.set_sock_err( EV_ERR_ADD_MCAST, get_errno() );
+      return true;
+    }
+    this->udp.mode = EvUdp::MCAST_LISTEN;
+  }
+  return true;
+}
+
+bool
+UdpData::unicast_setup( void ) noexcept
+{
+  struct addrinfo * p = NULL;
+  const char * dev_ip, * mcast_ip;
+  bool is_hostname = false;
+
+  if ( this->ip == NULL )
+    dev_ip = NULL;
+  else if ( ! split_mcast( this->ip, dev_ip, mcast_ip, this->mcast_buf,
+                           sizeof( this->mcast_buf ), is_hostname ) )
+    dev_ip = this->ip;
+
+  int op = this->opts | OPT_UDP;
+  if ( is_hostname ) /* allow gethostname() resolution */
+    op &= ~OPT_NO_DNS;
+  if ( this->is_connect )
+    op &= ~OPT_LISTEN;
+  else
+    op |= OPT_LISTEN;
+  this->status = this->info.get_address( dev_ip, this->port, op );
+  if ( this->status != 0 ) {
+    this->status = this->udp.set_sock_err( EV_ERR_GETADDRINFO, get_errno() );
+    return false;
+  }
   /* try inet6 first, since it can listen to both ip stacks */
   for ( int fam = AF_INET6; ; fam = AF_INET ) {
-    for ( p = ai; p != NULL; p = p->ai_next ) {
-      if ( ( fam == AF_INET6 && ( opts & OPT_AF_INET6 ) != 0 ) ||
-           ( fam == AF_INET  && ( opts & OPT_AF_INET ) != 0 ) ) {
+    for ( p = this->info.ai; p != NULL; p = p->ai_next ) {
+      if ( ( fam == AF_INET6 && ( this->opts & OPT_AF_INET6 ) != 0 ) ||
+           ( fam == AF_INET  && ( this->opts & OPT_AF_INET ) != 0 ) ) {
         if ( fam == p->ai_family ) {
-          sock = ::socket( p->ai_family, SOCK_DGRAM, IPPROTO_UDP );
-          if ( invalid_socket( sock ) )
+          if ( ! invalid_socket( this->sock ) ) {
+            closesocket( this->sock );
+            this->sock = INVALID_SOCKET;
+          }
+          this->sock = ::socket( p->ai_family, SOCK_DGRAM, IPPROTO_UDP );
+          if ( sock < 0 )
             continue;
-          if ( fam == AF_INET6 && ( opts & OPT_AF_INET ) != 0 ) {
-            if ( ::setsockopt( sock, IPPROTO_IPV6, IPV6_V6ONLY, (char *) &off,
-                               sizeof( off ) ) != 0 )
-              if ( ( opts & OPT_VERBOSE ) != 0 )
+          static int off = 0;
+          if ( fam == AF_INET6 && ( this->opts & OPT_AF_INET ) != 0 ) {
+            if ( ::setsockopt( this->sock, IPPROTO_IPV6, IPV6_V6ONLY,
+                               (char *) &off, sizeof( off ) ) != 0 )
+              if ( ( this->opts & OPT_VERBOSE ) != 0 )
                 show_error( "warning: IPV6_V6ONLY" );
           }
-          if ( ( opts & OPT_REUSEADDR ) != 0 ) {
-            if ( ::setsockopt( sock, SOL_SOCKET, SO_REUSEADDR, (char *) &on,
-                               sizeof( on ) ) != 0 )
-              if ( ( opts & OPT_VERBOSE ) != 0 )
-                show_error( "warning: SO_REUSEADDR" );
+          this->udp.PeerData::set_addr( p->ai_addr );
+          this->ai_addr = p->ai_addr;
+
+          if ( this->is_connect ) {
+            this->status = ::connect( this->sock, p->ai_addr,
+                                      (int) p->ai_addrlen );
+            if ( this->status == 0 )
+              return true;
           }
-#ifdef SO_REUSEPORT
-          if ( ( opts & OPT_REUSEPORT ) != 0 ) {
-            if ( ::setsockopt( sock, SOL_SOCKET, SO_REUSEPORT, &on,
-                               sizeof( on ) ) != 0 )
-              if ( ( opts & OPT_VERBOSE ) != 0 )
-                show_error( "warning: SO_REUSEPORT" );
+          else {
+            this->status = bind_socket( this->sock, fam, op,
+                                        p->ai_addr, p->ai_addrlen );
+            if ( this->status == 0 )
+              return true;
           }
-#endif
-          status = ::bind( sock, p->ai_addr, (int) p->ai_addrlen );
-          if ( status == 0 )
-            goto break_loop;
-          closesocket( sock );
-          sock = INVALID_SOCKET;
         }
       }
     }
     if ( fam == AF_INET ) /* tried both */
       break;
   }
-break_loop:;
-  if ( status != 0 ) {
-    status = this->set_sock_err( EV_ERR_BIND, get_errno() );
-    goto fail;
+  if ( this->status != 0 ) {
+    if ( this->is_connect )
+      this->status = this->udp.set_sock_err( EV_ERR_CONNECT, get_errno() );
+    else
+      this->status = this->udp.set_sock_err( EV_ERR_BIND, get_errno() );
   }
-  if ( invalid_socket( sock ) ) {
-    status = this->set_sock_err( EV_ERR_SOCKET, get_errno() );
-    goto fail;
+  return true;
+}
+
+int
+EvUdp::listen2( const char *ip,  int port,  int opts,  const char *k,
+                uint32_t rte_id ) noexcept
+{
+  this->sock_opts = opts;
+  this->mode      = UNICAST;
+
+  UdpData data( *this, ip, port, opts, false );
+
+  bool is_mcast = false;
+  if ( ( opts & OPT_UNICAST ) == 0 )
+    is_mcast = data.multicast_setup();
+  if ( ! is_mcast ) {
+    if ( ! data.unicast_setup() )
+      return data.status;
   }
-  status = finish_init( sock, this->poll, *this, p->ai_addr, k, rte_id );
+
+  int    status = data.status;
+  SOCKET sock   = data.sock;
+
+  if ( status == 0 ) {
+    if ( invalid_socket( sock ) ) {
+      status = this->set_sock_err( EV_ERR_SOCKET, get_errno() );
+      goto fail;
+    }
+  }
+  status = finish_init( sock, this->poll, *this, data.ai_addr, k, rte_id );
   if ( status != 0 ) {
 fail:;
     if ( ! invalid_socket( sock ) )
       closesocket( sock );
   }
-  if ( ai != NULL )
-    ::freeaddrinfo( ai );
   return status;
 }
 
@@ -174,77 +356,34 @@ int
 EvUdp::connect( const char *ip,  int port,  int opts,  const char *k,
                 uint32_t rte_id ) noexcept
 {
-  static int off = 0;
-  int    status = 0;
-  SOCKET sock = INVALID_SOCKET;
-  char   svc[ 16 ];
-  struct addrinfo hints, * ai = NULL, * p = NULL;
-
   this->sock_opts = opts;
-  ::snprintf( svc, sizeof( svc ), "%d", port );
-  ::memset( &hints, 0, sizeof( struct addrinfo ) );
-  hints.ai_socktype = SOCK_DGRAM;
-  hints.ai_protocol = IPPROTO_UDP;
-  switch ( opts & ( OPT_AF_INET6 | OPT_AF_INET ) ) {
-    case OPT_AF_INET:
-      hints.ai_family = AF_INET;
-      break;
-    case OPT_AF_INET6:
-      hints.ai_family = AF_INET6;
-      break;
-    default:
-    case OPT_AF_INET | OPT_AF_INET6:
-      hints.ai_family = AF_UNSPEC;
-      break;
-  }
-  status = ::getaddrinfo( ip, svc, &hints, &ai );
-  if ( status != 0 )
-    return this->set_sock_err( EV_ERR_GETADDRINFO, get_errno() );
+  this->mode      = UNICAST;
 
-  /* try inet6 first, since it can listen to both ip stacks */
-  for ( int fam = AF_INET6; ; fam = AF_INET ) {
-    for ( p = ai; p != NULL; p = p->ai_next ) {
-      if ( ( fam == AF_INET6 && ( opts & OPT_AF_INET6 ) != 0 ) ||
-           ( fam == AF_INET  && ( opts & OPT_AF_INET ) != 0 ) ) {
-        if ( fam == p->ai_family ) {
-          sock = ::socket( p->ai_family, SOCK_DGRAM, IPPROTO_UDP );
-          if ( sock < 0 )
-            continue;
-          if ( fam == AF_INET6 && ( opts & OPT_AF_INET ) != 0 ) {
-            if ( ::setsockopt( sock, IPPROTO_IPV6, IPV6_V6ONLY, (char *) &off,
-                               sizeof( off ) ) != 0 )
-              if ( ( opts & OPT_VERBOSE ) != 0 )
-                show_error( "warning: IPV6_V6ONLY" );
-          }
-          this->PeerData::set_addr( p->ai_addr );
-          status = ::connect( sock, p->ai_addr, (int) p->ai_addrlen );
-          if ( status == 0 )
-            goto break_loop;
-          closesocket( sock );
-          sock = INVALID_SOCKET;
-        }
-      }
+  UdpData data( *this, ip, port, opts, true );
+
+  bool is_mcast = false;
+  if ( ( opts & OPT_UNICAST ) == 0 )
+    is_mcast = data.multicast_setup();
+  if ( ! is_mcast ) {
+    if ( ! data.unicast_setup() )
+      return data.status;
+  }
+
+  int    status = data.status;
+  SOCKET sock   = data.sock;
+
+  if ( status == 0 ) {
+    if ( invalid_socket( sock ) ) {
+      status = this->set_sock_err( EV_ERR_SOCKET, get_errno() );
+      goto fail;
     }
-    if ( fam == AF_INET ) /* tried both */
-      break;
   }
-break_loop:;
-  if ( status != 0 ) {
-    status = this->set_sock_err( EV_ERR_CONNECT, get_errno() );
-    goto fail;
-  }
-  if ( invalid_socket( sock ) ) {
-    status = this->set_sock_err( EV_ERR_SOCKET, get_errno() );
-    goto fail;
-  }
-  status = finish_init( sock, this->poll, *this, p->ai_addr, k, rte_id );
+  status = finish_init( sock, this->poll, *this, data.ai_addr, k, rte_id );
   if ( status != 0 ) {
 fail:;
     if ( ! invalid_socket( sock ) )
       closesocket( sock );
   }
-  if ( ai != NULL )
-    ::freeaddrinfo( ai );
   return status;
 }
 

@@ -63,6 +63,7 @@ void
 UnixListen::process_close( void ) noexcept
 {
   printf( "listen close\n" );
+  this->EvSocket::process_close();
 }
 
 void
@@ -97,6 +98,7 @@ UnixConn::process_close( void ) noexcept
 {
   printf( "close %.*s\n", (int) this->get_peer_address_strlen(),
           this->peer_address.buf );
+  this->EvSocket::process_close();
 }
 
 void
@@ -141,6 +143,7 @@ UnixPing::process_close( void ) noexcept
           this->peer_address.buf );
   if ( this->poll.quit == 0 )
     this->poll.quit = 1;
+  this->EvSocket::process_close();
 }
 
 void

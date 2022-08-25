@@ -2211,6 +2211,8 @@ EvSocket::err_string( EvSockErr err ) noexcept
     case EV_ERR_CONNECT:       return "ERR_CONNECT, connect addr failed";
     case EV_ERR_BAD_FD:        return "ERR_BAD_FD, fd invalid";
     case EV_ERR_SOCKET:        return "ERR_SOCKET, socket create failed";
+    case EV_ERR_MULTI_IF:      return "EV_ERR_MULTI_IF, set multicast interface";
+    case EV_ERR_ADD_MCAST:     return "EV_ERR_ADD_MCAST, join multicast network";
     default:                   return NULL;
   }
 }

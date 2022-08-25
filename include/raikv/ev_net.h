@@ -48,24 +48,41 @@ enum EvSockOpts {
   OPT_TCP_NODELAY = 4,  /* set TCP_NODELAY true */
   OPT_AF_INET     = 8,  /* use ip4 stack */
   OPT_AF_INET6    = 16, /* use ip6 stack */
-  OPT_KEEPALIVE   = 32, /* set SO_KEEPALIVE true */
-  OPT_LINGER      = 64, /* set SO_LINGER true, 10 secs */
-  OPT_READ_HI     = 128,/* set EV_READ_HI when read event occurs on poll */
-  OPT_NO_POLL     = 256,/* do not add fd to poll */
-  OPT_NO_CLOSE    = 512,/* do not close fd */
-  OPT_VERBOSE     = 1024,/* print errors stderr */
-  OPT_CONNECT_NB  = 2048, /* non-block connect */
+  OPT_KEEPALIVE   = 0x20, /* set SO_KEEPALIVE true */
+  OPT_LINGER      = 0x40, /* set SO_LINGER true, 10 secs */
+  OPT_READ_HI     = 0x80, /* set EV_READ_HI when read event occurs on poll */
+  OPT_NO_POLL     = 0x100, /* do not add fd to poll set */
+  OPT_NO_CLOSE    = 0x200, /* do not close fd */
+  OPT_VERBOSE     = 0x400, /* print errors stderr */
+  OPT_CONNECT_NB  = 0x800, /* non-block connect */
+  OPT_UNICAST     = 0x1000, /* force unicast mode even with mcast addr */
+  OPT_NO_DNS      = 0x2000, /* no dns resolution */
+  OPT_LISTEN      = 0x4000, /* is listener side */
+  OPT_UDP         = 0x8000, /* is udp */
 
+#define UDP    OPT_UDP
+#define LIST   OPT_LISTEN
+#define VERB   OPT_VERBOSE
+#define RDHI   OPT_READ_HI
+#define LING   OPT_LINGER
+#define ALIVE  OPT_KEEPALIVE
   /* opts inherited from listener, set in EvTcpListen::set_sock_opts()  */
-  ALL_TCP_ACCEPT_OPTS = OPT_TCP_NODELAY | OPT_KEEPALIVE | OPT_LINGER,
+  ALL_TCP_ACCEPT_OPTS       =                      LING | ALIVE |4,
 
-  DEFAULT_TCP_LISTEN_OPTS   = 1024|128|64|32|16|8|4|2|1,
-  DEFAULT_TCP_CONNECT_OPTS  = 1024|64|32|16|8|4,
-  DEFAULT_UDP_LISTEN_OPTS   = 1024|16|8|2|1,
-  DEFAULT_UDP_CONNECT_OPTS  = 1024|16|8,
-  DEFAULT_UNIX_LISTEN_OPTS  = 1024|1,
-  DEFAULT_UNIX_CONNECT_OPTS = 1024,
-  DEFAULT_UNIX_BIND_OPTS    = 1024|1
+  DEFAULT_TCP_LISTEN_OPTS   = LIST | VERB | RDHI | LING | ALIVE |16|8|4|2|1,
+  DEFAULT_TCP_CONNECT_OPTS  =        VERB |        LING | ALIVE |16|8|4,
+  DEFAULT_UDP_LISTEN_OPTS   = LIST | VERB |               UDP   |16|8|2|1,
+  DEFAULT_UDP_CONNECT_OPTS  =        VERB |               UDP   |16|8,
+  DEFAULT_UNIX_LISTEN_OPTS  = LIST | VERB |1,
+  DEFAULT_UNIX_CONNECT_OPTS =        VERB,
+  DEFAULT_UNIX_BIND_OPTS    =        VERB |1
+
+#undef UDP
+#undef LIST
+#undef VERB
+#undef RDHI
+#undef LING
+#undef ALIVE
 };
 
 enum EvSockFlags {
@@ -96,7 +113,9 @@ enum EvSockErr {
   EV_ERR_CONNECT       = 12, /* connect failed */
   EV_ERR_BAD_FD        = 13, /* fd is not valid */
   EV_ERR_SOCKET        = 14, /* failed to create socket */
-  EV_ERR_LAST          = 15 /* extend errors after LAST */
+  EV_ERR_MULTI_IF      = 15, /* set multicast interface */
+  EV_ERR_ADD_MCAST     = 16, /* join multicast network */
+  EV_ERR_LAST          = 17  /* extend errors after LAST */
 };
 bool ev_would_block( int err ) noexcept;
 
@@ -559,7 +578,12 @@ struct EvDgram : public EvSocket, public StreamBuf {
 };
 
 struct EvUdp : public EvDgram {
-  EvUdp( EvPoll &p, const uint8_t t ) : EvDgram( p, t, EV_DGRAM_BASE ) {}
+  enum Mode {
+    UNICAST, MCAST_LISTEN, MCAST_CONNECT
+  };
+  Mode mode;
+  EvUdp( EvPoll &p, const uint8_t t ) : EvDgram( p, t, EV_DGRAM_BASE ),
+    mode( UNICAST ) {}
 
   int listen2( const char *ip,  int port,  int opts,  const char *k,
                uint32_t rte_id ) noexcept;

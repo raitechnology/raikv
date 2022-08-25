@@ -180,7 +180,7 @@ struct Test {
   void test_int( void ) noexcept;
   void run( void ) noexcept;
   Test * copy( void ) noexcept {
-    void * p = ::malloc( sizeof( Test ) ); /* this is necessary */
+    void * p = ::aligned_malloc( sizeof( Test ) ); /* this is necessary */
     Test * t = new ( p ) Test( this->map, this->num_threads );
     t->test_count = this->test_count;
     t->load_pct   = this->load_pct;
@@ -486,6 +486,8 @@ Test::run( void ) noexcept
   }
   this->dbx_id = this->map.attach_db( this->ctx_id, this->db_num );
   this->init_hash_seed();
+  printf( "ctx_id %u dbx_id %u hs %lx %lx\n", this->ctx_id, this->dbx_id,
+          this->hs.hash1, this->hs.hash2 );
 
   if ( ! this->quiet ) {
     const char *s = print_map_geom( &this->map, this->ctx_id );
@@ -659,10 +661,11 @@ main( int argc, char *argv[] )
 
   /* if one thread */
   if ( nthr <= 1 ) {
-    test.run();
-    if ( test.quiet ) {
+    Test * test1 = test.copy();
+    test1->run();
+    if ( test1->quiet ) {
       printf( "1 %.1f ", (double) geom.map_size / 1024.0 / 1024.0 );
-      test.results.print_line();
+      test1->results.print_line();
     }
   }
 #ifndef _MSC_VER

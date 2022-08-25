@@ -58,9 +58,14 @@ struct ArrayCount : public kv::ArraySpace<T, arsz> {
     }
     return this->ptr[ n ];
   }
-  void push( T el ) {
+  T &push( T el ) {
+    return this->push( &el );
+  }
+  T &push( T *el = NULL ) {
     this->make( this->count + 1, true );
-    this->ptr[ this->count++ ] = el;
+    if ( el != NULL )
+      this->ptr[ this->count ] = *el;
+    return this->ptr[ this->count++ ];
   }
   void clear( void ) {
     this->reset();
