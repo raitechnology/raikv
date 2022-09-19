@@ -122,6 +122,7 @@ RoutePublish::init_shm( EvShm &shm ) noexcept
       fprintf( stderr, "Unable to open kv pub sub\n" );
       return -1;
     }
+#if 0
     void * p = ::malloc( sizeof( RedisKeyspaceNotify ) );
     if ( p == NULL ) {
       perror( "malloc" );
@@ -129,6 +130,7 @@ RoutePublish::init_shm( EvShm &shm ) noexcept
     }
     this->keyspace = new ( p ) RedisKeyspaceNotify( *this );
     this->add_route_notify( *this->keyspace );
+#endif
   }
   else if ( shm.ipc_name != NULL ) {
     if ( (this->pubsub =
@@ -1316,6 +1318,7 @@ RoutePublish::resolve_pcollisions( NotifyPattern &pat,  RouteRef &rte ) noexcept
   }
 }
 #endif
+#if 0
 /* modify keyspace route */
 void
 RedisKeyspaceNotify::update_keyspace_route( uint32_t &val,  uint16_t bit,
@@ -1410,6 +1413,7 @@ RedisKeyspaceNotify::on_reassert( uint32_t ,  RouteVec<RouteSub> &,
                                   RouteVec<RouteSub> & ) noexcept
 {
 }
+#endif
 void
 RoutePublish::notify_reassert( uint32_t fd, RouteVec<RouteSub> &sub_db,
                                RouteVec<RouteSub> &pat_db ) noexcept

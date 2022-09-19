@@ -932,7 +932,7 @@ struct RouteNotify {
   virtual void on_bloom_ref( BloomRef &ref ) noexcept;
   virtual void on_bloom_deref( BloomRef &ref ) noexcept;
 };
-
+#if 0
 struct RedisKeyspaceNotify : public RouteNotify {
   /* this should be moved to raids */
   uint32_t keyspace, /* route of __keyspace@N__ subscribes active */
@@ -958,11 +958,12 @@ struct RedisKeyspaceNotify : public RouteNotify {
   virtual void on_reassert( uint32_t fd,  RouteVec<RouteSub> &sub_db,
                             RouteVec<RouteSub> &pat_db ) noexcept;
 };
-
+#endif
 struct EvPoll;
 struct KvPubSub; /* manages pubsub through kv shm */
 struct HashTab;
 struct EvShm;
+/*struct RedisKeyspaceNotify;*/
 
 struct RoutePublish : public RouteDB {
   EvPoll  & poll;
@@ -970,7 +971,7 @@ struct RoutePublish : public RouteDB {
 
   DLinkList<RouteNotify> notify_list;
   KvPubSub             * pubsub;   /* cross process pubsub */
-  RedisKeyspaceNotify  * keyspace; /* update sub_route.key_flags */
+  void                 * keyspace; /* update sub_route.key_flags */
 
   const char * service_name;
   uint32_t     svc_id,
