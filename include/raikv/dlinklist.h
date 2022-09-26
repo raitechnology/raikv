@@ -90,30 +90,6 @@ struct DLinkList {
     }
     return p;
   }
-  LIST *unlink( LIST *p,  LIST *piv = NULL ) {
-    if ( p == NULL || this->hd == NULL )
-      return NULL;
-    for (;;) {
-      if ( piv == NULL || p == this->hd ) {
-        if ( p == this->hd ) {
-          if ( (this->hd = p->next) == NULL ) {
-            this->tl = NULL;
-            return p;
-          }
-        }
-      }
-      if ( piv != NULL && piv->next == p ) {
-        piv->next = p->next;
-        if ( p == this->tl )
-          this->tl = piv;
-        return p;
-      }
-      for ( piv = this->hd; piv->next != p; ) {
-        if ( (piv = piv->next) == NULL )
-          return NULL;
-      }
-    }
-  }
 };
 
 template <class LIST>

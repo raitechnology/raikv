@@ -556,7 +556,7 @@ KvPubSubPeer::hello_msg( KvMsgIn &msg ) noexcept
 
   if ( msg.is_field_missing() )
     return;
-  this->me.peer_set.add( this->fd );
+  /*this->me.peer_set.add( this->fd );*/
   if ( kv_ps_debug )
     msg.print();
   if ( tab_len > 0 ) {
@@ -802,8 +802,10 @@ KvPubSubPeer::release( void ) noexcept
     this->drop_bloom_refs();
   if ( this->time_ns != 0 )
     this->drop_sub_tab();
-  this->me.peer_set.remove( this->fd );
-  this->me.peer_list.unlink( this );
+  if ( this->me.peer_set.is_member( this->fd ) ) {
+    this->me.peer_set.remove( this->fd );
+    this->me.peer_list.pop( this );
+  }
   this->EvConnection::release_buffers();
 }
 
