@@ -11,8 +11,9 @@ using namespace rai;
 using namespace kv;
 
 BloomBits *
-BloomBits::resize( BloomBits *b,  uint32_t seed,  uint32_t shft1,
-                   uint32_t shft2,  uint32_t shft3,  uint32_t shft4 ) noexcept
+BloomBits::resize( BloomBits *b,  uint32_t seed,  uint8_t width,
+                   uint32_t shft1,  uint32_t shft2,  uint32_t shft3,
+                   uint32_t shft4 ) noexcept
 {
   if ( b != NULL ) {
     if ( b->count < b->resize_count / 8 ) /* make smaller */
@@ -51,7 +52,8 @@ BloomBits::resize( BloomBits *b,  uint32_t seed,  uint32_t shft1,
   }
   void    * p      = ::realloc( (void *) b, sz );
   uint8_t * bits   = &((uint8_t *) p)[ sizeof( BloomBits ) ];
-  return new ( p ) BloomBits( bits, shft1, shft2, shft3, shft4, seed, ht );
+  return new ( p )
+    BloomBits( bits, shft1, shft2, shft3, shft4, seed, width, ht );
 }
 
 struct UIntElem {
@@ -110,20 +112,23 @@ BloomCodec::encode_int( const uint32_t *values, uint32_t &nvals ) noexcept
 static const uint32_t HT_COUNT   = 0x80000000U, /* 8 | 4 | 2 | 1 = ht[0..3] */
                       LOW26_FLAG = 0x08000000U,
                       BIG25_FLAG = 0x04000000U;
+static bool delta_threshold( const BloomBits &bits ) {
+  return ( bits.width > (size_t) 0x8000 && bits.width / bits.count > 2 );
+}
+
 void
 BloomCodec::encode_geom( const BloomBits &bits ) noexcept
 {
   uint32_t   i    = this->code_sz,
              j    = 0,
              k,
-           * code = this->make( i + 8 );
-  code[ i ]  = bits.SHFT1 << 24;
-  code[ i ] |= bits.SHFT2 << 16;
-  code[ i ] |= bits.SHFT3 << 8;
-  code[ i ] |= bits.SHFT4;
-  i++;
-  code[ i ]  = bits.seed;
-  i++;
+           * code = this->make( i + 16 );
+  code[ i ]    = bits.SHFT1 << 24;
+  code[ i ]   |= bits.SHFT2 << 16;
+  code[ i ]   |= bits.SHFT3 << 8;
+  code[ i++ ] |= bits.SHFT4;
+  code[ i++ ]  = bits.seed;
+  code[ i++ ]  = bits.bwidth;
   for ( k = 0; k < 4; k++ )
     if ( bits.ht[ k ]->elem_count != 0 )
       j |= HT_COUNT >> k;
@@ -150,7 +155,7 @@ BloomCodec::encode_bloom( const BloomBits &bits ) noexcept
 {
   this->size_hdr( bits.count / 2 + bits.count / 4 );/* about 2.5 bytes / count*/
   this->encode_geom( bits );
-  if ( bits.count * 2 < bits.resize_count ) {
+  if ( delta_threshold( bits ) ) {
     size_t   k = 0;
     uint32_t values[ MAX_VALUES ], nvals = 0;
     if ( bits.first( k ) ) {
@@ -398,16 +403,26 @@ BloomBits *
 BloomCodec::decode_geom( const uint32_t *buf,  uint32_t &len,
                          uint32_t *elem_count ) noexcept
 {
-  if ( len < 2 )
+  if ( len < 3 )
     return NULL;
-  uint8_t  shft1 = buf[ 0 ] >> 24,
-           shft2 = ( buf[ 0 ] >> 16 ) & 0xff,
-           shft3 = ( buf[ 0 ] >> 8 ) & 0xff,
-           shft4 = buf[ 0 ] & 0xff;
-  uint32_t seed  = buf[ 1 ];
+  uint8_t  shft1  = buf[ 0 ] >> 24,
+           shft2  = ( buf[ 0 ] >> 16 ) & 0xff,
+           shft3  = ( buf[ 0 ] >> 8 ) & 0xff,
+           shft4  = buf[ 0 ] & 0xff;
+  uint32_t seed   = buf[ 1 ];
+  uint8_t  bwidth = buf[ 2 ];
 
-  BloomBits * bits = BloomBits::resize( NULL, seed, shft1, shft2, shft3, shft4);
-  uint32_t    i = 2,
+  if ( shft1 + shft2 + shft3 + shft4 > 64 ||
+       BloomBits::get_resize( shft1, shft2, shft3, shft4, bwidth ) == 0 ) {
+    fprintf( stderr, "invalid shift %u %u %u %u width=%u\n",
+             shft1, shft2, shft3, shft4, bwidth );
+    return NULL;
+  }
+  BloomBits * bits =
+    BloomBits::resize( NULL, seed, bwidth, shft1, shft2, shft3, shft4 );
+  if ( bits == NULL )
+    return NULL;
+  uint32_t    i = 3,
               j,
               k = buf[ i++ ];
 
@@ -441,7 +456,7 @@ BloomCodec::decode_bloom( const uint32_t *buf,  uint32_t len,
   if ( bits == NULL )
     return NULL;
 
-  if ( bits->count * 2 < bits->resize_count ) {
+  if ( delta_threshold( *bits ) ) {
     uint32_t last = 0,
              values[ MAX_VALUES ], nvals;
     for ( uint32_t i = off; i < len; ) {

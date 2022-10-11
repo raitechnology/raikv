@@ -321,13 +321,13 @@ TestDB::add_bloom_routes( void ) noexcept
       if ( this->rdb[ j ].is_member( val ) ) {
         if ( this->brt[ val ] == NULL ) {
           BloomRef * ref = this->rte.create_bloom_ref(
-            NULL, BloomBits::resize( NULL, 0 ), "test",
+            NULL, BloomBits::resize( NULL, 0, 20 ), "test",
             this->rte.g_bloom_db );
           this->brt[ val ] = this->rte.create_bloom_route( val, ref, 0 );
         }
         if ( this->brt[ val ]->bloom[ 0 ]->add( h ) ) {
           BloomBits * bits = this->brt[ val ]->bloom[ 0 ]->bits;
-          bits = BloomBits::resize( bits, 0 );
+          bits = BloomBits::resize( bits, 0, 20 );
           for ( uint32_t k = 0; k <= j; k++ ) {
             if ( this->rdb[ k ].is_member( val ) ) {
               bits->add( hash_int( k + 1 ) );

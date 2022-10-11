@@ -6,7 +6,7 @@ rpmdir := $(shell pwd)
 
 git_hash    := $(shell git rev-parse --short=8 HEAD)
 major_num   := 1
-minor_num   := 19
+minor_num   := 20
 patch_num   := 0
 build_num   := 101
 version     := $(major_num).$(minor_num).$(patch_num)

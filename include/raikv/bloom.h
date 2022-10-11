@@ -31,15 +31,16 @@ struct BloomBits {
   const size_t   resize_count;               /* when to resize bloom */
   UIntHashTab  * ht[ 4 ];
   WORD         * bits;
+  const uint8_t  bwidth;
 
   static size_t get_width( uint32_t shft1, uint32_t shft2, uint32_t shft3,
                            uint32_t shft4 ) {
    return ( ( (size_t) 1U << shft1 ) / 8 ) + ( ( (size_t) 1U << shft2 ) / 8 ) +
           ( ( (size_t) 1U << shft3 ) / 8 ) + ( ( (size_t) 1U << shft4 ) / 8 );
   }
-  static size_t get_resize( uint32_t shft1, uint32_t shft2, uint32_t shft3,
-                            uint32_t shft4 ) {
-    static const uint8_t N = 20; /* balance false rate vs size */
+  static size_t get_resize( uint32_t shft1,  uint32_t shft2,  uint32_t shft3,
+                            uint32_t shft4,  uint32_t N ) {
+    /* static const uint8_t N = 20; balance false rate vs size */
     /* using /usr/share/dict/words as the test data
      * speed          false rate  bits/entry  bloom bits  entries  mem usage
      * 13.9 ns/lookup   <= 0.02%   33.0 bits  (8,8,8,8)        31       128
@@ -61,7 +62,7 @@ struct BloomBits {
     if ( shft4 != 0 )
       resz /= 13 + N; /* 13+N bits/entry ( 4 slices not 16 bits ) */
     else if ( shft3 == 0 )
-      resz /= 25 + N; /* 19+N bits/entry ( 2 slices or 16 bits ) */
+      resz /= 25 + N; /* 25+N bits/entry ( 2 slices or 16 bits ) */
     else
       resz /= 16 + N; /* 16+N bits/entry ( 3 slices ) */
     return resz;
@@ -76,11 +77,11 @@ struct BloomBits {
   uint32_t SIZE4( void ) const { return ( 1U << this->SHFT4 ) / WORD_BIT_SIZE; }
 
   BloomBits( void *b, uint32_t shft1, uint32_t shft2, uint32_t shft3,
-             uint32_t shft4,  uint32_t sd,  UIntHashTab **tab )
+             uint32_t shft4,  uint32_t sd,  uint8_t width,  UIntHashTab **tab )
      : SHFT1( shft1 ), SHFT2( shft2 ), SHFT3( shft3 ), SHFT4( shft4 ),
-       seed( sd ), width( get_width( shft1, shft2, shft3, shft4 ) ),
-       count( 0 ), resize_count( get_resize( shft1, shft2, shft3, shft4 ) ),
-       bits( (WORD *) b ) {
+       seed( sd ), width( get_width( shft1, shft2, shft3, shft4 ) ), count( 0 ),
+       resize_count( get_resize( shft1, shft2, shft3, shft4, width ) ),
+       bits( (WORD *) b ), bwidth( width ) {
     if ( tab == NULL ) {
       for ( int i = 0; i < 4; i++ )
         this->ht[ i ] = UIntHashTab::resize( NULL );
@@ -102,7 +103,7 @@ struct BloomBits {
   void operator delete( void *ptr ) { ::free( ptr ); }
 
   /* resize() doubles the size of the table, but does not populate it */
-  static BloomBits *resize( BloomBits *b,  uint32_t seed,
+  static BloomBits *resize( BloomBits *b,  uint32_t seed,  uint8_t width,
                             uint32_t shft1 = 8,  uint32_t shft2 = 8,
                             uint32_t shft3 = 8,  uint32_t shft4 = 8 ) noexcept;
   /* if resize needed */

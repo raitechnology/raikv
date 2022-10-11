@@ -150,39 +150,42 @@ filter_count( BloomBits *filter,  uint32_t n ) noexcept
 }
 
 void
-test_filter( void ) noexcept
+test_filter( uint8_t width,  size_t *elem_count,  double *false_ratio,
+             size_t &cnt ) noexcept
 {
   uint32_t n, h;
   uint64_t t1, t2;
-  double false_ratio;
-  BloomBits * filter = BloomBits::resize( NULL, 0 );
+  cnt = 0;
+  BloomBits * filter = BloomBits::resize( NULL, 0, width );
   for ( n = 0; n < words_cnt; ) {
     h = hash_word( word[ n ], word_len[ n ] );
     filter->add( h );
     if ( filter->test_resize() ) {
       serialize( *filter );
-      size_t elem_count = 0;
+      size_t collision_cnt = 0;
       for ( int i = 0; i < 4; i++ )
-        elem_count += filter->ht[ i ]->elem_count;
+        collision_cnt += filter->ht[ i ]->elem_count;
       t1 = current_monotonic_time_ns();
       if ( filter_count( filter, n ) != n ) {
         printf( "!!! failed filter_count( %u )\n", n );
       }
-      false_ratio = false_rate( filter, n + 1 ),
+      elem_count[ cnt ] = n;
+      false_ratio[ cnt ] = false_rate( filter, n + 1 ),
       t2 = current_monotonic_time_ns();
       printf( "%.1f ns/lookup %.2f%% false rate\n",
-              (double) ( t2 - t1 ) / (double) words_cnt, false_ratio );
+              (double) ( t2 - t1 ) / (double) words_cnt, false_ratio[ cnt ] );
       printf( "resize cnt %u (%.1f bits) "
               "(%" PRIu64 " ht coll) %" PRIu64 "(%u,%u,%u,%u) -> ",
-              n, (double) filter->width * 8.0 / (double) n, elem_count,
+              n, (double) filter->width * 8.0 / (double) n, collision_cnt,
               filter->width, filter->SHFT1, filter->SHFT2, filter->SHFT3,
               filter->SHFT4 );
       fflush( stdout );
-      filter = BloomBits::resize( filter, 0 );
+      filter = BloomBits::resize( filter, 0, width );
       printf( "%" PRIu64 " (%u,%u,%u,%u)\n", 
               filter->width, filter->SHFT1, filter->SHFT2, filter->SHFT3,
               filter->SHFT4 );
       fflush( stdout );
+      cnt++;
       n = 0;
     }
     else {
@@ -197,6 +200,7 @@ test_filter( void ) noexcept
   printf( "%.1f ns/lookup for %u words (%.2f us total time)\n",
           (double) ( t2 - t1 ) / (double) words_cnt, words_cnt,
           (double) ( t2 - t1 ) / 1000.0 );
+  delete filter;
 }
 
 int
@@ -211,6 +215,27 @@ main( int argc,  const char *argv[] )
   MapFile map( input );
   if ( ! map.open() || ! load_words( map ) )
     return 1;
-  test_filter();
+
+  size_t elem_count[ 1024 ];
+  double false_ratio[ 1024 ];
+  size_t cnt[ ( 64 - 12 ) / 4 ];
+  size_t i = 0, off = 0;
+  uint8_t width;
+  for ( width = 12; width < 64; width += 4 ) {
+    test_filter( width, &elem_count[ off ], &false_ratio[ off ], cnt[ i ] );
+    off += cnt[ i ];
+    i++;
+  }
+  i = 0;
+  off = 0;
+  for ( width = 12; width < 64; width += 4 ) {
+    printf( "width:%u -- ", width );
+    for ( size_t j = 0; j < cnt[ i ]; j++ ) {
+      printf( "%lu=%.2f%% ", elem_count[ off + j ], false_ratio[ off + j ] );
+    }
+    printf( "\n" );
+    off += cnt[ i ];
+    i++;
+  }
   return 0;
 }

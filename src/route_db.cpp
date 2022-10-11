@@ -760,7 +760,7 @@ BloomRef::BloomRef( uint32_t seed,  const char *nm,  BloomDB &db ) noexcept
   this->name[ sizeof( this->name ) - 1 ] = '\0';
   ::memset( this->pref_count, 0, sizeof( this->pref_count ) );
   db[ this->ref_num ] = this;
-  this->update_route( NULL, BloomBits::resize( NULL, seed ), NULL, 0 );
+  this->update_route( NULL, BloomBits::resize( NULL, seed, 52 ), NULL, 0 );
 }
 
 BloomRef::BloomRef( BloomBits *b,  const uint32_t *pref,
