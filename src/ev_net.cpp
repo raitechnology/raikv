@@ -1903,8 +1903,8 @@ EvConnection::write( void ) noexcept
 #ifndef _MSC_VER
   struct msghdr h;
   ::memset( &h, 0, sizeof( h ) );
-  h.msg_iov    = &strm.iov[ strm.woff ];
-  h.msg_iovlen = strm.idx - strm.woff;
+  h.msg_iov    = strm.iov;
+  h.msg_iovlen = strm.idx;
   if ( h.msg_iovlen == 1 ) {
     nbytes = ::send( this->fd, h.msg_iov[ 0 ].iov_base,
                      h.msg_iov[ 0 ].iov_len, MSG_NOSIGNAL );
@@ -1918,8 +1918,7 @@ EvConnection::write( void ) noexcept
     }
   }
 #else
-  nbytes = ::wp_send( this->fd, &strm.iov[ strm.woff ],
-                      strm.idx - strm.woff );
+  nbytes = ::wp_send( this->fd, &strm.iov[ 0 ], strm.idx );
 #endif
   if ( nbytes > 0 ) {
     strm.wr_pending -= nbytes;
@@ -1931,20 +1930,26 @@ EvConnection::write( void ) noexcept
       this->push( EV_READ_LO );
     }
     else {
+      size_t woff = 0;
       for (;;) {
-        size_t iov_len = strm.iov[ strm.woff ].iov_len;
+        size_t iov_len = strm.iov[ woff ].iov_len;
         if ( (size_t) nbytes >= iov_len ) {
           nbytes -= iov_len;
-          strm.woff++;
+          woff++;
           if ( nbytes == 0 )
             break;
         }
         else {
-          char *base = (char *) strm.iov[ strm.woff ].iov_base;
-          strm.iov[ strm.woff ].iov_len -= nbytes;
-          strm.iov[ strm.woff ].iov_base = &base[ nbytes ];
+          char *base = (char *) strm.iov[ woff ].iov_base;
+          strm.iov[ woff ].iov_len -= nbytes;
+          strm.iov[ woff ].iov_base = &base[ nbytes ];
           break;
         }
+      }
+      if ( woff > 0 ) {
+        ::memmove( &strm.iov[ 0 ], &this->iov[ woff ],
+                   sizeof( this->iov[ 0 ] ) * ( this->idx - woff ) );
+        this->idx -= woff;
       }
     }
     return;

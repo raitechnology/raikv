@@ -89,8 +89,7 @@ struct StreamBuf {
   size_t  wr_pending;  /* how much is in send buffers total */
   char  * out_buf;     /* current buffer to fill, up to BUFSIZE */
   size_t  sz,          /* sz bytes in out_buf */
-          idx,         /* head data in iov[] to send */
-          woff;        /* offset of iov[] sent, tail, idx >= woff */
+          idx;         /* head data in iov[] to send */
   bool    alloc_fail;  /* if alloc send buffers below failed */
   iovec * iov;         /* output vectors written to stream */
   size_t  vlen;        /* length of iov[] */
@@ -110,7 +109,6 @@ struct StreamBuf {
     if ( offset == 0 ) {
       this->sz         = 0;
       this->idx        = 0;
-      this->woff       = 0;
       this->wr_pending = 0;
       this->out_buf    = NULL;
       return;
@@ -173,7 +171,6 @@ struct StreamBuf {
     this->out_buf    = NULL;
     this->sz         = 0;
     this->idx        = 0;
-    this->woff       = 0;
     this->alloc_fail = false;
   }
   void reset( void ) {
