@@ -14,7 +14,9 @@ BuildRequires:  chrpath
 BuildRequires:  systemd
 BuildRequires:  pcre2-devel
 BuildRequires:  git-core
+BuildRequires:  c-ares-devel
 Requires:       pcre2
+Requires:       c-ares
 Requires(pre): shadow-utils
 Requires(post): /sbin/ldconfig
 Requires(postun): /sbin/ldconfig, /usr/sbin/userdel, /usr/sbin/groupdel
