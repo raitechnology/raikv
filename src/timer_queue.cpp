@@ -144,6 +144,26 @@ EvTimerQueue::remove_timer( int32_t id,  uint64_t timer_id,
   return this->queue.remove( el );
 }
 
+bool
+EvTimerQueue::remove_timer_cb( EvTimerCallback &tcb,  uint64_t timer_id,
+                               uint64_t event_id ) noexcept
+{
+  uint32_t id;
+  for ( id = 0; id < this->cb_sz; id++ ) {
+    if ( this->cb[ id ] == &tcb )
+      break;
+  }
+  if ( id == this->cb_sz )
+    return false;
+  EvTimerEvent el;
+  el.id          = -(id+1);
+  el.ival        = 0;
+  el.timer_id    = timer_id;
+  el.next_expire = 0;
+  el.event_id    = event_id;
+  return this->queue.remove( el );
+}
+
 void
 EvTimerQueue::repost( void ) noexcept
 {
@@ -324,6 +344,13 @@ TimerQueue::remove_timer( int32_t id,  uint64_t timer_id,
                           uint64_t event_id ) noexcept
 {
   return this->queue->remove_timer( id, timer_id, event_id );
+}
+
+bool
+TimerQueue::remove_timer_cb( EvTimerCallback &tcb,  uint64_t timer_id,
+                             uint64_t event_id ) noexcept
+{
+  return this->queue->remove_timer_cb( tcb, timer_id, event_id );
 }
 
 uint64_t

@@ -56,6 +56,8 @@ struct EvTimerQueue : public EvSocket {
   /* if timer_id exists remove and return true */
   bool remove_timer( int32_t id,  uint64_t timer_id,
                      uint64_t event_id ) noexcept;
+  bool remove_timer_cb( EvTimerCallback &tcb,  uint64_t timer_id,
+                        uint64_t event_id ) noexcept;
   void repost( void ) noexcept;
   bool set_timer( void ) noexcept;
 #ifndef HAVE_TIMERFD

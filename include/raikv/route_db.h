@@ -769,6 +769,9 @@ struct PeerAddrStr {
     this->buf[ 63 ] = '\0';
   }
   void set_addr( const struct sockaddr *sa ) noexcept;
+  size_t len( void ) const {
+    return get_strlen64( this->buf );
+  }
 
   void init_ctx( uint32_t ctx_id ) {
     ::memcpy( this->buf, "ctx:", 4 );
@@ -1162,6 +1165,8 @@ struct TimerQueue {
                         uint64_t timer_id,  uint64_t event_id ) noexcept;
   bool remove_timer( int32_t id,  uint64_t timer_id,
                      uint64_t event_id ) noexcept;
+  bool remove_timer_cb( EvTimerCallback &tcb,  uint64_t timer_id,
+                        uint64_t event_id ) noexcept;
   /* when a timer expires, these are updated */
   uint64_t current_monotonic_time_ns( void ) noexcept;
   uint64_t current_time_ns( void ) noexcept;
