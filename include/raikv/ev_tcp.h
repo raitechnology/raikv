@@ -40,6 +40,8 @@ namespace EvTcpConnection {
                int opts ) noexcept;
   int connect2( EvConnection &conn,  const char *ip,  int port,
                 int opts,  const char *k,  uint32_t rte_id ) noexcept;
+  int connect3( EvConnection &conn,  const struct addrinfo *addr_list,
+                int opts,  const char *k,  uint32_t rte_id ) noexcept;
 }
 
 }

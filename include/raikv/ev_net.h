@@ -136,9 +136,9 @@ struct EvSocket : public PeerData /* fd and address of peer */EV_DBG_INHERIT {
   EvPoll      & poll;       /* the parent container */
   uint64_t      prio_cnt;   /* timeslice each socket for a slot to run */
   uint32_t      sock_state; /* bit mask of states, the queues the sock is in */
-  uint16_t      sock_opts;  /* sock opt bits above */
+  uint16_t      sock_opts;  /* sock opt bits above (OPT_NO_POLL) */
   const uint8_t sock_type;  /* listen or connection */
-  uint8_t       sock_flags; /* in active list or free list */
+  uint8_t       sock_flags; /* in active list or free list (IN_ACIIVE_LIST) */
   uint16_t      sock_err,   /* error condition */
                 sock_errno;
   const uint8_t sock_base;
@@ -164,8 +164,10 @@ struct EvSocket : public PeerData /* fd and address of peer */EV_DBG_INHERIT {
   bool test_opts( EvSockOpts o ) const {
     return ( this->sock_opts & o ) != 0;
   }
+  /* flags: IN_ACTIVE_LIST, IN_FREE_LIST, IN_EVENT_QUEUE, IN_WRITE_QUEUE,
+   *        IN_EPOLL_READ, IN_EPOLL_WRITE, IN_SOCK_MEM */
   bool test_flags( EvSockFlags f,  uint16_t test ) const {
-    if ( f == IN_NO_LIST )
+    if ( f == IN_NO_LIST ) /* zero */
       return ( this->sock_flags & test ) == 0;
     return ( this->sock_flags & f ) != 0;
   }
@@ -179,14 +181,16 @@ struct EvSocket : public PeerData /* fd and address of peer */EV_DBG_INHERIT {
     this->sock_flags &= ~( IN_ACTIVE_LIST | IN_FREE_LIST );
     this->sock_flags |= l;
   }
-  /* if in event queue  */
+  /* if in event queue or write queue */
   bool in_queue( EvSockFlags q ) const {
     return this->test_flags( q, IN_EVENT_QUEUE | IN_WRITE_QUEUE );
   }
+  /* either event or write queue, not both */
   void set_queue( EvSockFlags q ) {
     this->sock_flags &= ~( IN_EVENT_QUEUE | IN_WRITE_QUEUE );
     this->sock_flags |= q;
   }
+  /* either read or write epoll, not both */
   void set_poll( EvSockFlags p ) {
     this->sock_flags &= ~( IN_EPOLL_READ | IN_EPOLL_WRITE );
     this->sock_flags |= p;
@@ -296,6 +300,12 @@ struct EvPoll {
     if ( s->in_queue( IN_NO_QUEUE ) ) {
       s->set_queue( IN_EVENT_QUEUE );
       this->ev_queue.push( s );
+    }
+  }
+  void remove_event_queue( EvSocket *s ) {
+    if ( s->in_queue( IN_EVENT_QUEUE ) ) {
+      s->set_queue( IN_NO_QUEUE );
+      this->ev_queue.remove( s );
     }
   }
   /* sock is blocked on a write, add to epoll set and write queue, if

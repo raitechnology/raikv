@@ -337,9 +337,15 @@ EvPoll::remove_sock( EvSocket *s ) noexcept
   struct epoll_event event;
   if ( s->fd < 0 )
     return;
+  if ( s->in_list( IN_FREE_LIST ) ) {
+    fprintf( stderr, "!!! removing free list sock\n" );
+    return;
+  }
   /* remove poll set */
   if ( (uint32_t) s->fd <= this->maxfd && this->sock[ s->fd ] == s ) {
-    if ( ! s->test_opts( OPT_NO_POLL ) ) {
+    if ( ! s->test_opts( OPT_NO_POLL ) ) { /* if is a epoll sock */
+      if ( s->in_poll( IN_EPOLL_WRITE ) )
+        this->wr_count--;
       s->set_poll( IN_NO_LIST );
       ::memset( &event, 0, sizeof( struct epoll_event ) );
       event.data.fd = s->fd;
@@ -361,6 +367,11 @@ EvPoll::remove_sock( EvSocket *s ) noexcept
     if ( status != 0 )
       s->set_sock_err( EV_ERR_CLOSE, errno );
   }
+  /* remove from queues, if in them */
+  this->remove_event_queue( s );
+  this->remove_write_queue( s );
+  s->popall();
+
   if ( s->in_list( IN_ACTIVE_LIST ) ) {
     s->client_stats( this->peer_stats );
     s->set_list( IN_NO_LIST );
@@ -1482,10 +1493,7 @@ EvPoll::process_quit( void ) noexcept
     /* wait for socks to flush data for up to 5 interations */
     do {
       if ( this->quit >= 5 ) {
-        if ( s->in_queue( IN_EVENT_QUEUE ) ) {
-          s->set_queue( IN_NO_QUEUE );
-          this->ev_queue.remove( s ); /* close state */
-        }
+        this->remove_event_queue( s );
         if ( s->sock_state != 0 )
           s->popall();
         s->push( EV_CLOSE );
@@ -1677,10 +1685,8 @@ EvSocket::client_kill( void ) noexcept
 {
   /* if already shutdown, close up immediately */
   if ( this->test( EV_SHUTDOWN ) != 0 ) {
-    if ( this->in_queue( IN_EVENT_QUEUE ) ) {
-      this->set_queue( IN_NO_QUEUE );
-      this->poll.ev_queue.remove( this ); /* close state */
-    }
+    this->poll.remove_event_queue( this );
+    this->poll.remove_write_queue( this );
     if ( this->sock_state != 0 )
       this->popall();
     this->idle_push( EV_CLOSE );
@@ -2297,10 +2303,7 @@ EvSocket::idle_push( EvState s ) noexcept
           x2 = kv_ffsw( this->sock_state | ( 1 << s ) );
       /* new state has higher priority than current state, reorder queue */
       if ( x1 > x2 ) {
-        if ( this->in_queue( IN_EVENT_QUEUE ) ) {
-          this->set_queue( IN_NO_QUEUE );
-          this->poll.ev_queue.remove( this );
-        }
+        this->poll.remove_event_queue( this );
         goto do_push; /* pop, then push */
       }
       /* otherwise, current state >= the new state, in the correct order */

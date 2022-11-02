@@ -493,54 +493,56 @@ int
 EvTcpConnection::connect2( EvConnection &conn,  const char *ip,  int port,
                            int opts,  const char *k,  uint32_t rte_id ) noexcept
 {
+  AddrInfo info;
+  int status = info.get_address( ip, port, opts );
+  if ( status != 0 )
+    return conn.set_sock_err( EV_ERR_GETADDRINFO, get_errno() );
+  return connect3( conn, info.ai, opts, k, rte_id );
+}
+
+int
+EvTcpConnection::connect3( EvConnection &conn, const struct addrinfo *addr_list,
+                           int opts,  const char *k,  uint32_t rte_id ) noexcept
+{
   /* for setsockopt() */
   static int  off = 0;
   int      status = 0;
   SOCKET   sock = INVALID_SOCKET;
-  AddrInfo info;
-  struct addrinfo * p = NULL;
+  const struct addrinfo * p = NULL;
   struct sockaddr_storage addr;
   socklen_t addrlen = sizeof( addr );
   struct sockaddr * peer_addr;
 
   conn.sock_opts = opts;
-  status = info.get_address( ip, port, opts );
-  if ( status != 0 )
-    return conn.set_sock_err( EV_ERR_GETADDRINFO, get_errno() );
   /* try inet6 first, since it can listen to both ip stacks */
-  for ( int fam = AF_INET6; ; fam = AF_INET ) {
-    for ( p = info.ai; p != NULL; p = p->ai_next ) {
-      if ( ( fam == AF_INET6 && ( opts & OPT_AF_INET6 ) != 0 ) ||
-           ( fam == AF_INET  && ( opts & OPT_AF_INET ) != 0 ) ) {
-        if ( fam == p->ai_family ) {
-          sock = ::socket( p->ai_family, p->ai_socktype, p->ai_protocol );
-          if ( sock < 0 )
-            continue;
-          if ( fam == AF_INET6 && ( opts & OPT_AF_INET ) != 0 ) {
-            if ( ::setsockopt( sock, IPPROTO_IPV6, IPV6_V6ONLY, (char *) &off,
-                               sizeof( off ) ) != 0 )
-              if ( ( opts & OPT_VERBOSE ) != 0 )
-                show_error( "warning: IPV6_V6ONLY" );
-          }
-          tcp_set_sock_opts( conn.poll, sock, opts );
-          conn.PeerData::set_addr( p->ai_addr );
-          if ( ( opts & OPT_CONNECT_NB ) != 0 )
-            set_nonblock( sock );
-          status = ::connect( sock, p->ai_addr, (int) p->ai_addrlen );
-          if ( status == 0 )
-            goto break_loop;
-          if ( ( opts & OPT_CONNECT_NB ) != 0 &&
-               ev_would_block( get_errno() ) ) {
-            status = 0;
-            goto break_loop;
-          }
-          closesocket( sock );
-          sock = INVALID_SOCKET;
-        }
+  for ( p = addr_list; p != NULL; p = p->ai_next ) {
+    int fam = p->ai_family;
+    if ( ( fam == AF_INET6 && ( opts & OPT_AF_INET6 ) != 0 ) ||
+         ( fam == AF_INET  && ( opts & OPT_AF_INET ) != 0 ) ) {
+      sock = ::socket( fam, p->ai_socktype, p->ai_protocol );
+      if ( sock < 0 )
+        continue;
+      if ( fam == AF_INET6 && ( opts & OPT_AF_INET ) != 0 ) {
+        if ( ::setsockopt( sock, IPPROTO_IPV6, IPV6_V6ONLY, (char *) &off,
+                           sizeof( off ) ) != 0 )
+          if ( ( opts & OPT_VERBOSE ) != 0 )
+            show_error( "warning: IPV6_V6ONLY" );
       }
+      tcp_set_sock_opts( conn.poll, sock, opts );
+      conn.PeerData::set_addr( p->ai_addr );
+      if ( ( opts & OPT_CONNECT_NB ) != 0 )
+        set_nonblock( sock );
+      status = ::connect( sock, p->ai_addr, (int) p->ai_addrlen );
+      if ( status == 0 )
+        goto break_loop;
+      if ( ( opts & OPT_CONNECT_NB ) != 0 &&
+           ev_would_block( get_errno() ) ) {
+        status = 0;
+        goto break_loop;
+      }
+      closesocket( sock );
+      sock = INVALID_SOCKET;
     }
-    if ( fam == AF_INET ) /* tried both */
-      break;
   }
 break_loop:;
   if ( status != 0 ) {
