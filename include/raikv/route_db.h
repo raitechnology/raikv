@@ -696,15 +696,17 @@ struct PeerStats {
            bytes_sent,
            accept_cnt,
            msgs_recv,
-           msgs_sent;
+           msgs_sent,
+           active_ns;
   PeerStats() : bytes_recv( 0 ), bytes_sent( 0 ), accept_cnt( 0 ),
-                msgs_recv( 0 ), msgs_sent( 0 ) {}
+                msgs_recv( 0 ), msgs_sent( 0 ), active_ns( 0 ) {}
   void zero( void ) {
     this->bytes_recv = 0;
     this->bytes_sent = 0;
     this->accept_cnt = 0;
     this->msgs_recv  = 0;
     this->msgs_sent  = 0;
+    this->active_ns  = 0;
   }
 };
 #if 0

@@ -115,7 +115,8 @@ enum EvSockErr {
   EV_ERR_SOCKET        = 14, /* failed to create socket */
   EV_ERR_MULTI_IF      = 15, /* set multicast interface */
   EV_ERR_ADD_MCAST     = 16, /* join multicast network */
-  EV_ERR_LAST          = 17  /* extend errors after LAST */
+  EV_ERR_CONN_SELF     = 17, /* connected to self */
+  EV_ERR_LAST          = 18  /* extend errors after LAST */
 };
 bool ev_would_block( int err ) noexcept;
 

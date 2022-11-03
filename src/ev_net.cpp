@@ -1725,6 +1725,8 @@ EvSocket::client_stats( PeerStats &ps ) noexcept
   ps.bytes_sent += this->bytes_sent;
   ps.msgs_recv  += this->msgs_recv;
   ps.msgs_sent  += this->msgs_sent;
+  if ( this->active_ns > ps.active_ns )
+    ps.active_ns = this->active_ns;
 }
 
 void
@@ -1758,6 +1760,8 @@ void
 EvListen::client_stats( PeerStats &ps ) noexcept
 {
   ps.accept_cnt += this->accept_cnt;
+  if ( this->active_ns > ps.active_ns )
+    ps.active_ns = this->active_ns;
 }
 
 bool
@@ -2228,6 +2232,7 @@ EvSocket::err_string( EvSockErr err ) noexcept
     case EV_ERR_SOCKET:        return "ERR_SOCKET, socket create failed";
     case EV_ERR_MULTI_IF:      return "EV_ERR_MULTI_IF, set multicast interface";
     case EV_ERR_ADD_MCAST:     return "EV_ERR_ADD_MCAST, join multicast network";
+    case EV_ERR_CONN_SELF:     return "EV_ERR_CONN_SELF, connected to self";
     default:                   return NULL;
   }
 }
