@@ -74,7 +74,7 @@ struct BitSpaceT : public ArraySpace<T, 2> {
   }
   void and_bits( const BitSpaceT &b1,  const BitSpaceT &b2 ) {
     size_t min_sz = min_int<size_t>( b1.size, b2.size );
-    this->make( min_sz, false );
+    this->make( min_sz, true );
     for ( size_t i = 0; i < min_sz; i++ )
       this->ptr[ i ] = b1.ptr[ i ] & b2.ptr[ i ];
     if ( this->size > min_sz )
@@ -84,7 +84,7 @@ struct BitSpaceT : public ArraySpace<T, 2> {
   void or_bits( const BitSpaceT &b1,  const BitSpaceT &b2 ) {
     size_t min_sz = min_int<size_t>( b1.size, b2.size ),
            max_sz = max_int<size_t>( b1.size, b2.size ), i;
-    this->make( max_sz, false );
+    this->make( max_sz, true );
     for ( i = 0; i < min_sz; i++ )
       this->ptr[ i ] = b1.ptr[ i ] | b2.ptr[ i ];
     for ( ; i < max_sz && i < b1.size; i++ )
@@ -95,7 +95,7 @@ struct BitSpaceT : public ArraySpace<T, 2> {
   void xor_bits( const BitSpaceT &b1,  const BitSpaceT &b2 ) {
     size_t min_sz = min_int<size_t>( b1.size, b2.size ),
            max_sz = max_int<size_t>( b1.size, b2.size ), i;
-    this->make( max_sz, false );
+    this->make( max_sz, true );
     for ( i = 0; i < min_sz; i++ )
       this->ptr[ i ] = b1.ptr[ i ] ^ b2.ptr[ i ];
     for ( ; i < max_sz && i < b1.size; i++ )
