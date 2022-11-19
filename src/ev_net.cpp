@@ -1615,6 +1615,8 @@ EvSocket::match( PeerMatchArgs &ka ) noexcept
 int
 EvSocket::client_list( char *buf,  size_t buflen ) noexcept
 {
+  if ( buflen == 0 )
+    return 0;
   /* id=1082 addr=[::1]:43362 fd=8 name= age=1 idle=0 flags=N */
   static const uint64_t ONE_NS = 1000000000;
   uint64_t cur_time_ns = this->poll.current_coarse_ns();
@@ -1626,7 +1628,7 @@ EvSocket::client_list( char *buf,  size_t buflen ) noexcept
    * psub=pattern subs, multi=cmds qbuf=query buf size, qbuf-free=free
    * qbuf, obl=output buf len, oll=outut list len, omem=output mem usage,
    * events=sock rd/wr, cmd=last cmd issued */
-  return ::snprintf( buf, buflen,
+  int n = ::snprintf( buf, buflen,
     "id=%" PRIu64 " addr=%.*s fd=%d name=%.*s kind=%s age=%" PRId64 " idle=%" PRId64 " ",
     this->PeerData::id,
     (int) this->PeerData::get_peer_address_strlen(),
@@ -1636,6 +1638,7 @@ EvSocket::client_list( char *buf,  size_t buflen ) noexcept
     this->PeerData::kind,
     ( cur_time_ns - this->PeerData::start_ns ) / ONE_NS,
     ( cur_time_ns - this->PeerData::active_ns ) / ONE_NS );
+  return min_int( n, (int) buflen - 1 );
 }
 
 bool
@@ -1706,8 +1709,10 @@ EvConnection::match( PeerMatchArgs &ka ) noexcept
 int
 EvConnection::client_list( char *buf,  size_t buflen ) noexcept
 {
+  if ( buflen == 0 )
+    return 0;
   int i = this->EvSocket::client_list( buf, buflen );
-  if ( i >= 0 ) {
+  if ( i >= 0 && (size_t) i < buflen - 1 ) {
     i += ::snprintf( &buf[ i ], buflen - (size_t) i,
       "rbuf=%u rsz=%u imsg=%" PRIu64 " br=%" PRIu64 " wbuf=%" PRIu64 " wsz=%" PRIu64 " omsg=%" PRIu64 " bs=%" PRIu64 " ",
       this->len - this->off, this->recv_size, this->msgs_recv, this->bytes_recv,
@@ -1715,7 +1720,7 @@ EvConnection::client_list( char *buf,  size_t buflen ) noexcept
       this->tmp.fast_len + this->tmp.block_cnt * this->tmp.alloc_size,
       this->msgs_sent, this->bytes_sent );
   }
-  return i;
+  return min_int( i, (int) buflen - 1 );
 }
 
 void
@@ -1748,12 +1753,14 @@ EvListen::match( PeerMatchArgs &ka ) noexcept
 int
 EvListen::client_list( char *buf,  size_t buflen ) noexcept
 {
+  if ( buflen == 0 )
+    return 0;
   int i = this->EvSocket::client_list( buf, buflen );
-  if ( i >= 0 ) {
+  if ( i >= 0 && i < (int) buflen - 1 ) {
     i += ::snprintf( &buf[ i ], buflen - (size_t) i,
                      "acpt=%" PRIu64 " ", this->accept_cnt );
   }
-  return i;
+  return min_int( i, (int) buflen - 1 );
 }
 
 void
@@ -1773,14 +1780,16 @@ EvUdp::match( PeerMatchArgs &ka ) noexcept
 int
 EvUdp::client_list( char *buf,  size_t buflen ) noexcept
 {
+  if ( buflen == 0 )
+    return 0;
   int i = this->EvSocket::client_list( buf, buflen );
-  if ( i >= 0 ) {
+  if ( i >= 0 && i < (int) buflen - 1 ) {
     i += ::snprintf( &buf[ i ], buflen - (size_t) i,
                      "imsg=%" PRIu64 " omsg=%" PRIu64 " br=%" PRIu64 " bs=%" PRIu64 " ",
                      this->msgs_recv, this->msgs_sent,
                      this->bytes_recv, this->bytes_sent );
   }
-  return i;
+  return min_int( i, (int) buflen - 1 );
 }
 
 PeerData *
@@ -2269,17 +2278,23 @@ EvSocket::print_sock_error( char *out,  size_t outlen ) noexcept
     olen = outlen;
   }
   off = ::snprintf( o, olen, "Sock" );
-  if ( s != NULL )
+  if ( s != NULL && off < olen )
     off += ::snprintf( &o[ off ], olen - off, " error=%u/%s",
                        this->sock_err, s );
-  off += ::snprintf( &o[ off ], olen - off, " fd=%d state=%x name=%s peer=%s",
-               this->fd, this->sock_state, this->name, this->peer_address.buf );
-  if ( e != NULL )
-    off += ::snprintf( &o[ off ], olen - off, " errno=%u/%s",
-                       this->sock_errno, e );
-  else if ( this->sock_err == EV_ERR_WRITE_TIMEOUT )
-    off += ::snprintf( &o[ off ], olen - off, " %u seconds",
-                       this->sock_errno );
+  if ( off < olen )
+    off += ::snprintf( &o[ off ], olen - off, " fd=%d state=%x name=%s peer=%s",
+                 this->fd, this->sock_state, this->name, this->peer_address.buf );
+  if ( e != NULL ) {
+    if ( off < olen )
+      off += ::snprintf( &o[ off ], olen - off, " errno=%u/%s",
+                         this->sock_errno, e );
+  }
+  else if ( this->sock_err == EV_ERR_WRITE_TIMEOUT ) {
+    if ( off < olen )
+      off += ::snprintf( &o[ off ], olen - off, " %u seconds",
+                         this->sock_errno );
+  }
+  off = min_int( off, olen - 1 );
   if ( out == NULL )
     ::fprintf( stderr, "%.*s\n", (int) off, buf );
   return off;
