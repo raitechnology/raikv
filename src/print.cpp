@@ -21,14 +21,14 @@ static size_t xnprintf( char *&b,  size_t &sz,  const char *format, ... ) gcc_pr
 static size_t
 xnprintf( char *&b,  size_t &sz,  const char *format, ... )
 {
-#ifndef va_copy
-#define va_copy( dst, src ) memcpy( &( dst ), &( src ), sizeof( va_list ) )
-#endif
   va_list args;
   size_t  x;
+  if ( sz == 0 ) return 0;
   va_start( args, format );
   x = vsnprintf( b, sz, format, args );
   va_end( args );
+  if ( x >= sz )
+    x = sz - 1;
   b   = &b[ x ];
   sz -= x;
   return x;

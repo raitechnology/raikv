@@ -489,6 +489,28 @@ EvSocket::process_close( void ) noexcept
   this->poll.push_free_list( this );
 }
 
+size_t
+EvSocket::get_userid( char userid[ MAX_USERID_LEN ] ) noexcept
+{
+  userid[ 0 ] = '\0';
+  return 0;
+}
+/* get session name */
+size_t
+EvSocket::get_session( const char *,  size_t,
+                       char session[ MAX_SESSION_LEN ] ) noexcept
+{
+  session[ 0 ] = '\0';
+  return 0;
+}
+/* get session name */
+size_t
+EvSocket::get_subscriptions( SubRouteDB &,  SubRouteDB &,
+                             int & ) noexcept
+{
+  return 0;
+}
+
 /* thsee are optional, but not necessary for a working protocol */
 /* timer, return true to rearm same interval */
 bool EvSocket::timer_expire( uint64_t, uint64_t ) noexcept { return false; }
@@ -1426,8 +1448,8 @@ RedisKeyspaceNotify::on_reassert( uint32_t ,  RouteVec<RouteSub> &,
 }
 #endif
 void
-RoutePublish::notify_reassert( uint32_t fd, RouteVec<RouteSub> &sub_db,
-                               RouteVec<RouteSub> &pat_db ) noexcept
+RoutePublish::notify_reassert( uint32_t fd,  SubRouteDB &sub_db,
+                               SubRouteDB &pat_db ) noexcept
 {
   for ( RouteNotify *p = this->notify_list.hd; p != NULL; p = p->next ) {
     p->on_reassert( fd, sub_db, pat_db );
@@ -1441,6 +1463,10 @@ RouteNotify::on_sub( NotifySub &sub ) noexcept
           sub.subject_len, sub.subject, sub.reply_len, sub.reply,
           sub.subj_hash, sub.src_fd, sub.sub_count, sub.hash_collision,
           sub.src_type );
+}
+void
+RouteNotify::on_resub( NotifySub & ) noexcept
+{
 }
 void
 RouteNotify::on_unsub( NotifySub &sub ) noexcept
@@ -1459,6 +1485,10 @@ RouteNotify::on_psub( NotifyPattern &pat ) noexcept
           pat.src_type );
 }
 void
+RouteNotify::on_repsub( NotifyPattern & ) noexcept
+{
+}
+void
 RouteNotify::on_punsub( NotifyPattern &pat ) noexcept
 {
   printf( "on_punsub( sub=%.*s, h=0x%x, fd=%u, cnt=%u, col=%u, %c )\n",
@@ -1467,8 +1497,7 @@ RouteNotify::on_punsub( NotifyPattern &pat ) noexcept
           pat.hash_collision, pat.src_type );
 }
 void
-RouteNotify::on_reassert( uint32_t, RouteVec<RouteSub> &,
-                          RouteVec<RouteSub> & ) noexcept
+RouteNotify::on_reassert( uint32_t,  SubRouteDB &,  SubRouteDB & ) noexcept
 {
 }
 void
@@ -1792,7 +1821,7 @@ EvUdp::client_list( char *buf,  size_t buflen ) noexcept
   return min_int( i, (int) buflen - 1 );
 }
 
-PeerData *
+EvSocket *
 PeerMatchIter::first( void ) noexcept
 {
   /* go to the front */
@@ -1801,11 +1830,11 @@ PeerMatchIter::first( void ) noexcept
   return this->next(); /* match the next */
 }
 
-PeerData *
+EvSocket *
 PeerMatchIter::next( void ) noexcept
 {
   while ( this->p != NULL ) { /* while peers to match */
-    PeerData & x = *this->p;
+    EvSocket & x = *this->p;
     this->p = x.next;
     if ( ( &x == &this->me && this->ka.skipme ) || /* match peer */
          ! x.match( this->ka ) )

@@ -42,11 +42,14 @@ ArrayOutput::vprintf( const char *fmt, va_list args ) noexcept
   int n, len = 1024;
   for (;;) {
     char * p = this->make( this->count + len );
-    n = ::vsnprintf( &p[ this->count ], len, fmt, args );
+    va_list cpy;
+    va_copy( cpy, args );
+    n = ::vsnprintf( &p[ this->count ], len, fmt, cpy );
     if ( n < len ) {
       this->count += n;
       break;
     }
+    va_end( cpy );
     len += 1024;
   }
   return n;

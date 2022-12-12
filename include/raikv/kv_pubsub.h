@@ -195,8 +195,8 @@ struct KvPubSub : public KVPS_LISTEN, public RouteNotify {
                 PsSubType t,  PatternFmt f = (PatternFmt) 0 ) noexcept;
   bool rem_sub( uint32_t h,  const char *sub,  uint16_t sublen,
                 PsSubType t,  PatternFmt f = (PatternFmt) 0 ) noexcept;
-  virtual void on_reassert( uint32_t fd,  RouteVec<RouteSub> &sub_db,
-                            RouteVec<RouteSub> &pat_db ) noexcept;
+  virtual void on_reassert( uint32_t fd,  SubRouteDB &sub_db,
+                            SubRouteDB &pat_db ) noexcept;
   virtual void on_bloom_ref( BloomRef &ref ) noexcept;
   virtual void on_bloom_deref( BloomRef &ref ) noexcept;
 };

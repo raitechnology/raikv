@@ -909,6 +909,8 @@ struct RouteVec {
   }
 };
 
+typedef RouteVec<RouteSub> SubRouteDB;
+
 }
 }
 

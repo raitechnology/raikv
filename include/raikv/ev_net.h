@@ -261,6 +261,16 @@ struct EvSocket : public PeerData /* fd and address of peer */EV_DBG_INHERIT {
   /* complete close, called after release, use to log or printf: EV_CLOSE */
   virtual void process_close( void ) noexcept;
 
+  static const size_t MAX_USERID_LEN  = 64;
+  static const size_t MAX_SESSION_LEN = 64;
+  /* get session name */
+  virtual size_t get_userid( char userid[ MAX_USERID_LEN ] ) noexcept;
+  /* get session name */
+  virtual size_t get_session( const char *svc,  size_t svc_len,
+                              char session[ MAX_SESSION_LEN ] ) noexcept;
+  /* get session name */
+  virtual size_t get_subscriptions( SubRouteDB &subs,  SubRouteDB &pats,
+                                    int &pattern_fmt ) noexcept;
   /* PeerData */
   /* sprint socket info to buf */
   virtual int client_list( char *buf,  size_t buflen ) noexcept;

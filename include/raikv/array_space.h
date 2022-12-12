@@ -90,6 +90,64 @@ struct ArrayOutput : public ArrayCount< char, 8192 > {
   ArrayOutput &i( uint32_t n ) noexcept;
 };
 
+template <class T>
+struct CatPtrT {
+  char * start, * ptr;
+  CatPtrT( char *out ) { this->ptr = this->start = out; }
+  size_t len( void ) {
+    return this->ptr - this->start;
+  }
+  T &b( const void *mem,  size_t len ) {
+    ::memcpy( this->ptr, mem, len );
+    this->ptr += len;
+    return (T &) *this;
+  }
+  T &x( const void *mem,  size_t sz ) {
+    const char *m = (const char *) mem;
+    do { *this->ptr++ = *m++; } while ( --sz > 0 );
+    return (T &) *this;
+  }
+  T &s( const char *str ) {
+    while ( *str )
+      *this->ptr++ = *str++;
+    return (T &) *this;
+  }
+  T &c( char ch ) {
+    *this->ptr++ = ch;
+    return (T &) *this;
+  }
+  T &u( uint64_t n,  size_t d ) {
+    this->ptr += uint64_to_string( n, this->ptr, d );
+    return (T &) *this;
+  }
+  T &u( uint32_t n,  size_t d ) {
+    this->ptr += uint32_to_string( n, this->ptr, d );
+    return (T &) *this;
+  }
+  T &i( int64_t n,  size_t d ) {
+    this->ptr += int64_to_string( n, this->ptr, d );
+    return (T &) *this;
+  }
+  T &i( int32_t n,  size_t d ) {
+    this->ptr += int32_to_string( n, this->ptr, d );
+    return (T &) *this;
+  }
+  size_t end( void ) {
+    *this->ptr = '\0';
+    return this->len();
+  }
+};
+
+template <size_t maxsize>
+struct CatBuf : public CatPtrT<CatBuf<maxsize>> {
+  char buf[ maxsize ];
+  CatBuf() : CatPtrT<CatBuf<maxsize>>( this->buf ) {}
+};
+
+struct CatPtr : public CatPtrT<CatPtr> {
+  CatPtr( char *out ) : CatPtrT( out ) {}
+};
+
 }
 }
 #endif

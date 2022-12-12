@@ -719,15 +719,16 @@ struct PeerOps { /* interface for the peers */
   virtual void retired_stats( PeerData &,  PeerStats & )  { return; }
 };
 #endif
+struct EvSocket;
 struct PeerMatchIter {
-  PeerData      & me,  /* the client using this connection is this */
+  EvSocket      & me,  /* the client using this connection is this */
                 * p;   /* the current position in the list */
   PeerMatchArgs & ka;  /* the match args to apply to the list */
-  PeerMatchIter( PeerData &m,  PeerMatchArgs &a )
+  PeerMatchIter( EvSocket &m,  PeerMatchArgs &a )
     : me( m ), p( 0 ), ka( a ) {}
 
-  PeerData *first( void ) noexcept;
-  PeerData *next( void ) noexcept;
+  EvSocket *first( void ) noexcept;
+  EvSocket *next( void ) noexcept;
   size_t length( void ) {
     size_t cnt = 0;
     if ( this->first() != NULL ) {
@@ -799,7 +800,7 @@ struct PeerAddrStr {
 };
 
 struct PeerData {
-  PeerData   * next,       /* dbl link list */
+  EvSocket   * next,       /* dbl link list, active and free list */
              * back;
   int32_t      fd;         /* fildes */
   uint32_t     route_id;   /* 64 * 3 */
@@ -929,11 +930,13 @@ struct RouteNotify {
   RouteNotify( RoutePublish &p ) : sub_route( p ), next( 0 ), back( 0 ),
                                    in_notify( 0 ), notify_type( 0 ) {}
   virtual void on_sub( NotifySub &sub ) noexcept;
+  virtual void on_resub( NotifySub &sub ) noexcept;
   virtual void on_unsub( NotifySub &sub ) noexcept;
   virtual void on_psub( NotifyPattern &pat ) noexcept;
+  virtual void on_repsub( NotifyPattern &pat ) noexcept;
   virtual void on_punsub( NotifyPattern &pat ) noexcept;
-  virtual void on_reassert( uint32_t fd,  RouteVec<RouteSub> &sub_db,
-                            RouteVec<RouteSub> &pat_db ) noexcept;
+  virtual void on_reassert( uint32_t fd,  SubRouteDB &sub_db,
+                            SubRouteDB &pat_db ) noexcept;
   virtual void on_bloom_ref( BloomRef &ref ) noexcept;
   virtual void on_bloom_deref( BloomRef &ref ) noexcept;
 };
@@ -999,6 +1002,10 @@ struct RoutePublish : public RouteDB {
     for ( RouteNotify *p = this->notify_list.hd; p != NULL; p = p->next )
       p->on_unsub( sub );
   }
+  void do_notify_resub( NotifySub &sub ) {
+    for ( RouteNotify *p = this->notify_list.hd; p != NULL; p = p->next )
+      p->on_resub( sub );
+  }
   void do_notify_psub( NotifyPattern &pat ) {
     for ( RouteNotify *p = this->notify_list.hd; p != NULL; p = p->next )
       p->on_psub( pat );
@@ -1006,6 +1013,10 @@ struct RoutePublish : public RouteDB {
   void do_notify_punsub( NotifyPattern &pat ) {
     for ( RouteNotify *p = this->notify_list.hd; p != NULL; p = p->next )
       p->on_punsub( pat );
+  }
+  void do_notify_repsub( NotifyPattern &pat ) {
+    for ( RouteNotify *p = this->notify_list.hd; p != NULL; p = p->next )
+      p->on_repsub( pat );
   }
   void do_notify_bloom_ref( BloomRef &ref ) {
     for ( RouteNotify *p = this->notify_list.hd; p != NULL; p = p->next )
@@ -1049,6 +1060,10 @@ struct RoutePublish : public RouteDB {
     sub.ref = NULL;
   }
 
+  void notify_sub( NotifySub &sub ) {
+    this->do_notify_resub( sub );
+  }
+
   void add_pat( NotifyPattern &pat ) {
     uint16_t prefix_len = (uint16_t) pat.cvt.prefixlen;
     RouteRef rte( *this, this->zip.route_spc[ prefix_len ] );
@@ -1083,6 +1098,10 @@ struct RoutePublish : public RouteDB {
     pat.ref = NULL;
   }
 
+  void notify_pat( NotifyPattern &pat ) {
+    this->do_notify_repsub( pat );
+  }
+
   bool forward_msg( EvPublish &pub ) noexcept;
   bool forward_with_cnt( EvPublish &pub,  uint32_t &rcnt ) noexcept;
   bool forward_except( EvPublish &pub,  const BitSpace &fdexcpt ) noexcept;
@@ -1105,8 +1124,8 @@ struct RoutePublish : public RouteDB {
   bool forward_to( EvPublish &pub,  uint32_t fd ) noexcept;
   bool hash_to_sub( uint32_t r,  uint32_t h,  char *key,
                     size_t &keylen ) noexcept;
-  void notify_reassert( uint32_t fd,  RouteVec<RouteSub> &sub_db,
-                        RouteVec<RouteSub> &pat_db ) noexcept;
+  void notify_reassert( uint32_t fd,  SubRouteDB &sub_db,
+                        SubRouteDB &pat_db ) noexcept;
   void add_route_notify( RouteNotify &x ) {
     if ( ! x.in_notify ) {
       x.in_notify = 1;
