@@ -78,20 +78,22 @@ struct EvPublish {
   uint32_t       pub_host,    /* host id of publish */
                * hash;        /* the prefix hashes which match */
   uint8_t      * prefix;      /* the prefixes which match */
+  uint64_t       cnt;         /* publish counter */
 
   EvPublish( const char *subj,  size_t subj_len,
              const void *repl,  size_t repl_len,
              const void *mesg,  size_t mesg_len,
              RoutePublish &sub_rt,  uint32_t src,  uint32_t shash,
              uint32_t msg_encoding,  uint8_t publish_type,
-             uint16_t status = 0,  uint32_t host = 0 )
+             uint16_t status = 0,  uint32_t host = 0,
+             uint64_t counter = 0 )
     : subject( subj ), reply( repl ), msg( mesg ),
       sub_route( sub_rt ), subject_len( (uint16_t) subj_len ),
       reply_len( (uint16_t) repl_len ), msg_len( (uint32_t) mesg_len ),
       subj_hash( shash ), src_route( src ),
       msg_enc( msg_encoding ), shard( 0 ),
       pub_type( publish_type ), prefix_cnt( 0 ), pub_status( status ),
-      pub_host( host ), hash( 0 ), prefix( 0 ) {}
+      pub_host( host ), hash( 0 ), prefix( 0 ), cnt( counter ) {}
 
   EvPublish( const EvPublish &p )
     : subject( p.subject ), reply( p.reply ), msg( p.msg ),
@@ -100,7 +102,7 @@ struct EvPublish {
       subj_hash( p.subj_hash ), src_route( p.src_route ),
       msg_enc( p.msg_enc ), shard( p.shard ), pub_type( p.pub_type ),
       prefix_cnt( 0 ), pub_status( p.pub_status ), pub_host( p.pub_host ),
-      hash( 0 ), prefix( 0 ) {}
+      hash( 0 ), prefix( 0 ), cnt( p.cnt ) {}
 };
 
 }

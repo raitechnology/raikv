@@ -100,6 +100,12 @@ struct BloomRef;
 struct BloomList {
   kv::DLinkList<BloomRoute> list[ 4 ];
   BloomList() {}
+  bool is_empty( void ) const {
+    for ( int i = 0; i < 4; i++ )
+      if ( ! this->list[ i ].is_empty() )
+        return false;
+    return true;
+  }
   bool is_empty( uint32_t shard ) const {
     return this->list[ shard & 3 ].is_empty();
   }
@@ -288,7 +294,7 @@ struct RouteDB {
                       uint32_t subj_hash,  uint32_t shard ) {
     uint32_t rcnt, val;
     size_t   pos;
-    if ( this->cache_find( prefix_len, hash, routes, rcnt, shard ) ) {
+    if ( this->cache_find( prefix_len, hash, routes, rcnt, shard, pos ) ) {
       this->cache.busy++;
       ref++;
       return rcnt;
@@ -306,7 +312,7 @@ struct RouteDB {
                           uint32_t shard ) {
     uint32_t rcnt, val;
     size_t   pos;
-    if ( this->cache_find( SUB_RTE, hash, routes, rcnt, shard ) ) {
+    if ( this->cache_find( SUB_RTE, hash, routes, rcnt, shard, pos ) ) {
       this->cache.busy++;
       ref++;
       return rcnt;
@@ -348,14 +354,13 @@ struct RouteDB {
                             uint32_t shard ) noexcept;
   bool cache_find( uint16_t prefix_len,  uint32_t hash,
                    uint32_t *&routes,  uint32_t &rcnt,
-                   uint32_t shard ) {
+                   uint32_t shard,  size_t &pos ) {
     if ( this->cache.is_invalid )
       return false;
     if ( ! this->cache.busy && this->cache.need )
       this->cache_need();
     uint64_t    h = ( (uint64_t) shard << 48 ) |
                     ( (uint64_t) prefix_len << 32 ) | (uint64_t) hash;
-    size_t      pos;
     RteCacheVal val;
 
     if ( ! this->cache.ht->find( h, pos, val ) )
@@ -366,7 +371,10 @@ struct RouteDB {
   }
   void cache_save( uint16_t prefix_len,  uint32_t hash,
                    uint32_t *routes,  uint32_t rcnt,  uint32_t shard ) noexcept;
+  void cache_purge( size_t pos ) noexcept;
+#if 0
   void cache_purge( uint16_t prefix_len,  uint32_t hash ) noexcept;
+#endif
   void cache_need( void ) noexcept;
 };
 

@@ -349,7 +349,9 @@ struct EvPoll {
   uint32_t              fdcnt,           /* num fds in poll set */
                         wr_count,        /* num fds with write set */
                         maxfd,           /* current maximum fd number */
-                        nfds;            /* max epoll() fds, array sz ev[] */
+                        nfds,            /* max epoll() fds, array sz ev[] */
+                        send_highwater,  /* when to backpressure sends */
+                        recv_highwater;  /* size of recv buffer & processed */
   int                   efd,             /* epoll fd */
                         null_fd,         /* /dev/null fd for null sockets */
                         quit;            /* when > 0, wants to exit */
@@ -373,8 +375,9 @@ struct EvPoll {
   void * operator new( size_t, void *ptr ) { return ptr; }
   void operator delete( void *ptr ) { ::free( ptr ); }
   /* 16 seconds */
-  static const uint64_t DEFAULT_NS_TIMEOUT = (uint64_t) 16 * 1000 * 1000 * 1000,
+  static const uint64_t DEFAULT_NS_TIMEOUT = (uint64_t) 10 * 1000 * 1000 * 1000,
                         DEFAULT_NS_CONNECT_TIMEOUT =  1000 * 1000 * 1000;
+  static const uint32_t DEFAULT_RCV_BUFSIZE = 16 * 1024;
 
   EvPoll()
     : sock( 0 ), ev( 0 ), prefetch_queue( 0 ), prio_tick( 0 ),
@@ -382,7 +385,10 @@ struct EvPoll {
       conn_timeout_ns( DEFAULT_NS_CONNECT_TIMEOUT ),
       so_keepalive_ns( DEFAULT_NS_TIMEOUT ),
       next_id( 0 ), now_ns( 0 ), init_ns( 0 ), fdcnt( 0 ), wr_count( 0 ),
-      maxfd( 0 ), nfds( 0 ), efd( -1 ), null_fd( -1 ), quit( 0 ),
+      maxfd( 0 ), nfds( 0 ),
+      send_highwater( StreamBuf::SND_BUFSIZE - 256 ),
+      recv_highwater( DEFAULT_RCV_BUFSIZE - 256 ),
+      efd( -1 ), null_fd( -1 ), quit( 0 ),
       prefetch_pending( 0 ), sub_route( *this ), sock_mem( 0 ),
       sock_mem_left( 0 ) {
     ::memset( this->sock_type_str, 0, sizeof( this->sock_type_str ) );
@@ -450,6 +456,7 @@ struct EvConnectionNotify {
   /* notification of connection close or loss */
   virtual void on_shutdown( EvSocket &conn,  const char *err,
                             size_t elen ) noexcept;
+  virtual void on_data_loss( EvSocket &conn,  EvPublish &pub ) noexcept;
 };
 
 struct EvListen : public EvSocket {
@@ -476,7 +483,7 @@ struct EvListen : public EvSocket {
 };
 
 struct EvConnection : public EvSocket, public StreamBuf {
-  static const size_t RCV_BUFSIZE = 16 * 1024;
+  static const uint32_t RCV_BUFSIZE = EvPoll::DEFAULT_RCV_BUFSIZE;
   char   * recv;           /* initially recv_buf, but may realloc */
   uint32_t off,            /* offset of recv_buf consumed */
            len,            /* length of data in recv_buf */
@@ -499,8 +506,8 @@ struct EvConnection : public EvSocket, public StreamBuf {
   void reset_recv( void ) {
     this->recv           = this->recv_buf;
     this->recv_size      = sizeof( this->recv_buf );
-    this->recv_highwater = RCV_BUFSIZE - RCV_BUFSIZE / 32;
-    this->send_highwater = StreamBuf::SND_BUFSIZE - StreamBuf::SND_BUFSIZE / 32;
+    this->recv_highwater = this->poll.recv_highwater;
+    this->send_highwater = this->poll.send_highwater;
   }
   void release_buffers( void ) { /* release all buffs */
     this->clear_buffers();

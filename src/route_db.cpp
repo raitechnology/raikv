@@ -369,23 +369,25 @@ RouteDB::add_route( uint16_t prefix_len,  uint32_t hash,  uint32_t r,
                     RouteRef &rte ) noexcept
 {
   UIntHashTab * xht = this->rt_hash[ prefix_len ];
-  size_t        pos;
+  size_t        pos, cpos = 0;
   uint32_t    * routes;
   uint32_t      val = 0, rcnt = 0, xcnt;
-  bool          route_cached     = false,
-                decompress_route = true,
+  bool          decompress_route = true,
                 exists;
 
   exists = xht->find( hash, pos, val );
-  if ( this->cache_find( prefix_len, hash, routes, rcnt, 0 ) ) {
-    route_cached = true;
+  if ( this->cache_find( prefix_len, hash, routes, rcnt, 0, cpos ) ) {
     /* if bloom routes exist, don't use cached route */
-    if ( this->bloom_list.is_empty( 0 ) ) {
+    if ( this->bloom_list.is_empty() ) {
       rte.copy_cached( routes, rcnt, 1 );
       decompress_route = false;
       if ( exists && DeltaCoder::is_not_encoded( val ) )
         rte.find_coderef( val );
     }
+    else {
+      rcnt = 0;
+    }
+    this->cache_purge( cpos );
   }
   if ( exists && decompress_route )
     rcnt = rte.decompress( val, 1 );
@@ -398,8 +400,6 @@ RouteDB::add_route( uint16_t prefix_len,  uint32_t hash,  uint32_t r,
   }
   /* if a route was inserted */
   if ( xcnt != rcnt ) {
-    if ( route_cached )
-      this->cache_purge( prefix_len, hash );
     val = rte.compress();
     xht->set( hash, pos, val ); /* update val in xht */
     if ( UIntHashTab::check_resize( xht ) )
@@ -421,31 +421,31 @@ RouteDB::del_route( uint16_t prefix_len,  uint32_t hash,  uint32_t r,
                     RouteRef &rte ) noexcept
 {
   UIntHashTab * xht = this->rt_hash[ prefix_len ];
-  size_t        pos;
+  size_t        pos, cpos = 0;
   uint32_t    * routes;
   uint32_t      val, rcnt = 0, xcnt;
-  bool          route_cached     = false,
-                decompress_route = true;
+  bool          decompress_route = true;
 
   if ( ! xht->find( hash, pos, val ) )
     return 0;
-  if ( this->cache_find( prefix_len, hash, routes, rcnt, 0 ) ) {
-    route_cached = true;
+  if ( this->cache_find( prefix_len, hash, routes, rcnt, 0, cpos ) ) {
     /* if bloom routes exist, don't use cached route */
-    if ( this->bloom_list.is_empty( 0 ) ) {
+    if ( this->bloom_list.is_empty() ) {
       rte.copy_cached( routes, rcnt, 0 );
       decompress_route = false;
       if ( DeltaCoder::is_not_encoded( val ) )
         rte.find_coderef( val );
     }
+    else {
+      rcnt = 0;
+    }
+    this->cache_purge( cpos );
   }
   if ( decompress_route )
     rcnt = rte.decompress( val, 0 );
   xcnt = rte.remove( r ); /* remove r from rte.routes[] */
   /* if route was deleted */
   if ( xcnt != rcnt ) {
-    if ( route_cached )
-      this->cache_purge( prefix_len, hash );
     if ( xcnt == 0 ) { /* no more routes left */
       xht->remove( pos ); /* remove val from xht */
       if ( xht->is_empty() )
@@ -475,8 +475,8 @@ RouteDB::ref_route( uint16_t prefix_len,  uint32_t hash,
   if ( ! xht->find( hash, pos, val ) )
     return 0;
   /* if bloom routes exist, don't use cached route */
-  if ( this->bloom_list.is_empty( 0 ) ) {
-    if ( this->cache_find( prefix_len, hash, routes, rcnt, 0 ) ) {
+  if ( this->bloom_list.is_empty() ) {
+    if ( this->cache_find( prefix_len, hash, routes, rcnt, 0, pos ) ) {
       rte.copy_cached( routes, rcnt, 0 );
       return rcnt;
     }
@@ -1205,6 +1205,23 @@ RouteDB::cache_need( void ) noexcept
 }
 
 void
+RouteDB::cache_purge( size_t pos ) noexcept
+{
+  uint64_t    h;
+  RteCacheVal val;
+  this->cache.ht->get( pos, h, val );
+  this->cache.free += val.rcnt;
+  this->cache.count--;
+
+  if ( this->cache.is_invalid || this->cache.free * 2 > this->cache.end ||
+       this->cache.end > RouteCache::MAX_CACHE ) {
+    this->cache.reset();
+    return;
+  }
+  this->cache.ht->remove( pos );
+}
+#if 0
+void
 RouteDB::cache_purge( uint16_t prefix_len,  uint32_t hash ) noexcept
 {
   uint64_t    h = ( (uint64_t) prefix_len << 32 ) | (uint64_t) hash;
@@ -1223,7 +1240,7 @@ RouteDB::cache_purge( uint16_t prefix_len,  uint32_t hash ) noexcept
     this->cache.ht->remove( pos );
   }
 }
-
+#endif
 void
 RouteDB::add_prefix_len( uint16_t prefix_len,  bool is_rt_hash ) noexcept
 {
@@ -1320,7 +1337,7 @@ RouteDB::is_member( uint16_t prefix_len,  uint32_t hash,  uint32_t r ) noexcept
   }
 
   uint32_t * routes, rcnt;
-  if ( this->cache_find( prefix_len, hash, routes, rcnt, 0 ) ) {
+  if ( this->cache_find( prefix_len, hash, routes, rcnt, 0, pos ) ) {
     uint32_t i = bsearch_route( r, routes, rcnt );
     if ( i < rcnt && r == routes[ i ] )
       return true;

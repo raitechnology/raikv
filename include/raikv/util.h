@@ -306,6 +306,9 @@ inline size_t uint64_digits( uint64_t v ) {
 inline size_t uint32_digits( uint32_t v ) {
   return uint_digits<uint32_t>( v );
 }
+inline size_t uint16_digits( uint16_t v ) {
+  return uint_digits<uint16_t>( v );
+}
 inline size_t int64_digits( int64_t v ) {
   return v < 0 ? ( uint64_digits( neg64( v ) ) + 1 ) : uint64_digits( v );
 }
@@ -317,6 +320,9 @@ inline size_t uint64_to_string( uint64_t v,  char *buf,  size_t len ) {
 }
 inline size_t uint32_to_string( uint32_t v,  char *buf,  size_t len ) {
   return uint_to_string<uint32_t>( v, buf, len );
+}
+inline size_t uint16_to_string( uint16_t v,  char *buf,  size_t len ) {
+  return uint_to_string<uint16_t>( v, buf, len );
 }
 inline size_t int64_to_string( int64_t v,  char *buf,  size_t len ) {
   return int_to_string<int64_t, uint64_t>( v, buf, len );

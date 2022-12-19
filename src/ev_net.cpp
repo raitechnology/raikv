@@ -2332,6 +2332,7 @@ EvSocket::print_sock_error( char *out,  size_t outlen ) noexcept
 void EvConnectionNotify::on_connect( EvSocket & ) noexcept {}
 void EvConnectionNotify::on_shutdown( EvSocket &,  const char *,
                                       size_t ) noexcept {}
+void EvConnectionNotify::on_data_loss( EvSocket &, EvPublish & ) noexcept {}
 
 /* when a sock is not dispatch()ed, it may need to be rearranged in the queue
  * for correct priority */
