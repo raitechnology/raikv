@@ -144,6 +144,9 @@ struct ScratchMem {
   }
   void *alloc_slow( size_t sz ) noexcept;
   void *big_alloc( size_t sz ) noexcept;   /* get mem larger than alloc_size */
+  void init_big( void ) noexcept;
+  void *make_big_buf( size_t sz ) noexcept;
+  void push_big_buf( void *p ) noexcept;
   static void release( void *p ) noexcept; /* release ptr returned by alloc() */
 };
 

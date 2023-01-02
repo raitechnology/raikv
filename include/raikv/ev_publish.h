@@ -71,7 +71,8 @@ struct EvPublish {
                  subj_hash,   /* crc of subject */
                  src_route,   /* fd of sender */
                  msg_enc,     /* the type of message (ex: MD_STRING) */
-                 shard;       /* route to shard */
+                 shard,       /* route to shard */
+                 hdr_len;     /* hdr prefix of msg */
   uint8_t        pub_type,    /* type of publish above */
                  prefix_cnt;  /* count of prefix[] */
   uint16_t       pub_status;  /* EvPubStatus, if msg loss */
@@ -91,7 +92,7 @@ struct EvPublish {
       sub_route( sub_rt ), subject_len( (uint16_t) subj_len ),
       reply_len( (uint16_t) repl_len ), msg_len( (uint32_t) mesg_len ),
       subj_hash( shash ), src_route( src ),
-      msg_enc( msg_encoding ), shard( 0 ),
+      msg_enc( msg_encoding ), shard( 0 ), hdr_len( 0 ),
       pub_type( publish_type ), prefix_cnt( 0 ), pub_status( status ),
       pub_host( host ), hash( 0 ), prefix( 0 ), cnt( counter ) {}
 
@@ -100,9 +101,9 @@ struct EvPublish {
       sub_route( p.sub_route ), subject_len( p.subject_len ),
       reply_len( p.reply_len ), msg_len( p.msg_len ),
       subj_hash( p.subj_hash ), src_route( p.src_route ),
-      msg_enc( p.msg_enc ), shard( p.shard ), pub_type( p.pub_type ),
-      prefix_cnt( 0 ), pub_status( p.pub_status ), pub_host( p.pub_host ),
-      hash( 0 ), prefix( 0 ), cnt( p.cnt ) {}
+      msg_enc( p.msg_enc ), shard( p.shard ), hdr_len( p.hdr_len ),
+      pub_type( p.pub_type ), prefix_cnt( 0 ), pub_status( p.pub_status ),
+      pub_host( p.pub_host ), hash( 0 ), prefix( 0 ), cnt( p.cnt ) {}
 };
 
 }

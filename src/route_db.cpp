@@ -1161,21 +1161,23 @@ RouteDB::cache_save( uint16_t prefix_len,  uint32_t hash,
                      uint32_t *routes,  uint32_t rcnt,
                      uint32_t shard ) noexcept
 {
-  if ( this->cache.is_invalid || this->cache.free * 2 > this->cache.end ||
-       this->cache.end > RouteCache::MAX_CACHE ) {
+  if ( this->cache.is_invalid ) {
+do_reset:;
     if ( ! this->cache.reset() )
       return;
   }
   uint64_t    h;
   uint32_t  * ptr;
   RteCacheVal val;
+  size_t      n = this->cache.end + rcnt;
 
   if ( ! this->cache.busy ) { /* no refs, ok to realloc() */
-    ptr = this->cache.spc.make( this->cache.end + rcnt + 1024 );
+    if ( n > RouteCache::MAX_CACHE )
+      goto do_reset;
+    ptr = this->cache.spc.make( n + 1024 );
   }
   else {
     ptr = this->cache.spc.ptr; /* no realloc until ! busy */
-    size_t n = this->cache.end + rcnt;
     if ( n > this->cache.spc.size ) {
       this->cache.need = n - this->cache.spc.size;
       if ( this->cache.need < 1024 )
@@ -1193,8 +1195,11 @@ RouteDB::cache_save( uint16_t prefix_len,  uint32_t hash,
   this->cache.ht->upsert( h, val ); /* save rcnt, off at hash */
   this->cache.count++;
 
-  if ( this->cache.ht->elem_count >= this->cache.ht->max_count )
+  if ( this->cache.ht->elem_count >= this->cache.ht->max_count ) {
+    if ( this->cache.ht->elem_count > RouteCache::MAX_CACHE )
+      goto do_reset;
     RteCacheTab::check_resize( this->cache.ht );
+  }
 }
 
 void
@@ -1212,12 +1217,13 @@ RouteDB::cache_purge( size_t pos ) noexcept
   this->cache.ht->get( pos, h, val );
   this->cache.free += val.rcnt;
   this->cache.count--;
-
+#if 0
   if ( this->cache.is_invalid || this->cache.free * 2 > this->cache.end ||
        this->cache.end > RouteCache::MAX_CACHE ) {
     this->cache.reset();
     return;
   }
+#endif
   this->cache.ht->remove( pos );
 }
 #if 0

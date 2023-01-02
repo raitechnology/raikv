@@ -13,9 +13,13 @@ StreamBuf::alloc_temp( size_t amt ) noexcept
 {
   char *spc = (char *) this->tmp.alloc( amt );
   if ( spc == NULL ) {
+    this->wr_used++;
     this->alloc_fail = true;
     return NULL;
   }
+  this->wr_used += amt;
+  if ( this->wr_used > this->wr_max )
+    this->wr_max = this->wr_used;
   return spc;
 }
 
@@ -30,13 +34,26 @@ StreamBuf::expand_iov( void ) noexcept
 }
 
 void
+StreamBuf::temp_gc( void ) noexcept
+{
+  /*printf( "wr_pending %lu block_cnt %u vlen %lu free %lu\n",
+          this->wr_pending, this->tmp.block_cnt, this->vlen,
+          this->wr_free );*/
+  size_t x = this->wr_gc;
+  this->merge_iov();
+  this->wr_gc = x;
+  if ( x < (size_t) 256 * 1024 * 1024 )
+    this->wr_gc += x / 2;
+}
+
+void
 StreamBuf::merge_iov( void ) noexcept
 {
   size_t i, len = 0;
   void * buf;
   for ( i = 0; i < this->idx; i++ )
     len += this->iov[ i ].iov_len;
-  buf = this->alloc_temp( len );
+  buf = this->tmp.make_big_buf( len );
   len = 0;
   if ( buf == NULL ) {
     this->reset_pending();
@@ -48,9 +65,14 @@ StreamBuf::merge_iov( void ) noexcept
     ::memcpy( &((char *) buf)[ len ], this->iov[ i ].iov_base, add );
     len += add;
   }
+
+  this->reset();
+  this->wr_pending = len;
   this->iov[ 0 ].iov_base = buf;
   this->iov[ 0 ].iov_len  = len;
   this->idx = 1;
+  this->tmp.push_big_buf( buf );
+  this->wr_used = len;
 }
 
 void

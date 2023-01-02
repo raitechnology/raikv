@@ -616,6 +616,7 @@ struct RoutePublishData {   /* structure for publish queue heap */
   static inline uint32_t prefix_cmp( uint32_t p ) {
     return ( ( ( p & 63 ) << 1 ) + 1 ) | ( p >> 6 );
   }
+#if 0
   static bool is_greater( RoutePublishData *r1,  RoutePublishData *r2 ) {
     if ( r1->routes[ 0 ] > r2->routes[ 0 ] ) /* order by fd */
       return true;
@@ -623,6 +624,35 @@ struct RoutePublishData {   /* structure for publish queue heap */
       return false;
     return prefix_cmp( r1->prefix ) > prefix_cmp( r2->prefix );
   }
+#endif
+};
+
+struct EvPoll;
+struct RoutePublishCache;
+enum { /* BPData::flags */
+  BP_FORWARD = 1,
+  BP_NOTIFY  = 2,
+  BP_IN_LIST = 4
+};
+struct BPData {
+  uint16_t bp_state,
+           bp_flags;
+  uint32_t bp_fd;
+  uint64_t bp_id;
+  BPData * next, * back;
+  BPData() : bp_state( 0 ), bp_flags( 0 ) {}
+  virtual void on_write_ready( void ) noexcept;
+  bool bp_fwd( void ) const { return ( this->bp_flags & BP_FORWARD ) != 0; }
+  bool bp_in_list( void ) const { return ( this->bp_flags & BP_IN_LIST ) != 0; }
+  bool bp_notify( void ) const { return ( this->bp_flags & BP_NOTIFY ) != 0; }
+  bool has_back_pressure( EvPoll &poll,  uint32_t fd ) noexcept;
+  bool test_back_pressure_one( EvPoll &poll,  RoutePublishData &rpd ) noexcept;
+  bool test_back_pressure_64( EvPoll &poll,  RoutePublishData *rpd,
+                              uint32_t n ) noexcept;
+  bool test_back_pressure_n( EvPoll &poll,  RoutePublishData *rpd,
+                             uint32_t n ) noexcept;
+  bool test_back_pressure( EvPoll &poll,  RoutePublishCache &cache ) noexcept;
+
 };
 
 struct RoutePublishCache {
@@ -672,7 +702,7 @@ struct RoutePublishCache {
     this->rdb.cache.busy -= this->ref;
   }
 };
-
+#if 0
 /* queue for publishes, to merge multiple sub matches into one pub, for example:
  *   SUB* -> 1, 7
  *   SUBJECT* -> 1, 3, 7
@@ -681,7 +711,7 @@ struct RoutePublishCache {
  * The heap sorts by route id (fd) to merge the publishes to 1, 3, 7, 8 */
 typedef struct kv::PrioQueue<RoutePublishData *, RoutePublishData::is_greater>
  RoutePublishQueue;
-
+#endif
 struct PeerData;
 struct PeerMatchArgs {
   int64_t      id;       /* each peer is assigned a unique id */
@@ -975,7 +1005,6 @@ struct RedisKeyspaceNotify : public RouteNotify {
                             RouteVec<RouteSub> &pat_db ) noexcept;
 };
 #endif
-struct EvPoll;
 struct KvPubSub; /* manages pubsub through kv shm */
 struct HashTab;
 struct EvShm;
@@ -1110,26 +1139,29 @@ struct RoutePublish : public RouteDB {
     this->do_notify_repsub( pat );
   }
 
-  bool forward_msg( EvPublish &pub ) noexcept;
-  bool forward_with_cnt( EvPublish &pub,  uint32_t &rcnt ) noexcept;
-  bool forward_except( EvPublish &pub,  const BitSpace &fdexcpt ) noexcept;
+  bool forward_msg( EvPublish &pub,  BPData *data = NULL ) noexcept;
+  bool forward_with_cnt( EvPublish &pub,  uint32_t &rcnt,
+                         BPData *data = NULL ) noexcept;
+  bool forward_except( EvPublish &pub,  const BitSpace &fdexcpt,
+                       BPData *data = NULL ) noexcept;
   bool forward_except_with_cnt( EvPublish &pub,  const BitSpace &fdexcpt,
-                                uint32_t &rcnt ) noexcept;
-#if 0
-  bool forward_msg( EvPublish &pub,  uint32_t *rcount_total,  uint8_t pref_cnt,
-                    KvPrefHash *ph ) noexcept;
-#endif
-  bool forward_some( EvPublish &pub, uint32_t *routes, uint32_t rcnt ) noexcept;
-  bool forward_not_fd( EvPublish &pub,  uint32_t not_fd ) noexcept;
-  bool forward_not_fd2( EvPublish &pub,  uint32_t not_fd,
-                        uint32_t not_fd2 ) noexcept;
-  bool forward_all( EvPublish &pub, uint32_t *routes, uint32_t rcnt ) noexcept;
-  bool forward_set( EvPublish &pub,  const BitSpace &fdset ) noexcept;
+                                uint32_t &rcnt,  BPData *data = NULL ) noexcept;
   bool forward_set_with_cnt( EvPublish &pub,  const BitSpace &fdset,
-                             uint32_t &rcnt ) noexcept;
-  bool forward_set_not_fd( EvPublish &pub,  const BitSpace &fdset,
-                           uint32_t not_fd ) noexcept;
-  bool forward_to( EvPublish &pub,  uint32_t fd ) noexcept;
+                             uint32_t &rcnt,  BPData *data = NULL ) noexcept;
+  bool forward_some( EvPublish &pub, uint32_t *routes, uint32_t rcnt,
+                     BPData *data = NULL ) noexcept;
+  bool forward_not_fd( EvPublish &pub,  uint32_t not_fd,
+                       BPData *data = NULL ) noexcept;
+  bool forward_not_fd2( EvPublish &pub,  uint32_t not_fd,
+                        uint32_t not_fd2,  BPData *data = NULL ) noexcept;
+#if 0
+  bool forward_all( EvPublish &pub, uint32_t *routes, uint32_t rcnt,
+                    BPData *data = NULL ) noexcept;
+#endif
+  bool forward_set_no_route( EvPublish &pub,  const BitSpace &fdset ) noexcept;
+  bool forward_set_no_route_not_fd( EvPublish &pub,  const BitSpace &fdset,
+                                    uint32_t not_fd ) noexcept;
+  bool forward_to( EvPublish &pub,  uint32_t fd, BPData *data = NULL ) noexcept;
   bool hash_to_sub( uint32_t r,  uint32_t h,  char *key,
                     size_t &keylen ) noexcept;
   void notify_reassert( uint32_t fd,  SubRouteDB &sub_db,

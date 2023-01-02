@@ -110,13 +110,8 @@ ScratchMem::alloc_slow( size_t sz ) noexcept
 {
   MemHdr * hdr;
   size_t   used = align<size_t>( sz + sizeof( MemHdr ), sizeof( MemHdr ) );
-  if ( this->closure == NULL ) {
-    if ( this->kv_big_alloc == NULL ) {
-      this->kv_big_alloc = kv_key_ctx_big_alloc;
-      this->kv_big_free  = kv_key_ctx_big_free;
-    }
-    this->closure = this;
-  }
+  if ( this->closure == NULL )
+    this->init_big();
   this->fast = false;
   /* if too large, just malloc it */
   if ( used <= this->alloc_size - sizeof( MBlock ) ) {
@@ -156,6 +151,38 @@ ScratchMem::big_alloc( size_t sz ) noexcept
   big->owner = this;
   this->big_list.push_hd( big );
   return big->hdr.user_ptr();
+}
+
+void
+ScratchMem::init_big( void ) noexcept
+{
+  if ( this->closure == NULL ) {
+    if ( this->kv_big_alloc == NULL ) {
+      this->kv_big_alloc = kv_key_ctx_big_alloc;
+      this->kv_big_free  = kv_key_ctx_big_free;
+    }
+    this->closure = this;
+  }
+  this->fast = false;
+}
+
+void *
+ScratchMem::make_big_buf( size_t sz ) noexcept
+{
+  this->init_big();
+  void * p = this->big_alloc( sz );
+  if ( p == NULL )
+    return NULL;
+  this->big_list.pop_hd();
+  return p;
+}
+
+void
+ScratchMem::push_big_buf( void *p ) noexcept
+{
+  this->init_big();
+  BigBlock *big = (BigBlock *) ( (uint8_t *) p - sizeof( BigBlock ) );
+  this->big_list.push_tl( big );
 }
 
 void

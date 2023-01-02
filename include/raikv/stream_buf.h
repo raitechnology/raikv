@@ -86,18 +86,22 @@ struct StreamBuf {
 
   static const size_t SND_BUFSIZE = 32 * 1024;
   static const size_t BUFSIZE     = 1600;
-  size_t  wr_pending;  /* how much is in send buffers total */
-  char  * out_buf;     /* current buffer to fill, up to BUFSIZE */
-  size_t  sz,          /* sz bytes in out_buf */
-          idx;         /* head data in iov[] to send */
-  bool    alloc_fail;  /* if alloc send buffers below failed */
-  iovec * iov;         /* output vectors written to stream */
-  size_t  vlen;        /* length of iov[] */
 
   kv::WorkAllocT< SND_BUFSIZE > tmp;
   struct iovec iovbuf[ 32 ]; /* vec of send buffers */
+  iovec * iov;         /* output vectors written to stream */
+  char  * out_buf;     /* current buffer to fill, up to BUFSIZE */
+  size_t  vlen,        /* length of iov[] */
+          wr_pending;  /* how much is in send buffers total */
+  size_t  sz,          /* sz bytes in out_buf */
+          idx,         /* head data in iov[] to send */
+          wr_gc,       /* when to recover free space (free > gc) */
+          wr_free,     /* amount of free space */
+          wr_used,     /* current space allocated */
+          wr_max;      /* the maximum space allocated */
+  bool    alloc_fail;  /* if alloc send buffers below failed */
 
-  StreamBuf() { this->reset(); }
+  StreamBuf() : idx( 0 ), wr_used( 1 ) { this->reset(); this->wr_max = 0; }
 
   void release( void ) {
     this->reset();
@@ -171,9 +175,14 @@ struct StreamBuf {
     this->out_buf    = NULL;
     this->sz         = 0;
     this->idx        = 0;
+    this->wr_gc      = 4 * 1024 * 1024;
+    this->wr_free    = 0;
+    this->wr_used    = 0;
     this->alloc_fail = false;
   }
   void reset( void ) {
+    if ( this->wr_used + this->idx == 0 )
+      return;
     this->reset_pending();
     this->tmp.reset();
   }
@@ -197,6 +206,8 @@ struct StreamBuf {
     this->wr_pending += this->sz;
     this->out_buf     = NULL;
     this->sz          = 0;
+    if ( this->wr_free > this->wr_gc )
+      this->temp_gc();
   }
   void append_iov( void *p,  size_t amt ) {
     if ( this->out_buf != NULL && this->sz > 0 )
@@ -245,6 +256,8 @@ struct StreamBuf {
   void merge_iov( void ) noexcept;
 
   char *alloc_temp( size_t amt ) noexcept;
+
+  void temp_gc( void ) noexcept;
 
   uint8_t *alloc_bytes( size_t amt ) {
     return (uint8_t *) this->alloc( amt );

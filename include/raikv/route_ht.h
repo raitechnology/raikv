@@ -521,6 +521,11 @@ struct RouteVec {
     }
     return cnt - rem;
   }
+  size_t mem_size( void ) const {
+    return this->vec_size *
+             /* *vec[ i ]      + vec[ i ]            + max_hash_val[ i ] */
+           ( sizeof( VecData ) + sizeof( VecData * ) + sizeof( uint32_t ) );
+  }
 
   /* find the vec[] that hash belongs */
   uint32_t bsearch( uint32_t h ) const {

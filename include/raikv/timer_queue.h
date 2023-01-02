@@ -101,10 +101,10 @@ struct EvTimerQueue : public EvSocket {
     }
     return MAX_DELTA;
   }
-  virtual void write( void ) noexcept final;   /* no write method */
-  virtual void read( void ) noexcept final;    /* read empties timerfd */
-  virtual void process( void ) noexcept final; /* execute timer callbacks */
-  virtual void release( void ) noexcept final;
+  virtual void write( void ) noexcept;   /* no write method */
+  virtual void read( void ) noexcept;    /* read empties timerfd */
+  virtual void process( void ) noexcept; /* execute timer callbacks */
+  virtual void release( void ) noexcept;
 };
 
 }

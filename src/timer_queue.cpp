@@ -259,7 +259,7 @@ EvTimerQueue::process( void ) noexcept
 }
 
 void EvTimerQueue::write( void ) noexcept {}
-void EvTimerQueue::release( void ) noexcept {}
+void EvTimerQueue::release( void ) noexcept { this->delta = 0; }
 
 /* start a timer event callback */
 bool

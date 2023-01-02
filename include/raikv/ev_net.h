@@ -141,9 +141,10 @@ struct EvSocket : public PeerData /* fd and address of peer */EV_DBG_INHERIT {
   const uint8_t sock_type;  /* listen or connection */
   uint8_t       sock_flags; /* in active list or free list (IN_ACIIVE_LIST) */
   uint16_t      sock_err,   /* error condition */
-                sock_errno;
+                sock_errno,
+                sock_wrpoll;
   const uint8_t sock_base;
-  uint8_t       sock_pad[ 3 ];
+  uint8_t       sock_pad;
   uint64_t      bytes_recv, /* stat counters for bytes and msgs */
                 bytes_sent,
                 msgs_recv,
@@ -153,12 +154,13 @@ struct EvSocket : public PeerData /* fd and address of peer */EV_DBG_INHERIT {
     : poll( p ), prio_cnt( 0 ), sock_state( 0 ),  sock_opts( 0 ),
       sock_type( t ), sock_flags( 0 ), sock_base( b ) { this->init_stats(); }
   void init_stats( void ) {
-    this->sock_err   = 0;
-    this->sock_errno = 0;
-    this->bytes_recv = 0;
-    this->bytes_sent = 0;
-    this->msgs_recv  = 0;
-    this->msgs_sent  = 0;
+    this->sock_err    = 0;
+    this->sock_errno  = 0;
+    this->sock_wrpoll = 0;
+    this->bytes_recv  = 0;
+    this->bytes_sent  = 0;
+    this->msgs_recv   = 0;
+    this->msgs_sent   = 0;
   }
   int set_sock_err( uint16_t serr,  uint16_t err ) noexcept;
   /* if socket mem is free */
@@ -210,7 +212,8 @@ struct EvSocket : public PeerData /* fd and address of peer */EV_DBG_INHERIT {
   /* priority queue test, ordered by first bit set (EV_WRITE > EV_READ).
    * a sock with EV_READ bit set will have a higher priority than one with
    * EV_WRITE */
-  int test( int s ) const { return this->sock_state & ( 1U << s ); }
+  uint32_t test_bits( uint32_t mask ) const { return this->sock_state & mask; }
+  uint32_t test( int s ) const { return this->test_bits( 1U << s ); }
   void push( int s )      { this->sock_state |= ( 1U << s ); }
   void pop( int s )       { this->sock_state &= ~( 1U << s ); }
   void pop2( int s, int t ) {
@@ -222,6 +225,9 @@ struct EvSocket : public PeerData /* fd and address of peer */EV_DBG_INHERIT {
     this->sock_state = ( this->sock_state | ( 1U << s ) ) & ~( 1U << t ); }
   void idle_push( EvState s ) noexcept;
   void close_error( uint16_t serr,  uint16_t err ) noexcept;
+  bool wait_empty( void ) noexcept;
+  void notify_ready( void ) noexcept;
+  void bp_retire( BPData &data ) noexcept;
   /* convert sock_err to string, or null if unknown code */
   virtual const char *sock_error_string( void ) noexcept;
   /* describe sock and error */
@@ -291,6 +297,52 @@ struct EvSocket : public PeerData /* fd and address of peer */EV_DBG_INHERIT {
   static_assert( sizeof( EvSocket ) % 256 == 0, "socket size" );
 #endif
 
+struct FDSet : public BitSpaceT<uint64_t> {
+  void * operator new( size_t, void *ptr ) { return ptr; }
+  void operator delete( void *ptr ) { ::free( ptr ); }
+  ArraySpace<uint32_t, 256> fd_space;
+  FDSet() {}
+};
+
+struct FDSetStack : public ArraySpace<FDSet *, 4> {
+  size_t tos;
+  FDSetStack() : tos( 0 ) {}
+  FDSet & push( void ) {
+    if ( this->tos >= this->size ) {
+      this->make( this->tos + 1, true );
+      this->ptr[ this->tos ] = new ( ::malloc( sizeof( FDSet ) ) ) FDSet();
+    }
+    return *this->ptr[ this->tos++ ];
+  }
+  void pop( void ) {
+    this->tos--;
+  }
+};
+
+struct FDFrame {
+  FDSetStack & stk;
+  FDSet      & fdset;
+  FDFrame( FDSetStack & stack ) : stk( stack ), fdset( stack.push() ) {
+    this->fdset.zero();
+  }
+  uint32_t *fd_array( uint32_t n ) {
+    return this->fdset.fd_space.make( n );
+  }
+  ~FDFrame() { this->stk.pop(); }
+};
+
+struct BPData;
+typedef DLinkList<BPData> BPList;
+struct BPWait : public ArraySpace<BPList, 64> {
+  bool is_empty( uint32_t fd ) const {
+    if ( (size_t) fd < this->size )
+      return this->ptr[ fd ].is_empty();
+    return true;
+  }
+  void push( uint32_t fd,  BPData &data ) noexcept;
+  void pop( uint32_t fd,  BPData &data ) noexcept;
+};
+
 struct EvPoll {
   static bool is_event_greater( EvSocket *s1,  EvSocket *s2 ) {
     int x1 = kv_ffsw( s1->sock_state ),
@@ -339,6 +391,8 @@ struct EvPoll {
   struct epoll_event  * ev;              /* event array used by epoll() */
   TimerQueue            timer;           /* timer events */
   EvPrefetchQueue     * prefetch_queue;  /* ordering keys */
+  FDSetStack            fd_stk;
+  BPWait                bp_wait;
   uint64_t              prio_tick,       /* priority queue ticker */
                         wr_timeout_ns,   /* timeout writes in EV_WRITE_POLL */
                         conn_timeout_ns, /* timeout writes in EV_WRITE_POLL */
@@ -359,7 +413,7 @@ struct EvPoll {
                         PREFETCH_SIZE = 8;  /* pipe size of number of pref */
   uint32_t              prefetch_pending; /* count of elems in prefetch queue */
   RoutePDB              sub_route;       /* subscriptions */
-  RoutePublishQueue     pub_queue;       /* temp routing queue: */
+  /*RoutePublishQueue     pub_queue;      * temp routing queue: */
   PeerStats             peer_stats;      /* accumulator after sock closes */
   BloomDB               g_bloom_db;
      /* this causes a message matching multiple wildcards to be sent once */
@@ -384,8 +438,8 @@ struct EvPoll {
       wr_timeout_ns( DEFAULT_NS_TIMEOUT ),
       conn_timeout_ns( DEFAULT_NS_CONNECT_TIMEOUT ),
       so_keepalive_ns( DEFAULT_NS_TIMEOUT ),
-      next_id( 0 ), now_ns( 0 ), init_ns( 0 ), fdcnt( 0 ), wr_count( 0 ),
-      maxfd( 0 ), nfds( 0 ),
+      next_id( 0 ), now_ns( 0 ), init_ns( 0 ),
+      fdcnt( 0 ), wr_count( 0 ), maxfd( 0 ), nfds( 0 ),
       send_highwater( StreamBuf::SND_BUFSIZE - 256 ),
       recv_highwater( DEFAULT_RCV_BUFSIZE - 256 ),
       efd( -1 ), null_fd( -1 ), quit( 0 ),
@@ -484,23 +538,25 @@ struct EvListen : public EvSocket {
 
 struct EvConnection : public EvSocket, public StreamBuf {
   static const uint32_t RCV_BUFSIZE = EvPoll::DEFAULT_RCV_BUFSIZE;
-  char   * recv;           /* initially recv_buf, but may realloc */
-  uint32_t off,            /* offset of recv_buf consumed */
-           len,            /* length of data in recv_buf */
-           recv_size,      /* recv buf size */
-           recv_highwater, /* recv_highwater: switch to low priority read */
-           send_highwater; /* send_highwater: switch to high priority write */
-  EvConnectionNotify * notify;
 #ifndef _MSC_VER
   char     recv_buf[ RCV_BUFSIZE ] __attribute__((__aligned__( 64 )));
 #else
   __declspec(align(64)) char recv_buf[ RCV_BUFSIZE ];
 #endif
+  char   * recv;           /* initially recv_buf, but may realloc */
+  uint32_t off,            /* offset of recv_buf consumed */
+           len,            /* length of data in recv_buf */
+           recv_size,      /* recv buf size */
+           recv_highwater, /* recv_highwater: switch to low priority read */
+           send_highwater, /* send_highwater: switch to high priority write */
+           recv_max;
+  EvConnectionNotify * notify;
   EvConnection( EvPoll &p, const uint8_t t, EvConnectionNotify *n = NULL )
       : EvSocket( p, t, EV_CONNECTION_BASE ) {
-    this->off    = 0;
-    this->len    = 0;
-    this->notify = n;
+    this->off      = 0;
+    this->len      = 0;
+    this->recv_max = sizeof( this->recv_buf );
+    this->notify   = n;
     this->reset_recv();
   }
   void reset_recv( void ) {
@@ -534,12 +590,23 @@ struct EvConnection : public EvSocket, public StreamBuf {
       this->off = 0;
     }
   }
-  bool resize_recv_buf( void ) noexcept;   /* need more buffer space */
+  void recv_need( uint32_t need_bytes ) {
+    if ( this->recv_size < need_bytes )
+      this->resize_recv_buf( need_bytes );
+  }
+  bool resize_recv_buf( uint32_t need_bytes = 0 ) noexcept;
 
   /* read/write to socket */
   virtual void read( void ) noexcept;      /* fill recv buf */
   virtual void write( void ) noexcept;     /* flush stream buffer */
 
+  bool push_write_high( void ) {
+    if ( this->StreamBuf::pending() > 0 ) {
+      this->push( EV_WRITE_HI );
+      return true;
+    }
+    return false;
+  }
   bool push_write( void ) {
     size_t buflen = this->StreamBuf::pending();
     if ( buflen > 0 ) {

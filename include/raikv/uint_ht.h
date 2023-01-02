@@ -339,6 +339,9 @@ struct IntHashTabT : public IntHashUsage
     this->remove( pos );
     check_resize( xht );
   }
+  size_t mem_size( void ) const {
+    return IntHashTabT::alloc_size( this->tab_size() );
+  }
 };
 typedef IntHashTabT<uint32_t, uint32_t> UIntHashTab;
 
@@ -465,6 +468,9 @@ struct IntHashTabX : public IntHashUsage
     if ( this->elem_count < this->min_count )
       this->resize( this->tab_size() / 2 );
   }
+  size_t mem_size( void ) const {
+    return IntHashTabX::alloc_size( this->tab_size() );
+  }
 };
 /* no value, just keys
  * usage:
@@ -560,6 +566,9 @@ struct IntHashTabU : public IntHashUsage
   /* remove at pos */
   void remove( size_t pos ) {
     remove_tab<IntHashTabU>( *this, pos );
+  }
+  size_t mem_size( void ) const {
+    return IntHashTabU::alloc_size( this->tab_size() );
   }
 };
 #if __GNUC__ >= 12

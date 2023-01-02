@@ -158,6 +158,7 @@ EvPoll::add_write_poll( EvSocket *s ) noexcept
     return;
   }
   this->wr_count++;
+  s->sock_wrpoll++;
   if ( this->wr_timeout_ns != 0 ||
        ( this->conn_timeout_ns != 0 && s->bytes_sent + s->bytes_recv == 0 ) )
     this->push_write_queue( s );
@@ -395,7 +396,7 @@ EvPoll::idle_close( EvSocket *s,  uint64_t ns ) noexcept
 void *
 EvPoll::alloc_sock( size_t sz ) noexcept
 {
-  size_t    need = kv::align<size_t>( sz, 64 );
+  size_t    need = align<size_t>( sz, 64 );
   uint8_t * p    = (uint8_t *) this->sock_mem;;
 
   if ( need > this->sock_mem_left ) {
@@ -484,6 +485,8 @@ EvSocket::process_shutdown( void ) noexcept
 void
 EvSocket::process_close( void ) noexcept
 {
+  if ( ! this->wait_empty() )
+    this->notify_ready();
   /* after this, close fd */
   this->poll.remove_sock( this );
   this->poll.push_free_list( this );
@@ -896,11 +899,11 @@ publish_one( EvPublish &pub,  RoutePublishData &rpd,  Forward &fwd ) noexcept
 
 template<class Forward>
 static bool
-publish_multi_64( EvPublish &pub,  RoutePublishData *rpd,  uint8_t n,
+publish_multi_64( EvPublish &pub,  RoutePublishData *rpd,  uint32_t n,
                   Forward &fwd ) noexcept
 {
   uint64_t bits = 0;
-  uint8_t  rpd_fds[ MAX_RTE ],
+  uint8_t  rpd_fds[ 64 ],
            prefix[ MAX_RTE ];
   uint32_t hash[ MAX_RTE ], /* limit is number of rpd elements */
            min_route, i, cnt;
@@ -909,20 +912,20 @@ publish_multi_64( EvPublish &pub,  RoutePublishData *rpd,  uint8_t n,
   for ( i = 0; i < n; i++ ) {
     uint32_t fd  = rpd[ i ].routes[ 0 ];
     bits        |= (uint64_t) 1 << fd;
-    rpd_fds[ i ] = fd;
+    rpd_fds[ i ] = (uint8_t) fd;
   }
   pub.hash   = hash;
   pub.prefix = prefix;
   for (;;) {
     if ( bits == 0 )
-      return flow_good; /* if no routes left */
+      break;
 
     min_route = kv_ffsl( bits ) - 1;
     bits     &= ~( (uint64_t) 1 << min_route );
     cnt       = 0;
     for ( i = 0; i < n; i++ ) {
       /* accumulate hashes going to min_route */
-      if ( min_route == rpd_fds[ i ] ) {
+      if ( min_route == (uint32_t) rpd_fds[ i ] ) {
         rpd[ i ].routes++;
         if ( --rpd[ i ].rcount != 0 ) {
           uint32_t fd  = rpd[ i ].routes[ 0 ];
@@ -943,8 +946,61 @@ publish_multi_64( EvPublish &pub,  RoutePublishData *rpd,  uint8_t n,
   }
   if ( kv_pub_debug )
     fwd.debug_total( pub );
+  return flow_good; /* if no routes left */
 }
 
+template<class Forward>
+static bool
+publish_multi( EvPublish &pub,  RoutePublishData *rpd,  uint32_t n,
+               Forward &fwd ) noexcept
+{
+  const uint32_t nofd = fwd.sub_route.poll.maxfd + 1;
+  FDFrame    frame( fwd.sub_route.poll.fd_stk );
+  uint32_t * rpd_fds = frame.fd_array( n );
+  uint8_t    prefix[ MAX_RTE ];
+  uint32_t   hash[ MAX_RTE ], /* limit is number of rpd elements */
+             min_route, i, cnt;
+  bool       flow_good = true;
+
+  for ( i = 0; i < n; i++ ) {
+    uint32_t fd  = rpd[ i ].routes[ 0 ];
+    frame.fdset.add( fd );
+    rpd_fds[ i ] = fd;
+  }
+  pub.hash   = hash;
+  pub.prefix = prefix;
+  for (;;) {
+    min_route = 0;
+    if ( ! frame.fdset.scan( min_route ) )
+      break;
+    cnt = 0;
+    frame.fdset.remove( min_route );
+    for ( i = 0; i < n; i++ ) {
+      /* accumulate hashes going to min_route */
+      if ( min_route == rpd_fds[ i ] ) {
+        rpd[ i ].routes++;
+        if ( --rpd[ i ].rcount != 0 ) {
+          uint32_t fd  = rpd[ i ].routes[ 0 ];
+          frame.fdset.add( fd );
+          rpd_fds[ i ] = fd;
+        }
+        else {
+          rpd_fds[ i ] = nofd;
+        }
+        hash[ cnt ]   = rpd[ i ].hash;
+        prefix[ cnt ] = rpd[ i ].prefix;
+        cnt++;
+      }
+    }
+    /* send hashes to min_route */
+    pub.prefix_cnt = cnt;
+    flow_good &= fwd.on_msg( min_route, pub );
+  }
+  if ( kv_pub_debug )
+    fwd.debug_total( pub );
+  return flow_good; /* if no routes left */
+}
+#if 0
 template<uint8_t N, class Forward>
 static bool
 publish_multi( EvPublish &pub,  RoutePublishData *rpd,
@@ -1038,120 +1094,227 @@ publish_queue( EvPublish &pub,  RoutePublishQueue &queue,
     fwd.debug_total( pub );
   return flow_good;
 }
+#endif
+static const uint32_t block_state_test = ( 1U << EV_WRITE_POLL ) |
+                                         ( 1U << EV_WRITE_HI );
+void
+EvSocket::notify_ready( void ) noexcept
+{
+  BPList & list = this->poll.bp_wait.ptr[ this->fd ];
+  while ( ! list.is_empty() ) {
+    if ( this->test_bits( block_state_test ) )
+      return;
+    BPData * data = list.pop_hd();
+    data->bp_flags &= ~BP_IN_LIST;
+    if ( data->bp_id == this->id )
+      data->on_write_ready();
+  }
+}
+
+bool
+EvSocket::wait_empty( void ) noexcept
+{
+  return this->poll.bp_wait.is_empty( (uint32_t) this->fd );
+}
+
+void
+BPWait::push( uint32_t fd,  BPData &data ) noexcept
+{
+  if ( fd >= this->size )
+    this->make( fd + 1, true );
+  this->ptr[ fd ].push_tl( &data );
+  data.bp_flags |= BP_IN_LIST;
+}
+
+void
+BPWait::pop( uint32_t fd,  BPData &data ) noexcept
+{
+  this->ptr[ fd ].pop( &data );
+  data.bp_flags &= ~BP_IN_LIST;
+}
+
+void
+BPData::on_write_ready( void ) noexcept
+{
+}
+
+void
+EvSocket::bp_retire( BPData &data ) noexcept
+{
+  if ( data.bp_in_list() )
+    this->poll.bp_wait.pop( data.bp_fd, data );
+}
+
+bool
+BPData::has_back_pressure( EvPoll &poll, uint32_t fd ) noexcept
+{
+  EvSocket * s = poll.sock[ fd ];
+  if ( s->test_bits( block_state_test ) ) {
+    if ( this->bp_in_list() )
+      poll.bp_wait.pop( this->bp_fd, *this );
+    this->bp_state = s->sock_state;
+    this->bp_fd    = fd;
+    this->bp_id    = s->id;
+    if ( this->bp_notify() )
+      poll.bp_wait.push( fd, *this );
+    return true;
+  }
+  return false;
+}
+
+bool
+BPData::test_back_pressure_one( EvPoll &poll,  RoutePublishData &rpd ) noexcept
+{
+  for ( uint32_t j = 0; j < rpd.rcount; j++ ) {
+    if ( this->has_back_pressure( poll, rpd.routes[ j ] ) )
+      return true;
+  }
+  this->bp_state = 0;
+  return false;
+}
+
+bool
+BPData::test_back_pressure_64( EvPoll &poll,  RoutePublishData *rpd,
+                               uint32_t n ) noexcept
+{
+  uint64_t bits = 0;
+  for ( uint32_t i = 0; i < n; i++ ) {
+    for ( uint32_t j = 0; j < rpd[ i ].rcount; j++ ) {
+      uint32_t fd = rpd[ i ].routes[ j ];
+      uint64_t mask = (uint64_t) 1 << fd;
+      if ( ( bits & mask ) == 0 ) {
+        bits |= mask;
+        if ( this->has_back_pressure( poll, fd ) )
+          return true;
+      }
+    }
+  }
+  this->bp_state = 0;
+  return false;
+}
+
+bool
+BPData::test_back_pressure_n( EvPoll &poll,  RoutePublishData *rpd,
+                              uint32_t n ) noexcept
+{
+  FDFrame frame( poll.fd_stk );
+  for ( uint32_t i = 0; i < n; i++ ) {
+    for ( uint32_t j = 0; j < rpd[ i ].rcount; j++ ) {
+      uint32_t fd = rpd[ i ].routes[ j ];
+      if ( ! frame.fdset.test_set( fd ) ) {
+        if ( this->has_back_pressure( poll, fd ) )
+          return true;
+      }
+    }
+  }
+  this->bp_state = 0;
+  return false;
+}
+
+bool
+BPData::test_back_pressure( EvPoll &poll,  RoutePublishCache &cache ) noexcept
+{
+  if ( cache.n == 1 )
+    return this->test_back_pressure_one( poll, cache.rpd[ 0 ] );
+  if ( poll.maxfd < 64 )
+    return this->test_back_pressure_64( poll, cache.rpd, cache.n );
+  return this->test_back_pressure_n( poll, cache.rpd, cache.n );
+}
 
 template<class Forward>
 static bool
 forward_message( EvPublish &pub,  RoutePublish &sub_route,
-                 Forward &fwd ) noexcept
+                 Forward &fwd,  BPData *data ) noexcept
 {
   RoutePublishCache cache( sub_route, pub.subject, pub.subject_len,
                            pub.subj_hash, pub.shard );
-  /* likely cases <= 3 wildcard matches, most likely <= 1 match */
   if ( cache.n == 0 )
     return true;
+  if ( data != NULL ) {
+    bool b = data->test_back_pressure( sub_route.poll, cache );
+    if ( b && ! data->bp_fwd() )
+      return false;
+  }
+  /* likely cases <= 3 wildcard matches, most likely <= 1 match */
   if ( cache.n == 1 )
     return publish_one<Forward>( pub, cache.rpd[ 0 ], fwd );
   if ( sub_route.poll.maxfd < 64 )
     return publish_multi_64<Forward>( pub, cache.rpd, cache.n, fwd );
-  if ( cache.n == 2 )
-    return publish_multi<2, Forward>( pub, cache.rpd, fwd );
-
+  return publish_multi<Forward>( pub, cache.rpd, cache.n, fwd );
+#if 0
   for ( uint8_t i = 0; i < cache.n; i++ )
     sub_route.poll.pub_queue.push( &cache.rpd[ i ] );
   return publish_queue<Forward>( pub, sub_route.poll.pub_queue, fwd );
+#endif
 }
 
 /* match subject against route db and forward msg to fds subscribed, route
  * db contains both exact matches and wildcard prefix matches */
 bool
-RoutePublish::forward_msg( EvPublish &pub ) noexcept
+RoutePublish::forward_msg( EvPublish &pub,  BPData *data ) noexcept
 {
   ForwardAll fwd( *this );
-  return forward_message<ForwardAll>( pub, *this, fwd );
+  return forward_message<ForwardAll>( pub, *this, fwd, data );
 }
 bool
-RoutePublish::forward_with_cnt( EvPublish &pub,  uint32_t &rcnt ) noexcept
+RoutePublish::forward_with_cnt( EvPublish &pub,  uint32_t &rcnt,
+                                BPData *data ) noexcept
 {
   ForwardAll fwd( *this );
-  bool b = forward_message<ForwardAll>( pub, *this, fwd );
+  bool b = forward_message<ForwardAll>( pub, *this, fwd, data );
   rcnt = fwd.total;
   return b;
 }
 bool
-RoutePublish::forward_except( EvPublish &pub,
-                              const BitSpace &fdexcept ) noexcept
+RoutePublish::forward_except( EvPublish &pub,  const BitSpace &fdexcept,
+                              BPData *data ) noexcept
 {
   ForwardExcept fwd( *this, fdexcept );
-  return forward_message<ForwardExcept>( pub, *this, fwd );
+  return forward_message<ForwardExcept>( pub, *this, fwd, data );
 }
 bool
 RoutePublish::forward_except_with_cnt( EvPublish &pub, const BitSpace &fdexcept,
-                                       uint32_t &rcnt ) noexcept
+                                       uint32_t &rcnt,  BPData *data ) noexcept
 {
   ForwardExcept fwd( *this, fdexcept );
-  bool b = forward_message<ForwardExcept>( pub, *this, fwd );
+  bool b = forward_message<ForwardExcept>( pub, *this, fwd, data );
   rcnt = fwd.total;
   return b;
 }
 bool
 RoutePublish::forward_set_with_cnt( EvPublish &pub, const BitSpace &fdset,
-                                    uint32_t &rcnt ) noexcept
+                                    uint32_t &rcnt,  BPData *data ) noexcept
 {
   ForwardSet fwd( *this, fdset );
-  bool b = forward_message<ForwardSet>( pub, *this, fwd );
+  bool b = forward_message<ForwardSet>( pub, *this, fwd, data );
   rcnt = fwd.total;
   return b;
 }
-#if 0
-/* match subject against route db and forward msg to fds subscribed, route
- * db contains both exact matches and wildcard prefix matches */
-bool
-RoutePublish::forward_msg( EvPublish &pub,  uint32_t *rcount_total,
-                           uint8_t pref_cnt,  KvPrefHash *ph ) noexcept
-{
-  RoutePublishCache cache( *this, pub.subject, pub.subject_len,
-                           pub.subj_hash, pref_cnt, ph );
-  ForwardAll fwd( *this );
-  bool b = true;
-  if ( cache.n != 0 ) {
-    if ( cache.n == 1 )
-      b = publish_one<ForwardAll>( pub, cache.rpd[ 0 ], fwd );
-    else if ( cache.n == 2 )
-      b = publish_multi<2, ForwardAll>( pub, cache.rpd, fwd );
-    else {
-      for ( uint8_t i = 0; i < cache.n; i++ )
-        this->poll.pub_queue.push( &cache.rpd[ i ] );
-      b = publish_queue<ForwardAll>( pub, this->poll.pub_queue, fwd );
-    }
-  }
-  if ( rcount_total != NULL )
-    *rcount_total = fwd.total;
-  return b;
-}
-#endif
 /* publish to some destination */
 bool
 RoutePublish::forward_some( EvPublish &pub,  uint32_t *routes,
-                            uint32_t rcnt ) noexcept
+                            uint32_t rcnt,  BPData *data ) noexcept
 {
   ForwardSome fwd_some( *this, routes, rcnt );
-  return forward_message<ForwardSome>( pub, *this, fwd_some );
+  return forward_message<ForwardSome>( pub, *this, fwd_some, data );
 }
 /* publish except to fd */
 bool
-RoutePublish::forward_not_fd( EvPublish &pub,  uint32_t not_fd ) noexcept
+RoutePublish::forward_not_fd( EvPublish &pub,  uint32_t not_fd,
+                              BPData *data ) noexcept
 {
   ForwardNotFd fwd_not( *this, not_fd );
-  return forward_message<ForwardNotFd>( pub, *this, fwd_not );
+  return forward_message<ForwardNotFd>( pub, *this, fwd_not, data );
 }
 /* publish except to fd */
 bool
 RoutePublish::forward_not_fd2( EvPublish &pub,  uint32_t not_fd,
-                               uint32_t not_fd2 ) noexcept
+                               uint32_t not_fd2,  BPData *data ) noexcept
 {
   ForwardNotFd2 fwd_not2( *this, not_fd, not_fd2 );
-  return forward_message<ForwardNotFd2>( pub, *this, fwd_not2 );
+  return forward_message<ForwardNotFd2>( pub, *this, fwd_not2, data );
 }
+#if 0
 /* publish to destinations, no route matching */
 bool
 RoutePublish::forward_all( EvPublish &pub,  uint32_t *routes,
@@ -1173,9 +1336,10 @@ RoutePublish::forward_all( EvPublish &pub,  uint32_t *routes,
   }
   return flow_good;
 }
-
+#endif
 bool
-RoutePublish::forward_set( EvPublish &pub,  const BitSpace &fdset ) noexcept
+RoutePublish::forward_set_no_route( EvPublish &pub,
+                                    const BitSpace &fdset ) noexcept
 {
   uint32_t cnt       = 0;
   bool     flow_good = true;
@@ -1211,8 +1375,8 @@ RoutePublish::forward_set( EvPublish &pub,  const BitSpace &fdset ) noexcept
 }
 
 bool
-RoutePublish::forward_set_not_fd( EvPublish &pub,  const BitSpace &fdset,
-                                  uint32_t not_fd ) noexcept
+RoutePublish::forward_set_no_route_not_fd( EvPublish &pub,  const BitSpace &fdset,
+                                           uint32_t not_fd ) noexcept
 {
   uint32_t cnt       = 0;
   bool     flow_good = true;
@@ -1248,7 +1412,7 @@ RoutePublish::forward_set_not_fd( EvPublish &pub,  const BitSpace &fdset,
 
 /* publish to one destination */
 bool
-RoutePublish::forward_to( EvPublish &pub,  uint32_t fd ) noexcept
+RoutePublish::forward_to( EvPublish &pub,  uint32_t fd,  BPData *data ) noexcept
 {
   uint8_t  n = 0;
   uint32_t phash[ MAX_RTE ];
@@ -1292,6 +1456,10 @@ RoutePublish::forward_to( EvPublish &pub,  uint32_t fd ) noexcept
   EvSocket * s;
   bool       b = true;
   if ( fd <= this->poll.maxfd && (s = this->poll.sock[ fd ]) != NULL ) {
+    if ( data != NULL ) {
+      if ( data->has_back_pressure( this->poll, fd ) && ! data->bp_fwd() )
+        return false;
+    }
     b = s->on_msg( pub );
     if ( kv_pub_debug ) {
       printf( "fwd_to_%u ok\n", fd );
@@ -1910,39 +2078,60 @@ EvConnection::read( void ) noexcept
       return;
     }
     /* process was not able to drain read buf */
-    if ( ! this->resize_recv_buf() )
+    if ( ! this->resize_recv_buf() ) {
+      this->popall();
+      this->push( EV_CLOSE );
       return;
+    }
   }
 }
 /* if msg is too large for existing buffers, resize it */
 bool
-EvConnection::resize_recv_buf( void ) noexcept
+EvConnection::resize_recv_buf( uint32_t need_bytes ) noexcept
 {
-  size_t newsz = this->recv_size * 2;
-  if ( newsz != (size_t) (uint32_t) newsz )
+  if ( need_bytes == 0 )
+    need_bytes = this->recv_size * 2;
+  else
+    need_bytes = align<uint32_t>( need_bytes, 256 );
+  if ( this->recv_size > 0x40000000U / 2 ) {
+    this->set_sock_err( EV_ERR_ALLOC, 0 );
     return false;
-  void * ex_recv_buf = ::malloc( newsz );
-  if ( ex_recv_buf == NULL )
+  }
+  void * ex_recv_buf = ::malloc( need_bytes );
+  if ( ex_recv_buf == NULL ) {
+    this->set_sock_err( EV_ERR_ALLOC, errno );
     return false;
+  }
   ::memcpy( ex_recv_buf, &this->recv[ this->off ], this->len );
   this->len -= this->off;
   this->off  = 0;
   if ( this->recv != this->recv_buf )
     ::free( this->recv );
   this->recv = (char *) ex_recv_buf;
-  this->recv_size = (uint32_t) newsz;
+  this->recv_size = need_bytes;
+  if ( need_bytes > this->recv_max ) {
+    this->recv_max = need_bytes;
+    /*printf( "%s recv_max %u\n", this->name, this->recv_max );*/
+  }
   return true;
 }
 /* write data to sock fd */
 void
 EvConnection::write( void ) noexcept
 {
-  StreamBuf & strm = *this;
+  StreamBuf & strm    = *this;
+  bool        is_high = this->test( EV_WRITE_HI );
   if ( strm.sz > 0 )
     strm.flush();
   else if ( strm.wr_pending == 0 ) {
+write_finished:;
     this->pop3( EV_WRITE, EV_WRITE_HI, EV_WRITE_POLL );
     this->push( EV_READ_LO );
+    if ( is_high ) {
+write_notify:;
+      if ( ! this->wait_empty() )
+        this->notify_ready();
+    }
     return;
   }
 
@@ -1970,12 +2159,13 @@ EvConnection::write( void ) noexcept
 #endif
   if ( nbytes > 0 ) {
     strm.wr_pending -= nbytes;
+    strm.wr_free    += nbytes;
     this->bytes_sent += nbytes;
+    this->active_ns = this->poll.now_ns;
     nb += nbytes;
     if ( strm.wr_pending == 0 ) {
       strm.reset();
-      this->pop3( EV_WRITE, EV_WRITE_HI, EV_WRITE_POLL );
-      this->push( EV_READ_LO );
+      goto write_finished;
     }
     else {
       size_t woff = 0;
@@ -1999,6 +2189,12 @@ EvConnection::write( void ) noexcept
                    sizeof( this->iov[ 0 ] ) * ( this->idx - woff ) );
         this->idx -= woff;
       }
+      if ( is_high ) {
+        if ( strm.wr_pending < this->send_highwater / 2 ) {
+          this->pushpop( EV_WRITE, EV_WRITE_HI );
+          goto write_notify;
+        }
+      }
     }
     return;
   }
@@ -2006,6 +2202,8 @@ EvConnection::write( void ) noexcept
     if ( nbytes < 0 && errno == ENOTCONN && this->bytes_sent == 0 ) {
       this->push( EV_WRITE_HI );
       this->push( EV_WRITE_POLL );
+      if ( is_high )
+        goto write_notify;
       return;
     }
     else {
@@ -2015,10 +2213,12 @@ EvConnection::write( void ) noexcept
         this->set_sock_err( EV_ERR_WRITE_RESET, errno );
       this->popall();
       this->push( EV_CLOSE );
+      if ( is_high )
+        goto write_notify;
       return;
     }
   }
-  if ( this->test( EV_WRITE_HI ) )
+  if ( is_high )
     this->push( EV_WRITE_POLL );
   else
     this->push( EV_WRITE_HI );
@@ -2028,8 +2228,7 @@ bool
 EvDgram::alloc_mmsg( void ) noexcept
 {
   static const size_t gsz = sizeof( struct sockaddr_storage ) +
-                            sizeof( struct iovec ),
-                      psz = 64 * 1024 + gsz;
+                            sizeof( struct iovec );
   StreamBuf      & strm     = *this;
   uint32_t         i,
                    new_size;
@@ -2042,17 +2241,17 @@ EvDgram::alloc_mmsg( void ) noexcept
   }
   new_size = this->in_nsize - this->in_size;
   /* allocate new_size buffers, and in_nsize headers */
-  this->in_mhdr = (struct mmsghdr *) strm.alloc_temp( psz * new_size +
+  this->in_mhdr = (struct mmsghdr *) strm.alloc_temp( gsz * new_size +
                                     sizeof( struct mmsghdr ) * this->in_nsize );
-  if ( this->in_mhdr == NULL )
+  void * buf = strm.alloc_temp( 64 * 1024 * new_size );
+  if ( this->in_mhdr == NULL || buf == NULL )
     return false;
   i = this->in_size;
   /* if any existing buffers exist, the pointers will be copied to the head */
   if ( i > 0 )
     ::memcpy( this->in_mhdr, sav, sizeof( sav[ 0 ] ) * i );
   /* initialize the rest of the buffers at the tail */
-  void *p = (void *) &this->in_mhdr[ this->in_nsize ]/*,
-       *g = (void *) &((uint8_t *) p)[ gsz * this->in_size ]*/ ;
+  void *p = (void *) &this->in_mhdr[ this->in_nsize ];
   for ( ; i < this->in_nsize; i++ ) {
     this->in_mhdr[ i ].msg_hdr.msg_name    = (struct sockaddr *) p;
     this->in_mhdr[ i ].msg_hdr.msg_namelen = sizeof( struct sockaddr_storage );
@@ -2062,9 +2261,9 @@ EvDgram::alloc_mmsg( void ) noexcept
     this->in_mhdr[ i ].msg_hdr.msg_iovlen = 1;
     p = &((uint8_t *) p)[ sizeof( struct iovec ) ];
 
-    this->in_mhdr[ i ].msg_hdr.msg_iov[ 0 ].iov_base = p;
+    this->in_mhdr[ i ].msg_hdr.msg_iov[ 0 ].iov_base = buf;
     this->in_mhdr[ i ].msg_hdr.msg_iov[ 0 ].iov_len  = 64 * 1024;
-    p = &((uint8_t *) p)[ 64 * 1024 ];
+    buf = &((uint8_t *) buf)[ 64 * 1024 ];
 
     this->in_mhdr[ i ].msg_hdr.msg_control    = NULL;
     this->in_mhdr[ i ].msg_hdr.msg_controllen = 0;
@@ -2186,16 +2385,15 @@ EvDgram::read( void ) noexcept
 void
 EvDgram::write( void ) noexcept
 {
-  int nmsgs = 0;
+  bool is_high = this->test( EV_WRITE_HI );
+  int  nmsgs = 0;
 #if ! defined( NO_SENDMMSG ) && ! defined( _MSC_VER )
   if ( this->out_nmsgs > 1 ) {
     nmsgs = ::sendmmsg( this->fd, this->out_mhdr, this->out_nmsgs, 0 );
     if ( nmsgs > 0 ) {
       for ( uint32_t i = 0; i < this->out_nmsgs; i++ )
         this->bytes_sent += this->out_mhdr[ i ].msg_len;
-      this->clear_buffers();
-      this->pop3( EV_WRITE, EV_WRITE_HI, EV_WRITE_POLL );
-      return;
+      goto write_notify;
     }
   }
   else
@@ -2226,8 +2424,13 @@ EvDgram::write( void ) noexcept
     this->push( EV_CLOSE );
   }
   /* if msgs were unsent, this drops them */
+write_notify:;
   this->clear_buffers();
   this->pop3( EV_WRITE, EV_WRITE_HI, EV_WRITE_POLL );
+  if ( is_high ) {
+    if ( ! this->wait_empty() )
+      this->notify_ready();
+  }
 }
 /* if some alloc failed, kill the client */
 void
