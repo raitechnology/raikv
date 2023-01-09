@@ -2102,8 +2102,8 @@ EvConnection::resize_recv_buf( uint32_t need_bytes ) noexcept
     this->set_sock_err( EV_ERR_ALLOC, errno );
     return false;
   }
-  ::memcpy( ex_recv_buf, &this->recv[ this->off ], this->len );
   this->len -= this->off;
+  ::memcpy( ex_recv_buf, &this->recv[ this->off ], this->len );
   this->off  = 0;
   if ( this->recv != this->recv_buf )
     ::free( this->recv );
