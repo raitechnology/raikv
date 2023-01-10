@@ -493,8 +493,9 @@ struct RouteVec {
 
   RouteVec() : vec( 0 ), max_hash_val( 0 ), vec_size( 0 ), id( 0 ),
                seqno( 0 ) {}
-  RouteVec( RouteVec &v ) : vec( v.vec ), max_hash_val( v.max_hash_val ),
-                            vec_size( v.vec_size ), id( v.id ) {}
+  /*RouteVec( RouteVec &v ) : vec( v.vec ), max_hash_val( v.max_hash_val ),
+                            vec_size( v.vec_size ), id( v.id ) {}*/
+  ~RouteVec() { this->release(); }
   void release( void ) {
     if ( this->vec_size > 0 ) {
       for ( uint32_t i = 0; i < this->vec_size; i++ )

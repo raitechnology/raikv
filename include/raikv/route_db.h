@@ -1006,13 +1006,13 @@ struct RedisKeyspaceNotify : public RouteNotify {
 };
 #endif
 struct KvPubSub; /* manages pubsub through kv shm */
-struct HashTab;
-struct EvShm;
+struct HashTab;  /* shm ht */
+struct EvShm;    /* shm context */
 /*struct RedisKeyspaceNotify;*/
 
 struct RoutePublish : public RouteDB {
   EvPoll  & poll;
-  HashTab * map;             /* the data store */
+  HashTab * map;             /* the shm data store */
 
   DLinkList<RouteNotify> notify_list;
   KvPubSub             * pubsub;   /* cross process pubsub */
