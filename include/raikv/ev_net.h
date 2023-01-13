@@ -308,10 +308,10 @@ struct FDSetStack : public ArraySpace<FDSet *, 4> {
   size_t tos;
   FDSetStack() : tos( 0 ) {}
   FDSet & push( void ) {
-    if ( this->tos >= this->size ) {
+    if ( this->tos >= this->size )
       this->make( this->tos + 1, true );
+    if ( this->ptr[ this->tos ] == NULL )
       this->ptr[ this->tos ] = new ( ::malloc( sizeof( FDSet ) ) ) FDSet();
-    }
     return *this->ptr[ this->tos++ ];
   }
   void pop( void ) {
