@@ -1095,14 +1095,12 @@ publish_queue( EvPublish &pub,  RoutePublishQueue &queue,
   return flow_good;
 }
 #endif
-static const uint32_t block_state_test = ( 1U << EV_WRITE_POLL ) |
-                                         ( 1U << EV_WRITE_HI );
 void
 EvSocket::notify_ready( void ) noexcept
 {
   BPList & list = this->poll.bp_wait.ptr[ this->fd ];
   while ( ! list.is_empty() ) {
-    if ( this->test_bits( block_state_test ) )
+    if ( this->test2( EV_WRITE_POLL, EV_WRITE_HI ) )
       return;
     BPData * data = list.pop_hd();
     data->bp_flags &= ~BP_IN_LIST;
@@ -1149,7 +1147,7 @@ bool
 BPData::has_back_pressure( EvPoll &poll, uint32_t fd ) noexcept
 {
   EvSocket * s = poll.sock[ fd ];
-  if ( s->test_bits( block_state_test ) ) {
+  if ( s->test2( EV_WRITE_POLL, EV_WRITE_HI ) ) {
     if ( this->bp_in_list() )
       poll.bp_wait.pop( this->bp_fd, *this );
     this->bp_state = s->sock_state;
@@ -2039,6 +2037,7 @@ EvConnection::read( void ) noexcept
       if ( nbytes > 0 ) {
         this->len += (uint32_t) nbytes;
         this->bytes_recv += nbytes;
+        this->recv_count++;
         this->push( EV_PROCESS );
         /* if buf almost full, switch to low priority read */
         if ( this->len >= this->recv_highwater )
@@ -2073,7 +2072,7 @@ EvConnection::read( void ) noexcept
       return;
     }
     /* allow draining of existing buf before resizing */
-    if ( this->test( EV_READ ) ) {
+    if ( this->test( EV_READ ) && this->off < this->len ) {
       this->pushpop( EV_READ_LO, EV_READ );
       return;
     }
@@ -2089,32 +2088,224 @@ EvConnection::read( void ) noexcept
 bool
 EvConnection::resize_recv_buf( uint32_t need_bytes ) noexcept
 {
+  size_t new_size;
   if ( need_bytes == 0 )
-    need_bytes = this->recv_size * 2;
+    new_size = (size_t) this->recv_size * 2;
   else
-    need_bytes = align<uint32_t>( need_bytes, 256 );
-  if ( this->recv_size > 0x40000000U / 2 ) {
+    new_size = align<uint32_t>( need_bytes, 256 );
+  if ( new_size > (size_t) 0xffffffffU ) {
     this->set_sock_err( EV_ERR_ALLOC, 0 );
     return false;
   }
-  void * ex_recv_buf = ::malloc( need_bytes );
-  if ( ex_recv_buf == NULL ) {
-    this->set_sock_err( EV_ERR_ALLOC, errno );
-    return false;
+  void * ex_recv_buf;
+  if ( new_size <= sizeof( this->recv_buf ) )
+    ex_recv_buf = this->recv_buf;
+  else {
+    ex_recv_buf = EvPoll::ev_poll_alloc( this, new_size );
+#if 0
+    if ( this->poll.free_buf != NULL ) {
+      ex_recv_buf = this->poll.free_buf;
+      if ( new_size != this->poll.free_size ) {
+        ex_recv_buf = ::realloc( ex_recv_buf, new_size );
+        this->malloc_count++;
+      }
+      this->poll.free_buf  = NULL;
+      this->poll.free_size = 0;
+    }
+    else {
+      ex_recv_buf = ::malloc( new_size );
+      this->malloc_count++;
+    }
+#endif
+    if ( ex_recv_buf == NULL ) {
+      this->set_sock_err( EV_ERR_ALLOC, errno );
+      return false;
+    }
   }
   this->len -= this->off;
-  ::memcpy( ex_recv_buf, &this->recv[ this->off ], this->len );
+  if ( this->len > 0 )
+    ::memmove( ex_recv_buf, &this->recv[ this->off ], this->len );
   this->off  = 0;
-  if ( this->recv != this->recv_buf )
-    ::free( this->recv );
-  this->recv = (char *) ex_recv_buf;
-  this->recv_size = need_bytes;
-  if ( need_bytes > this->recv_max ) {
-    this->recv_max = need_bytes;
-    /*printf( "%s recv_max %u\n", this->name, this->recv_max );*/
+  if ( this->recv != this->recv_buf ) {
+    if ( this->zref_index != 0 ) {
+      this->poll.zero_copy_deref( this->zref_index, true );
+      this->zref_index = 0;
+    }
+    else {
+      this->poll.poll_free( this->recv, this->recv_size );
+#if 0
+      if ( this->poll.free_buf != NULL )
+        ::free( this->poll.free_buf );
+      this->poll.free_buf  = this->recv;
+      this->poll.free_size = this->recv_size;
+#endif
+    }
   }
+  this->recv = (char *) ex_recv_buf;
+  this->recv_size = new_size;
+  if ( new_size > this->recv_max )
+    this->recv_max = (uint32_t) new_size;
   return true;
 }
+
+uint32_t
+EvPoll::zero_copy_ref( uint32_t src_route,  const void *msg,
+                       size_t msg_len ) noexcept
+{
+  if ( src_route > this->maxfd || this->sock[ src_route ] == NULL ||
+       this->sock[ src_route ]->sock_base != EV_CONNECTION_BASE )
+    return 0;
+  EvConnection & conn = *(EvConnection *) this->sock[ src_route ];
+
+  if ( conn.recv == conn.recv_buf ||
+       (char *) msg < conn.recv ||
+       &((char *) msg)[ msg_len ] > &conn.recv[ conn.len ] )
+    return 0;
+
+  bool is_new = false;
+  if ( conn.zref_index == 0 ) {
+    conn.zref_index = this->zref.count + 1;
+    is_new = true;
+  }
+  ZeroRef & zr = this->zref[ conn.zref_index - 1 ];
+  if ( is_new ) {
+    zr.buf       = conn.recv;
+    zr.ref_count = 1;
+    zr.owner     = src_route;
+    zr.buf_size  = conn.recv_size;
+    conn.zref_count++;
+  }
+  zr.ref_count++;
+  return conn.zref_index;
+}
+
+void
+EvPoll::zero_copy_deref( uint32_t zref_index,  bool owner ) noexcept
+{
+  ZeroRef & zr = this->zref[ zref_index - 1 ];
+
+  if ( owner )
+    zr.owner = (uint32_t) -1;
+  if ( --zr.ref_count != 0 ) {
+    uint32_t src_route = zr.owner;
+    if ( zr.ref_count == 1 && src_route != (uint32_t) -1 ) {
+      if ( src_route <= this->maxfd && this->sock[ src_route ] != NULL &&
+           this->sock[ src_route ]->sock_base == EV_CONNECTION_BASE ) {
+        EvConnection & conn = *(EvConnection *) this->sock[ src_route ];
+        if ( conn.recv == zr.buf && conn.off == conn.len &&
+             conn.pending() == 0 ) {
+          conn.zref_index = 0;
+          conn.reset_recv();
+          goto release_buf;
+        }
+      }
+    }
+    return;
+  }
+release_buf:;
+#if 0
+  if ( zr.buf_size > this->free_size && zr.buf_size <= 1024 * 1024 ) {
+    if ( this->free_buf != NULL )
+      ::free( this->free_buf );
+    this->free_buf  = zr.buf;
+    this->free_size = zr.buf_size;
+  }
+  else {
+    ::free( zr.buf );
+  }
+#endif
+  this->poll_free( zr.buf, zr.buf_size );
+  if ( zref_index == this->zref.count ) {
+    this->zref.count--;
+    while ( this->zref.count > 0 &&
+            this->zref.ptr[ this->zref.count - 1 ].ref_count == 0 )
+      this->zref.count--;
+  }
+}
+
+static const size_t BLOCK_SIZE = 16 * 1024;
+
+void *
+EvPoll::ev_poll_alloc( void *cl,  size_t size ) noexcept
+{
+  EvSocket & sock = *(EvSocket *) cl;
+  if ( size <= 63 * BLOCK_SIZE ) {
+    size_t     asize = align<size_t>( size, BLOCK_SIZE );
+    uint32_t   bits  = asize / BLOCK_SIZE;
+    uint32_t & free_alloced = sock.poll.free_alloced;
+    static const uint32_t N = sizeof( sock.poll.free_size ) /
+                              sizeof( sock.poll.free_size[ 0 ] );
+    static const size_t ALLOC_SIZE = BLOCK_SIZE * 64 * N;
+
+    if ( free_alloced + bits <= N * 64 ) {
+      uint64_t   mask = ( (uint64_t) 1 << bits ) - 1;
+      uint64_t * free_size = sock.poll.free_size;
+      for ( uint32_t i = 0; i < N; i++ ) {
+        if ( ~free_size[ i ] == 0 )
+          continue;
+        uint32_t shift = kv_ffsl( ~free_size[ i ] ) - 1;
+        for ( ; shift <= 64 - bits; shift++ ) {
+          if ( ( free_size[ i ] & ( mask << shift ) ) == 0 ) {
+            char * buf = sock.poll.free_buf;
+            if ( buf == NULL ) {
+              if ( (buf = (char *) ::malloc( ALLOC_SIZE )) == NULL )
+                return NULL;
+              sock.poll.free_buf = buf;
+              sock.poll.free_end = &buf[ ALLOC_SIZE ];
+            }
+            free_size[ i ] |= ( mask << shift );
+            free_alloced   += bits;
+            if ( sock.sock_base == EV_CONNECTION_BASE )
+              ((EvConnection &) sock).palloc_count++;
+            return (void *) &buf[ BLOCK_SIZE * ( shift + 64 * i ) ];
+          }
+        }
+      }
+    }
+  }
+  if ( sock.sock_base == EV_CONNECTION_BASE )
+    ((EvConnection &) sock).malloc_count++;
+  return ::malloc( size );
+}
+
+void
+EvPoll::poll_free( void *ptr,  size_t size ) noexcept
+{
+  if ( (char *) ptr >= this->free_buf && (char *) ptr < this->free_end ) {
+    size = align<size_t>( size, BLOCK_SIZE );
+    uint32_t bits = size / BLOCK_SIZE;
+    uint64_t mask = ( (uint64_t) 1 << bits ) - 1;
+    uint32_t shift = (size_t) ( (char *) ptr - this->free_buf ) / BLOCK_SIZE;
+    this->free_alloced -= bits;
+    for ( uint32_t i = 0; ; i++ ) {
+      if ( shift < 64 ) {
+        this->free_size[ i ] &= ~( mask << shift );
+        return;
+      }
+      shift -= 64;
+    }
+  }
+  ::free( ptr );
+}
+
+void
+EvPoll::ev_poll_free( void *cl,  void *ptr,  size_t size ) noexcept
+{
+  EvSocket & sock = *(EvSocket *) cl;
+  sock.poll.poll_free( ptr, size );
+}
+
+uint32_t
+EvPoll::zero_copy_ref_count( uint32_t zref_index ) noexcept
+{
+  ZeroRef & zr = this->zref[ zref_index - 1 ];
+
+  uint32_t count = zr.ref_count;
+  if ( zr.owner != (uint32_t) -1 )
+    count--;
+  return count;
+}
+
 /* write data to sock fd */
 void
 EvConnection::write( void ) noexcept
@@ -2161,10 +2352,11 @@ write_notify:;
     strm.wr_pending -= nbytes;
     strm.wr_free    += nbytes;
     this->bytes_sent += nbytes;
-    this->active_ns = this->poll.now_ns;
+    this->send_count++;
     nb += nbytes;
     if ( strm.wr_pending == 0 ) {
-      strm.reset();
+      this->active_ns = this->poll.now_ns;
+      this->clear_write_buffers();
       goto write_finished;
     }
     else {
@@ -2191,6 +2383,7 @@ write_notify:;
       }
       if ( is_high ) {
         if ( strm.wr_pending < this->send_highwater / 2 ) {
+          this->active_ns = this->poll.now_ns;
           this->pushpop( EV_WRITE, EV_WRITE_HI );
           goto write_notify;
         }
@@ -2202,8 +2395,6 @@ write_notify:;
     if ( nbytes < 0 && errno == ENOTCONN && this->bytes_sent == 0 ) {
       this->push( EV_WRITE_HI );
       this->push( EV_WRITE_POLL );
-      if ( is_high )
-        goto write_notify;
       return;
     }
     else {

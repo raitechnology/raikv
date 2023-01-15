@@ -150,10 +150,10 @@ cmd_error:;
 #if defined( USE_KV_MURMUR_HASH )
              "murmur "
 #endif
-             "crc"
-             "crcx2"
-             "crcx4"
-             "crcar"
+             "crc "
+             "crcx2 "
+             "crcx4 "
+             "crcar "
              ") (keylen)\n",
              argv[ 0 ] );
     return 1;

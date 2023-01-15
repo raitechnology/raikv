@@ -5,10 +5,10 @@
 extern "C" {
 #endif
 typedef void *(*kv_alloc_func_t)( void *closure,  size_t item_size );
-typedef void (*kv_free_func_t)( void *closure,  void *item );
+typedef void (*kv_free_func_t)( void *closure,  void *item,  size_t item_size );
 /* WorkAlloc::big_alloc */
 extern void *kv_key_ctx_big_alloc( void *closure,  size_t item_size );
-extern void kv_key_ctx_big_free( void *closure,  void *item );
+extern void kv_key_ctx_big_free( void *closure,  void *item,  size_t item_size);
 
 struct kv_work_alloc_s;
 typedef struct kv_work_alloc_s kv_work_alloc_t;
@@ -34,16 +34,16 @@ struct ScratchMem {
     ScratchMem * owner;
     MBlock     * next,
                * back;
-    uint32_t     off2, pad;
+    uint32_t     off2, size;
 
     void * arena_ptr( size_t i ) {
       return &((uint8_t *) this )[ i ];
     }
-    void init( ScratchMem *o ) {
+    void init( ScratchMem *o,  uint32_t sz ) {
       this->owner = o;
       this->next  = this->back = NULL;
       this->off2  = sizeof( MBlock );
-      this->pad   = 0x66699666U; /* to find in a mem dump */
+      this->size  = sz;
     }
   };
   struct MemHdr {
@@ -124,7 +124,8 @@ struct ScratchMem {
     }
     return false;
   }
-  void release_all( void ) noexcept;
+  size_t mem_size( void ) noexcept;          /* amount of mem alloced + fast */
+  void release_all( void ) noexcept;         /* free all blocks */
   MBlock *alloc_block( void ) noexcept;      /* alloc or reuse a block */
   void release_block( MBlock *m ) noexcept;  /* free or save an empty block */
   void reset( void ) {              /* reset all allocs */
@@ -164,8 +165,10 @@ template <size_t fast_size>
 struct WorkAllocT : public ScratchMem {
   BufAlign64 spc[ fast_size / sizeof( BufAlign64 ) ];
 
-  WorkAllocT() : ScratchMem( 2, 16 * 1024 - 32, this->spc,
-                             sizeof( this->spc ) ) {}
+  WorkAllocT( uint32_t cnt = 2, uint32_t sz = 16 * 1024 - 32,
+              kv_alloc_func_t ba = 0/*kv_key_ctx_big_alloc*/,
+              kv_free_func_t bf = 0/*kv_key_ctx_big_free*/,  void *cl = 0 )
+    : ScratchMem( cnt, sz, this->spc, sizeof( this->spc ), ba, bf, cl ) {}
 };
 }
 }

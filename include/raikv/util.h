@@ -127,14 +127,15 @@ template <class Int> static inline Int unaligned( const void *p ) {
 }
 
 static const size_t KV_CACHE_ALIGN = 64;
-static inline void *aligned_malloc( size_t sz ) {
-  sz = align<size_t>( sz, KV_CACHE_ALIGN );
+static inline void *aligned_malloc( size_t sz,
+                                    size_t alignment = KV_CACHE_ALIGN ) {
+  sz = align<size_t>( sz, alignment );
 #if defined( _MSC_VER )
-  return ::_aligned_malloc( sz, KV_CACHE_ALIGN );
+  return ::_aligned_malloc( sz, alignment );
 #elif defined( _ISOC11_SOURCE )
-  return ::aligned_alloc( KV_CACHE_ALIGN, sz ); /* >= RH7 */
+  return ::aligned_alloc( alignment, sz ); /* >= RH7 */
 #else
-  return ::memalign( KV_CACHE_ALIGN, sz ); /* RH5, RH6.. */
+  return ::memalign( alignment, sz ); /* RH5, RH6.. */
 #endif
 }
 static inline void aligned_free( void *p ) {
@@ -344,8 +345,9 @@ inline size_t int32_to_string( int32_t v,  char *buf ) {
 }
 
 uint64_t string_to_uint64( const char *b,  size_t len ) noexcept;
-
 int64_t string_to_int64( const char *b,  size_t len ) noexcept;
+bool valid_uint64( const char *b,  size_t len ) noexcept;
+bool valid_int64( const char *b,  size_t len ) noexcept;
 
 /* no eq padding */
 #define KV_BASE64_SIZE( sz ) ( ( ( sz ) * 8 + 5 ) / 6 )
