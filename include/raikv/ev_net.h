@@ -214,6 +214,10 @@ struct EvSocket : public PeerData /* fd and address of peer */EV_DBG_INHERIT {
    * EV_WRITE */
   uint32_t test_bits( uint32_t mask ) const { return this->sock_state & mask; }
   uint32_t test( int s ) const { return this->test_bits( 1U << s ); }
+  uint32_t test2( int s, int t ) const {
+    return this->test_bits( ( 1U << s ) | ( 1U << t ) ); }
+  uint32_t test3( int s, int t, int u ) const {
+    return this->test_bits( ( 1U << s ) | ( 1U << t ) | ( 1U << u ) ); }
   void push( int s )      { this->sock_state |= ( 1U << s ); }
   void pop( int s )       { this->sock_state &= ~( 1U << s ); }
   void pop2( int s, int t ) {
@@ -343,6 +347,13 @@ struct BPWait : public ArraySpace<BPList, 64> {
   void pop( uint32_t fd,  BPData &data ) noexcept;
 };
 
+struct ZeroRef {
+  char   * buf;
+  uint32_t ref_count,
+           owner,
+           buf_size;
+};
+
 struct EvPoll {
   static bool is_event_greater( EvSocket *s1,  EvSocket *s2 ) {
     int x1 = kv_ffsw( s1->sock_state ),
@@ -425,6 +436,11 @@ struct EvPoll {
   const char            * sock_type_str[ 256 ]; /* name of sock_type */
   void                  * sock_mem;
   size_t                  sock_mem_left;
+  ArrayCount<ZeroRef, 64> zref;
+  char                  * free_buf,
+                        * free_end;
+  uint64_t                free_size[ 2 ];
+  uint32_t                free_alloced;
 
   void * operator new( size_t, void *ptr ) { return ptr; }
   void operator delete( void *ptr ) { ::free( ptr ); }
@@ -444,8 +460,9 @@ struct EvPoll {
       recv_highwater( DEFAULT_RCV_BUFSIZE - 256 ),
       efd( -1 ), null_fd( -1 ), quit( 0 ),
       prefetch_pending( 0 ), sub_route( *this ), sock_mem( 0 ),
-      sock_mem_left( 0 ) {
+      sock_mem_left( 0 ), free_buf( 0 ), free_end( 0 ), free_alloced( 0 ) {
     ::memset( this->sock_type_str, 0, sizeof( this->sock_type_str ) );
+    ::memset( this->free_size, 0, sizeof( this->free_size ) );
   }
   /* alloc ALLOC_INCR(64) elems of the above list elems at a time, aligned 64 */
   template<class T, class... Ts>
@@ -501,6 +518,13 @@ struct EvPoll {
   void remove_sock( EvSocket *s ) noexcept; /* remove from poll set */
   bool timer_expire( EvTimerEvent &ev ) noexcept; /* process timer event fired */
   void process_quit( void ) noexcept;       /* quit state close socks */
+  uint32_t zero_copy_ref( uint32_t src_route,  const void *msg,
+                          size_t msg_len ) noexcept;
+  void zero_copy_deref( uint32_t zref_index,  bool owner ) noexcept;
+  uint32_t zero_copy_ref_count( uint32_t ref_index ) noexcept;
+  static void *ev_poll_alloc( void *cl,  size_t size ) noexcept;
+  void poll_free( void *ptr,  size_t size ) noexcept;
+  static void ev_poll_free( void *cl,  void *ptr,  size_t size ) noexcept;
 };
 
 struct EvConnection;
@@ -549,45 +573,75 @@ struct EvConnection : public EvSocket, public StreamBuf {
            recv_size,      /* recv buf size */
            recv_highwater, /* recv_highwater: switch to low priority read */
            send_highwater, /* send_highwater: switch to high priority write */
-           recv_max;
-  EvConnectionNotify * notify;
+           recv_max,       /* max recv size used by conn */
+           zref_index,     /* if an endpoint is using a zero copy ref */
+           malloc_count,
+           palloc_count,
+           zref_count;
+  uint64_t recv_count,
+           send_count;
+  EvConnectionNotify * notify; /* watch endpoint activity */
+
   EvConnection( EvPoll &p, const uint8_t t, EvConnectionNotify *n = NULL )
-      : EvSocket( p, t, EV_CONNECTION_BASE ) {
-    this->off      = 0;
-    this->len      = 0;
-    this->recv_max = sizeof( this->recv_buf );
-    this->notify   = n;
+      : EvSocket( p, t, EV_CONNECTION_BASE ),
+        StreamBuf( EvPoll::ev_poll_alloc, EvPoll::ev_poll_free, this ) {
+    this->notify         = n;
     this->reset_recv();
-  }
-  void reset_recv( void ) {
-    this->recv           = this->recv_buf;
-    this->recv_size      = sizeof( this->recv_buf );
     this->recv_highwater = this->poll.recv_highwater;
     this->send_highwater = this->poll.send_highwater;
+    this->recv_max       = sizeof( this->recv_buf );
+    this->zref_index     = 0;
+    this->malloc_count   = 0;
+    this->palloc_count   = 0;
+    this->zref_count     = 0;
+    this->recv_count     = 0;
+    this->send_count     = 0;
   }
   void release_buffers( void ) { /* release all buffs */
-    this->clear_buffers();
+    if ( this->recv != this->recv_buf ) {
+      if ( this->zref_index != 0 ) {
+        this->poll.zero_copy_deref( this->zref_index, true );
+        this->zref_index = 0;
+      }
+      else {
+        this->poll.poll_free( this->recv, this->recv_size );
+#if 0
+        ::free( this->recv );
+#endif
+      }
+    }
+    this->reset_recv();
     this->StreamBuf::release();
   }
-  void clear_buffers( void ) {   /* clear any allocations and counters */
-    this->StreamBuf::reset();
+  void reset_recv( void ) {
     this->off = this->len = 0;
-    if ( this->recv != this->recv_buf ) {
-      ::free( this->recv );
-      this->reset_recv();
-    }
+    this->recv = this->recv_buf;
+    this->recv_size = sizeof( this->recv_buf );
+  }
+  void clear_write_buffers( void ) {
+    for ( uint32_t i = 0; i < this->StreamBuf::ref_cnt; i++ )
+      this->poll.zero_copy_deref( this->StreamBuf::refs[ i ], false );
+    this->StreamBuf::reset();
   }
   void adjust_recv( void ) {     /* data is read at this->recv[ this->len ] */
     if ( this->off > 0 ) {
-      this->len -= this->off;
-      if ( this->len > 0 )
-        ::memmove( this->recv, &this->recv[ this->off ], this->len );
-      else if ( this->recv != this->recv_buf ) {
-        ::free( this->recv );
-        this->recv = this->recv_buf;
-        this->recv_size = sizeof( this->recv_buf );
+      if ( this->zref_index == 0 ) {
+        this->len -= this->off;
+        if ( this->len > 0 )
+          ::memmove( this->recv, &this->recv[ this->off ], this->len );
+        else if ( this->recv != this->recv_buf ) {
+#if 0
+          ::free( this->recv );
+#endif
+          this->poll.poll_free( this->recv, this->recv_size );
+          this->recv = this->recv_buf;
+          this->recv_size = sizeof( this->recv_buf );
+        }
+        this->off = 0;
       }
-      this->off = 0;
+      else {
+        this->resize_recv_buf( sizeof( this->recv_buf ) );
+      }
     }
   }
   void recv_need( uint32_t need_bytes ) {
@@ -601,11 +655,9 @@ struct EvConnection : public EvSocket, public StreamBuf {
   virtual void write( void ) noexcept;     /* flush stream buffer */
 
   bool push_write_high( void ) {
-    if ( this->StreamBuf::pending() > 0 ) {
+    if ( this->StreamBuf::pending() > 0 )
       this->push( EV_WRITE_HI );
-      return true;
-    }
-    return false;
+    return this->test3( EV_WRITE_POLL, EV_WRITE_HI, EV_WRITE ) != 0;
   }
   bool push_write( void ) {
     size_t buflen = this->StreamBuf::pending();
@@ -613,9 +665,8 @@ struct EvConnection : public EvSocket, public StreamBuf {
       this->push( EV_WRITE );
       if ( buflen > this->send_highwater )
         this->pushpop( EV_WRITE_HI, EV_WRITE );
-      return true;
     }
-    return false;
+    return this->test3( EV_WRITE_POLL, EV_WRITE_HI, EV_WRITE ) != 0;
   }
   bool idle_push_write( void ) {
     size_t buflen = this->StreamBuf::pending();
@@ -637,7 +688,9 @@ struct EvDgram : public EvSocket, public StreamBuf {
             in_nsize,  /* new array size, ajusted based on activity */
             out_nmsgs;
 
-  EvDgram( EvPoll &p, const uint8_t t,  const uint8_t b ) : EvSocket( p, t, b ),
+  EvDgram( EvPoll &p, const uint8_t t,  const uint8_t b )
+    : EvSocket( p, t, b ),
+      StreamBuf( EvPoll::ev_poll_alloc, EvPoll::ev_poll_free, this ),
     in_mhdr( 0 ), out_mhdr( 0 ), in_moff( 0 ), in_nmsgs( 0 ), in_size( 0 ),
     in_nsize( 1 ), out_nmsgs( 0 ) {}
   void zero( void ) {

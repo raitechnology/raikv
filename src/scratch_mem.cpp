@@ -18,7 +18,7 @@ kv_key_ctx_big_alloc( void * /*closure*/,  size_t item_size )
 }
 
 void
-kv_key_ctx_big_free( void * /*closure*/,  void *item )
+kv_key_ctx_big_free( void * /*closure*/,  void *item,  size_t )
 {
   return ::free( item );
 }
@@ -60,7 +60,7 @@ ScratchMem::alloc_block( void ) noexcept
       return NULL;
     this->block_cnt++;
   }
-  blk->init( this );
+  blk->init( this, this->alloc_size );
   this->off = sizeof( MBlock );
   this->blk_list.push_hd( blk );
   return blk;
@@ -75,9 +75,19 @@ ScratchMem::release_block( MBlock *blk ) noexcept
     this->blk_list.push_tl( blk );
   }
   else {
-    this->kv_big_free( this->closure, blk );
+    this->kv_big_free( this->closure, blk, blk->size );
     this->block_cnt--;
   }
+}
+
+size_t
+ScratchMem::mem_size( void ) noexcept
+{
+  size_t blk_size = this->alloc_size * this->block_cnt,
+         big_size = 0;
+  for ( BigBlock *big = this->big_list.hd; big != NULL; big = big->next )
+    big_size += big->hdr.size;
+  return this->fast_len + blk_size + big_size;
 }
 
 void
@@ -86,8 +96,10 @@ ScratchMem::release_all( void ) noexcept
   this->reset();
   this->free_cnt  = 0;
   this->block_cnt = 0;
-  while ( ! this->blk_list.is_empty() )
-    this->kv_big_free( this->closure, this->blk_list.pop_hd() );
+  while ( ! this->blk_list.is_empty() ) {
+    MBlock *blk = this->blk_list.pop_hd();
+    this->kv_big_free( this->closure, blk, blk->size );
+  }
 }
 
 void
@@ -100,8 +112,10 @@ ScratchMem::reset_slow( void ) noexcept
     this->free_cnt = this->block_cnt;
   }
   this->off = (uint32_t) this->alloc_size;
-  while ( ! this->big_list.is_empty() )
-    this->kv_big_free( this->closure, this->big_list.pop_hd() );
+  while ( ! this->big_list.is_empty() ) {
+    BigBlock *big = this->big_list.pop_hd();
+    this->kv_big_free( this->closure, big, big->hdr.size );
+  }
   this->fast = ( this->fast_len != 0 );
 }
 
@@ -203,7 +217,7 @@ ScratchMem::release( void *p ) noexcept
       BigBlock *big = (BigBlock *) ( (uint8_t *) p - sizeof( BigBlock ) );
       ScratchMem &_this = *big->owner;
       _this.big_list.pop( big );
-      _this.kv_big_free( _this.closure, big );
+      _this.kv_big_free( _this.closure, big, big->hdr.size );
     }
   }
   else {

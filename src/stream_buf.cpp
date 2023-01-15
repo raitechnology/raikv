@@ -34,6 +34,16 @@ StreamBuf::expand_iov( void ) noexcept
 }
 
 void
+StreamBuf::expand_refs( void ) noexcept
+{
+  void *p;
+  p = this->alloc_temp( sizeof( this->refs[ 0 ] ) * this->ref_size * 2 );
+  ::memcpy( p, this->refs, sizeof( this->refs[ 0 ] ) * this->ref_size );
+  this->refs  = (uint32_t *) p;
+  this->ref_size *= 2;
+}
+
+void
 StreamBuf::temp_gc( void ) noexcept
 {
   /*printf( "wr_pending %lu block_cnt %u vlen %lu free %lu\n",

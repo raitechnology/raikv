@@ -88,6 +88,11 @@ server_defines = -DKV_VER=$(ver_build)
 lnk_lib     := $(libd)/libraikv.a -lcares
 dlnk_lib    := -lraikv -lcares
 
+$(objd)/print.o : .copr/Makefile
+$(objd)/print.fpic.o : .copr/Makefile
+$(objd)/server.o : .copr/Makefile
+$(objd)/server.fpic.o : .copr/Makefile
+
 libraikv_files := key_ctx ht_linear ht_cuckoo key_hash msg_ctx ht_stats \
                   ht_init scratch_mem util rela_ts radix_sort print \
 		  ev_net route_db timer_queue stream_buf array_out \
@@ -122,6 +127,8 @@ all_exes      += $(bind)/kv_test
 all_depends   += $(kv_test_deps)
 
 hash_test_defines = -DKV_VER=$(ver_build)
+$(objd)/hash_test.o : .copr/Makefile
+$(objd)/hash_test.fpic.o : .copr/Makefile
 hash_test_files := hash_test
 hash_test_cfile := $(addprefix test/, $(addsuffix .cpp, $(hash_test_files)))
 hash_test_objs  := $(addprefix $(objd)/, $(addsuffix .o, $(hash_test_files)))

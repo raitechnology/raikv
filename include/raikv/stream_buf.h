@@ -89,19 +89,30 @@ struct StreamBuf {
 
   kv::WorkAllocT< SND_BUFSIZE > tmp;
   struct iovec iovbuf[ 32 ]; /* vec of send buffers */
-  iovec * iov;         /* output vectors written to stream */
-  char  * out_buf;     /* current buffer to fill, up to BUFSIZE */
-  size_t  vlen,        /* length of iov[] */
-          wr_pending;  /* how much is in send buffers total */
-  size_t  sz,          /* sz bytes in out_buf */
-          idx,         /* head data in iov[] to send */
-          wr_gc,       /* when to recover free space (free > gc) */
-          wr_free,     /* amount of free space */
-          wr_used,     /* current space allocated */
-          wr_max;      /* the maximum space allocated */
-  bool    alloc_fail;  /* if alloc send buffers below failed */
+  iovec  * iov;         /* output vectors written to stream */
+  char   * out_buf;     /* current buffer to fill, up to BUFSIZE */
+  size_t   vlen,        /* length of iov[] */
+           wr_pending;  /* how much is in send buffers total */
+  size_t   sz,          /* sz bytes in out_buf */
+           idx,         /* head data in iov[] to send */
+           wr_gc,       /* when to recover free space (free > gc) */
+           wr_free,     /* amount of free space */
+           wr_used,     /* current space allocated */
+           wr_max;      /* the maximum space allocated */
+  uint32_t ref_cnt,     /* zero copy ref cnt */
+           ref_size,    /* refs[] array size */
+         * refs,        /* array of zero copy ref indexes */
+           refbuf[ 2 ]; /* initial refs[] */
+  bool     alloc_fail;  /* if alloc send buffers below failed */
+  char     zero, crlf_buf[ 2 ];
 
-  StreamBuf() : idx( 0 ), wr_used( 1 ) { this->reset(); this->wr_max = 0; }
+  StreamBuf( kv_alloc_func_t ba,  kv_free_func_t bf, void *cl )
+   : tmp( 0, SND_BUFSIZE/2, ba, bf, cl ), idx( 0 ), wr_used( 1 ), ref_cnt( 0 ) {
+    this->reset();
+    this->wr_max = 0;
+    this->zero   = 0;
+    this->crlf_buf[ 0 ] = '\r'; this->crlf_buf[ 1 ] = '\n';
+  }
 
   void release( void ) {
     this->reset();
@@ -178,6 +189,9 @@ struct StreamBuf {
     this->wr_gc      = 4 * 1024 * 1024;
     this->wr_free    = 0;
     this->wr_used    = 0;
+    this->ref_cnt    = 0;
+    this->ref_size   = sizeof( this->refbuf ) / sizeof( this->refbuf[ 0 ] );
+    this->refs       = this->refbuf;
     this->alloc_fail = false;
   }
   void reset( void ) {
@@ -187,6 +201,7 @@ struct StreamBuf {
     this->tmp.reset();
   }
   void expand_iov( void ) noexcept;
+  void expand_refs( void ) noexcept;
 
   void prepend_flush( size_t i ) { /* move work buffer to front of iov */
     this->flush();
@@ -209,22 +224,62 @@ struct StreamBuf {
     if ( this->wr_free > this->wr_gc )
       this->temp_gc();
   }
-  void append_iov( void *p,  size_t amt ) {
+  void append_iov( const void *p,  size_t amt ) {
     if ( this->out_buf != NULL && this->sz > 0 )
       this->flush();
     if ( this->idx == this->vlen )
       this->expand_iov();
-    this->iov[ this->idx ].iov_base  = p;
+    this->iov[ this->idx ].iov_base  = (void *) p;
     this->iov[ this->idx++ ].iov_len = amt;
     this->wr_pending += amt;
   }
-  void insert_iov( size_t i,  void *p,  size_t amt ) {
+  void append_ref_iov( const void *hdr,  size_t hdr_len,
+                       const void *msg,  size_t msg_len,
+                       uint32_t ref_idx,  size_t zbyte = 0 ) {
+    if ( hdr_len > 0 ) {
+      if ( this->out_buf != NULL && this->sz > 0 ) {
+        this->append( hdr, hdr_len );
+        this->flush();
+      }
+      else {
+        if ( this->idx == this->vlen )
+          this->expand_iov();
+        void *h = this->alloc_temp( hdr_len );
+        ::memcpy( h, hdr, hdr_len );
+        this->iov[ this->idx ].iov_base  = h;
+        this->iov[ this->idx++ ].iov_len = hdr_len;
+        this->wr_pending += hdr_len;
+      }
+    }
+    if ( this->idx == this->vlen )
+      this->expand_iov();
+    this->iov[ this->idx ].iov_base  = (void *) msg;
+    this->iov[ this->idx++ ].iov_len = msg_len;
+    this->wr_pending += msg_len;
+    if ( this->ref_cnt == this->ref_size )
+      this->expand_refs();
+    this->refs[ this->ref_cnt++ ] = ref_idx;
+    if ( zbyte != 0 ) {
+      if ( this->idx == this->vlen )
+        this->expand_iov();
+      if ( zbyte == 1 ) {
+        this->iov[ this->idx ].iov_base  = &this->zero;
+        this->iov[ this->idx++ ].iov_len = 1;
+      }
+      else {
+        this->iov[ this->idx ].iov_base  = this->crlf_buf;
+        this->iov[ this->idx++ ].iov_len = 2;
+      }
+      this->wr_pending += zbyte;
+    }
+  }
+  void insert_iov( size_t i,  const void *p,  size_t amt ) {
     if ( this->idx == this->vlen )
       this->expand_iov();
     ::memmove( &this->iov[ i + 1 ], &this->iov[ i ],
                sizeof( this->iov[ 0 ] ) * ( this->idx - i ) );
     this->idx++;
-    this->iov[ i ].iov_base = p;
+    this->iov[ i ].iov_base = (void *) p;
     this->iov[ i ].iov_len  = amt;
     this->wr_pending += amt;
   }
@@ -285,12 +340,29 @@ struct StreamBuf {
     }
   }
   char *append2( const void *p,  size_t amt,
-                const void *p2,  size_t amt2 ) {
+                 const void *p2,  size_t amt2 ) {
     char *b = this->alloc( amt + amt2 );
     if ( b != NULL ) {
       ::memcpy( b, p, amt );
       ::memcpy( &b[ amt ], p2, amt2 );
       this->sz += amt + amt2;
+      return b;
+    }
+    else {
+      this->alloc_fail = true;
+      return NULL;
+    }
+  }
+  char *append3( const void *p,  size_t amt,
+                 const void *p2,  size_t amt2,
+                 size_t zbyte ) {
+    char *b = this->alloc( amt + amt2 + zbyte );
+    if ( b != NULL ) {
+      ::memcpy( b, p, amt );
+      ::memcpy( &b[ amt ], p2, amt2 );
+      if ( zbyte > 0 )
+        b[ amt + amt2 ] = 0;
+      this->sz += amt + amt2 + zbyte;
       return b;
     }
     else {

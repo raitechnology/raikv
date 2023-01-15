@@ -734,6 +734,30 @@ rai::kv::string_to_uint64( const char *b,  size_t len ) noexcept
   return n;
 }
 
+bool
+rai::kv::valid_uint64( const char *b,  size_t len ) noexcept
+{
+  if ( len > 2 && b[ 0 ] == '0' && ( b[ 1 ] == 'x' || b[ 1 ] == 'X' ) ) {
+    b = &b[ 2 ];
+    len -= 2;
+    if ( len > 16 )
+      return false;
+    for ( size_t i = 0; i < len; i++ ) {
+      if ( ! ( ( b[ i ] >= '0' && b[ i ] <= '9' ) ||
+               ( b[ i ] >= 'a' && b[ i ] <= 'f' ) ||
+               ( b[ i ] >= 'A' && b[ i ] <= 'F' ) ) )
+        return false;
+    }
+  }
+  if ( len > 20 )
+    return false;
+  for ( size_t i = 0; i < len; i++ ) {
+    if ( b[ i ] < '0' || b[ i ] > '9' )
+      return false;
+  }
+  return true;
+}
+
 int64_t
 rai::kv::string_to_int64( const char *b,  size_t len ) noexcept
 {
@@ -743,6 +767,13 @@ rai::kv::string_to_int64( const char *b,  size_t len ) noexcept
   x = string_to_uint64( b, len );
   if ( is_neg ) return -(int64_t) x;
   return x;
+}
+
+bool
+rai::kv::valid_int64( const char *b,  size_t len ) noexcept
+{
+  if ( b[ 0 ] == '-' ) { b++; len -= 1; }
+  return valid_uint64( b, len );
 }
 
 static const uint8_t AZ = 'Z' - 'A' + 1;
