@@ -104,14 +104,11 @@ struct StreamBuf {
          * refs,        /* array of zero copy ref indexes */
            refbuf[ 2 ]; /* initial refs[] */
   bool     alloc_fail;  /* if alloc send buffers below failed */
-  char     zero, crlf_buf[ 2 ];
 
   StreamBuf( kv_alloc_func_t ba,  kv_free_func_t bf, void *cl )
    : tmp( 0, SND_BUFSIZE/2, ba, bf, cl ), idx( 0 ), wr_used( 1 ), ref_cnt( 0 ) {
     this->reset();
     this->wr_max = 0;
-    this->zero   = 0;
-    this->crlf_buf[ 0 ] = '\r'; this->crlf_buf[ 1 ] = '\n';
   }
 
   void release( void ) {
@@ -236,18 +233,26 @@ struct StreamBuf {
   void append_ref_iov( const void *hdr,  size_t hdr_len,
                        const void *msg,  size_t msg_len,
                        uint32_t ref_idx,  size_t zbyte = 0 ) {
+    char * h = NULL;
     if ( hdr_len > 0 ) {
-      if ( this->out_buf != NULL && this->sz > 0 ) {
-        this->append( hdr, hdr_len );
+      if ( this->sz > 0 ) {
+        if ( this->sz + hdr_len + zbyte <= BUFSIZE ) {
+          h = &this->out_buf[ this->sz ];
+          ::memcpy( h, hdr, hdr_len );
+          h = &h[ hdr_len ];
+          this->sz += hdr_len;
+          hdr_len = 0;
+        }
         this->flush();
       }
-      else {
+      if ( hdr_len > 0 ) {
         if ( this->idx == this->vlen )
           this->expand_iov();
-        void *h = this->alloc_temp( hdr_len );
+        h = this->alloc_temp( hdr_len + zbyte );
         ::memcpy( h, hdr, hdr_len );
         this->iov[ this->idx ].iov_base  = h;
         this->iov[ this->idx++ ].iov_len = hdr_len;
+        h = &h[ hdr_len ];
         this->wr_pending += hdr_len;
       }
     }
@@ -262,12 +267,16 @@ struct StreamBuf {
     if ( zbyte != 0 ) {
       if ( this->idx == this->vlen )
         this->expand_iov();
+      if ( h == NULL )
+        h = this->alloc_temp( zbyte );
       if ( zbyte == 1 ) {
-        this->iov[ this->idx ].iov_base  = &this->zero;
+        h[ 0 ] = 0;
+        this->iov[ this->idx ].iov_base  = h;
         this->iov[ this->idx++ ].iov_len = 1;
       }
       else {
-        this->iov[ this->idx ].iov_base  = this->crlf_buf;
+        h[ 0 ] = '\r'; h[ 1 ] = '\n';
+        this->iov[ this->idx ].iov_base  = h;
         this->iov[ this->idx++ ].iov_len = 2;
       }
       this->wr_pending += zbyte;
