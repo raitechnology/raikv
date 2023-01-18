@@ -1146,7 +1146,9 @@ EvSocket::bp_retire( BPData &data ) noexcept
 bool
 BPData::has_back_pressure( EvPoll &poll, uint32_t fd ) noexcept
 {
-  EvSocket * s = poll.sock[ fd ];
+  EvSocket * s;
+  if ( fd > poll.maxfd || (s = poll.sock[ fd ]) == NULL )
+    return false;
   if ( s->test2( EV_WRITE_POLL, EV_WRITE_HI ) ) {
     if ( this->bp_in_list() )
       poll.bp_wait.pop( this->bp_fd, *this );
