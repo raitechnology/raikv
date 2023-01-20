@@ -31,11 +31,22 @@ struct BitSpaceT : public ArraySpace<T, 2> {
     for ( size_t i = 0; i < bcnt; i++ )
       this->add( b[ i ] );
   }
+  void add( const BitSpaceT &b1 ) {
+    size_t max_sz = max_int<size_t>( b1.size, this->size ), i;
+    this->make( max_sz, true );
+    for ( i = 0; i < b1.size; i++ )
+      this->ptr[ i ] |= b1.ptr[ i ];
+  }
   void remove( uint32_t b ) {
     if ( b < this->size * WORD_BITS ) {
       uint64_t mask, & w = this->ref( b, mask );
       w &= ~mask;
     }
+  }
+  void remove( const BitSpaceT &b1 ) {
+    size_t min_sz = max_int<size_t>( b1.size, this->size ), i;
+    for ( i = 0; i < b1.size; i++ )
+      this->ptr[ i ] &= ~b1.ptr[ i ];
   }
   bool is_member( uint32_t b ) const {
     if ( b < this->size * WORD_BITS ) {
@@ -149,6 +160,20 @@ struct BitSpaceT : public ArraySpace<T, 2> {
     for ( ; i < max_sz && i < x.size; i++ )
       if ( x.ptr[ i ] != 0 )
         return false;
+    return true;
+  }
+  bool equals( uint32_t b ) const {
+    if ( b >= this->size * WORD_BITS )
+      return false;
+    for ( size_t i = 0; i < this->size; i++ ) {
+      if ( this->ptr[ i ] != 0 ) {
+        uint64_t mask, & w = this->ref( b, mask );
+        if ( this->ptr[ i ] != mask )
+          return false;
+        if ( &w != &this->ptr[ i ] )
+          return false;
+      }
+    }
     return true;
   }
   bool equals( const BitSpaceT &x ) const {
