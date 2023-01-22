@@ -103,9 +103,18 @@ struct BloomBits {
   void operator delete( void *ptr ) { ::free( ptr ); }
 
   /* resize() doubles the size of the table, but does not populate it */
+  static uint32_t calc_shift( uint32_t shft1,  uint32_t &shft2,
+                              uint32_t &shft3,  uint32_t &shft4 ) noexcept;
   static BloomBits *resize( BloomBits *b,  uint32_t seed,  uint8_t width,
                             uint32_t shft1 = 8,  uint32_t shft2 = 8,
                             uint32_t shft3 = 8,  uint32_t shft4 = 8 ) noexcept;
+  static BloomBits *reduce_size( BloomBits *b,  uint32_t seed ) noexcept;
+  static BloomBits *increase_size( BloomBits *b,  uint32_t seed ) noexcept;
+  static BloomBits *reseed( BloomBits *b,  uint32_t seed ) noexcept;
+
+  static BloomBits *alloc( BloomBits *b,  uint32_t seed,  uint8_t width,
+                           uint32_t shft1,  uint32_t shft2,
+                           uint32_t shft3,  uint32_t shft4 ) noexcept;
   /* if resize needed */
   bool test_resize( void ) const {
     return ( this->count > this->resize_count && this->SHFT1 < 32 );

@@ -10,6 +10,26 @@
 using namespace rai;
 using namespace kv;
 
+uint32_t
+BloomBits::calc_shift( uint32_t shft1,  uint32_t &shft2,  uint32_t &shft3,
+                       uint32_t &shft4 ) noexcept
+{
+  if ( shft1 * 4 < 64 ) {
+    shft2 = shft3 = shft4 = shft1; /* 8 -> 15, 4 hashes */
+  }
+  else if ( shft1 * 3 <= 64 ) {
+    if ( shft1 == 16 ) /* 16,16,16,16 and 17,17,17,0 are too close */
+      shft1 = 17;
+    shft2 = shft3 = shft1; /* 17,18,19,20,21 */
+    shft4 = 0;
+  }
+  else {
+    shft2 = shft1; /* 22 -> 30, 2 hashes, must be < 64 bits */
+    shft3 = shft4 = 0;
+  }
+  return shft1;
+}
+
 BloomBits *
 BloomBits::resize( BloomBits *b,  uint32_t seed,  uint8_t width,
                    uint32_t shft1,  uint32_t shft2,  uint32_t shft3,
@@ -24,20 +44,52 @@ BloomBits::resize( BloomBits *b,  uint32_t seed,  uint8_t width,
   else if ( shft1 < 6 ) {
     shft1 = 6;
   }
+  return BloomBits::alloc( b, seed, width, shft1, shft2, shft3, shft4 );
+}
 
-  if ( shft1 * 4 < 64 ) {
-    shft2 = shft3 = shft4 = shft1; /* 8 -> 15, 4 hashes */
-  }
-  else if ( shft1 * 3 <= 64 ) {
-    if ( shft1 == 16 ) /* 16,16,16,16 and 17,17,17,0 are too close */
-      shft1 = 17;
-    shft2 = shft3 = shft1; /* 17,18,19,20,21 */
-    shft4 = 0;
-  }
-  else {
-    shft2 = shft1; /* 22 -> 30, 2 hashes, must be < 64 bits */
-    shft3 = shft4 = 0;
-  }
+BloomBits *
+BloomBits::reduce_size( BloomBits *b,  uint32_t seed ) noexcept
+{
+  uint32_t shft1 = b->SHFT1 - 1,
+           shft2 = b->SHFT2,
+           shft3 = b->SHFT3,
+           shft4 = b->SHFT4;
+  uint8_t  width = b->bwidth;
+
+  return BloomBits::alloc( b, seed, width, shft1, shft2, shft3, shft4 );
+}
+
+BloomBits *
+BloomBits::increase_size( BloomBits *b,  uint32_t seed ) noexcept
+{
+  uint32_t shft1 = b->SHFT1 + 1,
+           shft2 = b->SHFT2,
+           shft3 = b->SHFT3,
+           shft4 = b->SHFT4;
+  uint8_t  width = b->bwidth;
+
+  return BloomBits::alloc( b, seed, width, shft1, shft2, shft3, shft4 );
+}
+
+BloomBits *
+BloomBits::reseed( BloomBits *b,  uint32_t seed ) noexcept
+{
+  uint32_t shft1 = b->SHFT1,
+           shft2 = b->SHFT2,
+           shft3 = b->SHFT3,
+           shft4 = b->SHFT4;
+  uint8_t  width = b->bwidth;
+
+  return BloomBits::alloc( b, seed, width, shft1, shft2, shft3, shft4 );
+}
+
+BloomBits *
+BloomBits::alloc( BloomBits *b,  uint32_t seed,  uint8_t width,
+                  uint32_t shft1,  uint32_t shft2,  uint32_t shft3,
+                  uint32_t shft4 ) noexcept
+{
+  shft1 = BloomBits::calc_shift( shft1, shft2, shft3, shft4 );
+
   size_t sz = BloomBits::get_width( shft1, shft2, shft3, shft4 ) +
               sizeof( BloomBits );
   /*size_t sz = ( ( 1U << shft1 ) / 8 ) +
