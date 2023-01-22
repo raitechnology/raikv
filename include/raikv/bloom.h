@@ -312,9 +312,17 @@ struct BloomBits {
     }
   }
   uint64_t to_hash64( uint32_t h ) const {
+    /* the seed changes this hash function so that collisions occur in
+     * different locations; a seed can be chosen to alter which keys collide,
+     * in case there is a hot key with a collision */
+    uint32_t z = kv_hash_uint2( this->seed, h - this->seed );
+    return ( (uint64_t) z << 32 ) |
+             (uint64_t) kv_hash_uint2( z + this->seed, this->seed - h );
+#if 0
     uint32_t c1 = kv_hash_uint2( this->seed, h ),
              c2 = kv_hash_uint2( this->seed+1, h );
     return ( (uint64_t) c1 << 32 ) | (uint64_t) c2;
+#endif
   }
   /* test if hash is present */
   bool is_member( uint32_t hash ) const {
