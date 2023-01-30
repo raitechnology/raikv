@@ -39,7 +39,8 @@ enum EvState {       /* state bits: */
   EV_WRITE      = 7, /*  80, write at low priority, suboptimal send of sm buf */
   EV_SHUTDOWN   = 8, /* 100, showdown after writes */
   EV_READ_LO    = 9, /* 200, read at low prio, back pressure, full write buf */
-  EV_BUSY_POLL  = 10 /* 400, busy poll, loop and keep checking for new data */
+  EV_BUSY_POLL  = 10,/* 400, busy poll, loop and keep checking for new data */
+  EV_NO_STATE   = 11
 };
 
 enum EvSockOpts {
@@ -206,8 +207,8 @@ struct EvSocket : public PeerData /* fd and address of peer */EV_DBG_INHERIT {
   static const char * err_string( EvSockErr err ) noexcept;
 
   /* priority queue states */
-  EvState get_dispatch_state( void ) const {
-    return (EvState) ( kv_ffsw( this->sock_state ) - 1 );
+  int get_dispatch_state( void ) const {
+    return kv_ffsw( this->sock_state ) - 1;
   }
   /* priority queue test, ordered by first bit set (EV_WRITE > EV_READ).
    * a sock with EV_READ bit set will have a higher priority than one with
@@ -410,7 +411,10 @@ struct EvPoll {
                         so_keepalive_ns, /* keep alive ping timeout */
                         next_id,         /* unique id for connection */
                         now_ns,          /* updated by current_coarse_ns() */
-                        init_ns;         /* when map or poll was created */
+                        init_ns,         /* when map or poll was created */
+                        mono_ns,         /* monotonic updated by current  */
+                        coarse_ns,
+                        coarse_mono;
   uint32_t              fdcnt,           /* num fds in poll set */
                         wr_count,        /* num fds with write set */
                         maxfd,           /* current maximum fd number */
@@ -423,6 +427,8 @@ struct EvPoll {
   static const size_t   ALLOC_INCR    = 16, /* alloc size of poll socket ar */
                         PREFETCH_SIZE = 8;  /* pipe size of number of pref */
   uint32_t              prefetch_pending; /* count of elems in prefetch queue */
+  uint64_t              state_ns[ EV_NO_STATE ],
+                        state_cnt[ EV_NO_STATE ];
   RoutePDB              sub_route;       /* subscriptions */
   /*RoutePublishQueue     pub_queue;      * temp routing queue: */
   PeerStats             peer_stats;      /* accumulator after sock closes */
@@ -454,7 +460,8 @@ struct EvPoll {
       wr_timeout_ns( DEFAULT_NS_TIMEOUT ),
       conn_timeout_ns( DEFAULT_NS_CONNECT_TIMEOUT ),
       so_keepalive_ns( DEFAULT_NS_TIMEOUT ),
-      next_id( 0 ), now_ns( 0 ), init_ns( 0 ),
+      next_id( 0 ), now_ns( 0 ), init_ns( 0 ), mono_ns( 0 ),
+      coarse_ns( 0 ), coarse_mono( 0 ),
       fdcnt( 0 ), wr_count( 0 ), maxfd( 0 ), nfds( 0 ),
       send_highwater( StreamBuf::SND_BUFSIZE - 256 ),
       recv_highwater( DEFAULT_RCV_BUFSIZE - 256 ),
@@ -463,6 +470,8 @@ struct EvPoll {
       sock_mem_left( 0 ), free_buf( 0 ), free_end( 0 ), free_alloced( 0 ) {
     ::memset( this->sock_type_str, 0, sizeof( this->sock_type_str ) );
     ::memset( this->free_size, 0, sizeof( this->free_size ) );
+    ::memset( this->state_ns, 0, sizeof( this->state_ns ) );
+    ::memset( this->state_cnt, 0, sizeof( this->state_cnt ) );
   }
   /* alloc ALLOC_INCR(64) elems of the above list elems at a time, aligned 64 */
   template<class T, class... Ts>

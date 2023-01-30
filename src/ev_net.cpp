@@ -81,8 +81,11 @@ EvPoll::init( int numfds,  bool prefetch ) noexcept
   size_t   sz  = sizeof( this->ev[ 0 ] ) * n;
   if ( prefetch )
     this->prefetch_queue = EvPrefetchQueue::create();
-  this->init_ns = current_realtime_coarse_ns();
-  this->now_ns  = this->init_ns;
+  this->init_ns     = current_realtime_ns();
+  this->mono_ns     = current_monotonic_time_ns();
+  this->now_ns      = this->init_ns;
+  this->coarse_ns   = this->init_ns;
+  this->coarse_mono = this->mono_ns;
 
   if ( (this->efd = ::epoll_create( n )) < 0 ) {
     perror( "epoll" );
@@ -431,6 +434,7 @@ EvSocket::state_string( EvState state ) noexcept
     case EV_SHUTDOWN:   return "shutdown";
     case EV_READ_LO:    return "read_lo";
     case EV_BUSY_POLL:  return "busy_poll";
+    case EV_NO_STATE:   return "no_state";
   }
   return "unknown_state";
 }
@@ -622,11 +626,18 @@ EvPoll::drain_prefetch( void ) noexcept
 uint64_t
 EvPoll::current_coarse_ns( void ) noexcept
 {
-  /*if ( this->sub_route.map != NULL && ! this->sub_route.map->hdr.ht_read_only )
-    this->now_ns = this->sub_route.map->hdr.current_stamp;
-  else*/
-  this->now_ns = current_realtime_coarse_ns();
-  return this->now_ns;
+  uint64_t r_ns = current_realtime_coarse_ns(),
+           m_ns = current_monotonic_time_ns();
+  if ( this->coarse_ns == r_ns ) {
+    r_ns += ( m_ns - this->coarse_mono );
+  }
+  else {
+    this->coarse_ns   = r_ns;
+    this->coarse_mono = m_ns;
+  }
+  this->now_ns  = r_ns;
+  this->mono_ns = m_ns;
+  return r_ns;
 }
 
 uint64_t
@@ -643,15 +654,25 @@ EvPoll::dispatch( void ) noexcept
   EvSocket * s;
   uint64_t start   = this->prio_tick,
            curr_ns = this->current_coarse_ns(),
-           busy_ns = this->timer.queue->busy_delta( curr_ns ),
+           busy_ns = this->timer.queue->busy_delta( this->mono_ns ),
+           mark_ns = this->mono_ns,
            used_ns = 0;
-  int      ret     = DISPATCH_IDLE;
-  EvState  state;
+  int      ret     = DISPATCH_IDLE,
+           next_state;
+  EvState  state   = EV_NO_STATE;
 
   if ( this->quit )
     this->process_quit();
   for (;;) {
   next_tick:;
+    if ( state != EV_NO_STATE ) {
+      curr_ns = this->current_coarse_ns();
+      this->state_ns[ state ] += this->mono_ns - mark_ns;
+      this->state_cnt[ state ]++;
+      used_ns += this->mono_ns - mark_ns;
+      mark_ns  = this->mono_ns;
+      state    = EV_NO_STATE;
+    }
     if ( start + 300 < this->prio_tick ) { /* run poll() at least every 300 */
       ret |= POLL_NEEDED | DISPATCH_BUSY;
       return ret;
@@ -661,7 +682,7 @@ EvPoll::dispatch( void ) noexcept
         /* the real time is updated at coarse intervals (10 to 100 us) */
         curr_ns = this->current_coarse_ns();
         /* how much busy work before timer expires */
-        busy_ns = this->timer.queue->busy_delta( curr_ns );
+        busy_ns = this->timer.queue->busy_delta( this->mono_ns );
       }
       if ( busy_ns == 0 ) {
         /* if timer is already an event (in_queue=1), dispatch that first */
@@ -674,7 +695,6 @@ EvPoll::dispatch( void ) noexcept
       }
       used_ns = 0;
     }
-    used_ns += 300; /* guess 300 ns is upper bound for dispatching event */
     if ( this->ev_queue.is_empty() ) {
       if ( this->prefetch_pending > 0 ) {
       do_prefetch:;
@@ -688,18 +708,21 @@ EvPoll::dispatch( void ) noexcept
         ret |= DISPATCH_BUSY;
       return ret;
     }
-    s     = this->ev_queue.heap[ 0 ];
-    state = s->get_dispatch_state();
-    EV_DBG_DISPATCH( s, state );
+    s = this->ev_queue.heap[ 0 ];
+    next_state = s->get_dispatch_state();
+
+    EV_DBG_DISPATCH( s, next_state );
     this->prio_tick++;
-    if ( state > EV_PREFETCH && this->prefetch_pending > 0 )
+    if ( next_state > EV_PREFETCH && this->prefetch_pending > 0 )
       goto do_prefetch;
     s->set_queue( IN_NO_QUEUE );
     this->ev_queue.pop();
-    /*printf( "fd %d type %s state %s\n",
-      s->fd, sock_type_string( s->type ), state_string( (EvState) state ) );*/
-    /*printf( "dispatch %u %u (%x)\n", s->type, state, s->sock_state );*/
+    if ( next_state < 0 )
+      continue;
+    state = (EvState) next_state;
     switch ( state ) {
+      case EV_NO_STATE:
+        break;
       case EV_READ:
       case EV_READ_LO:
       case EV_READ_HI:

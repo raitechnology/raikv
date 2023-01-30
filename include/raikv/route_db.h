@@ -178,6 +178,10 @@ struct RouteCache {
                 count,      /* count of elems <= MAX_CACHE */
                 busy,       /* busy, no realloc because of references */
                 need;       /* need this amount of space */
+  uint64_t      hit_cnt,
+                miss_cnt,
+                max_cnt,
+                max_size;
   bool          is_invalid; /* full or updated, no more entries allowed */
   RouteCache() noexcept;
   bool reset( void ) noexcept;
@@ -355,19 +359,22 @@ struct RouteDB {
   bool cache_find( uint16_t prefix_len,  uint32_t hash,
                    uint32_t *&routes,  uint32_t &rcnt,
                    uint32_t shard,  size_t &pos ) {
-    if ( this->cache.is_invalid )
-      return false;
-    if ( ! this->cache.busy && this->cache.need )
-      this->cache_need();
-    uint64_t    h = ( (uint64_t) shard << 48 ) |
-                    ( (uint64_t) prefix_len << 32 ) | (uint64_t) hash;
-    RteCacheVal val;
+    if ( ! this->cache.is_invalid ) {
+      if ( ! this->cache.busy && this->cache.need )
+        this->cache_need();
+      uint64_t    h = ( (uint64_t) shard << 48 ) |
+                      ( (uint64_t) prefix_len << 32 ) | (uint64_t) hash;
+      RteCacheVal val;
 
-    if ( ! this->cache.ht->find( h, pos, val ) )
-      return false;
-    rcnt   = val.rcnt;
-    routes = &this->cache.spc.ptr[ val.off ];
-    return true;
+      if ( this->cache.ht->find( h, pos, val ) ) {
+        rcnt   = val.rcnt;
+        routes = &this->cache.spc.ptr[ val.off ];
+        this->cache.hit_cnt++;
+        return true;
+      }
+    }
+    this->cache.miss_cnt++;
+    return false;
   }
   void cache_save( uint16_t prefix_len,  uint32_t hash,
                    uint32_t *routes,  uint32_t rcnt,  uint32_t shard ) noexcept;
@@ -441,7 +448,6 @@ struct BloomDetail {
 };
 
 struct BloomRef {
-  char          name[ 16 ];
   BloomBits   * bits;
   BloomRoute ** links;
   BloomDetail * details;
@@ -452,6 +458,7 @@ struct BloomRef {
                 pref_count[ MAX_RTE ],
                 ref_num;
   BloomDB     & bloom_db;
+  char          name[ 32 ];
 
   void * operator new( size_t, void *ptr ) { return ptr; }
   void operator delete( void *ptr ) { ::free( ptr ); }
@@ -1228,9 +1235,6 @@ struct TimerQueue {
                      uint64_t event_id ) noexcept;
   bool remove_timer_cb( EvTimerCallback &tcb,  uint64_t timer_id,
                         uint64_t event_id ) noexcept;
-  /* when a timer expires, these are updated */
-  uint64_t current_monotonic_time_ns( void ) noexcept;
-  uint64_t current_time_ns( void ) noexcept;
 };
 
 struct RouteService {
