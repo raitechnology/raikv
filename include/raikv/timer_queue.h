@@ -36,13 +36,12 @@ struct EvTimerQueue : public EvSocket {
   void * operator new( size_t, void *ptr ) { return ptr; }
   void operator delete( void *ptr ) { ::free( ptr ); }
   kv::PrioQueue<EvTimerEvent, EvTimerEvent::is_greater> queue; /* q events */
-  uint64_t           last,  /* previous epoch */
-                     epoch, /* current epoch */
-                     delta, /* difference between event.next_expire and epoch */
-                     real;  /* wall clock time close to epoch */
+  uint64_t           epoch, /* current epoch */
+                     expires; /* next delta expires */
   EvTimerCallback ** cb;    /* callbacks when event.id < 0 */
   size_t             cb_sz, /* extent of cb[] */
                      cb_used; /* number of cb[] used */
+  bool               processing_timers;
 
   EvTimerQueue( EvPoll &p );
   static EvTimerQueue *create_timer_queue( EvPoll &p ) noexcept;
@@ -58,21 +57,20 @@ struct EvTimerQueue : public EvSocket {
                      uint64_t event_id ) noexcept;
   bool remove_timer_cb( EvTimerCallback &tcb,  uint64_t timer_id,
                         uint64_t event_id ) noexcept;
-  void repost( void ) noexcept;
+  void repost( EvTimerEvent &ev ) noexcept;
   bool set_timer( void ) noexcept;
 #ifndef HAVE_TIMERFD
   /* limit how long to set poll timer, only necessary when no timerfd */
   bool is_timer_ready( uint64_t &us ) {
     if ( this->delta > 0 ) {
-      uint64_t expires_ns = this->delta + this->epoch,
-               curr_ns    = current_monotonic_time_ns(),
+      uint64_t curr_ns = current_monotonic_time_ns(),
                us_left;
-      if ( curr_ns >= expires_ns ) {
+      if ( curr_ns >= this->expires ) {
         us = 0;
         return true;
       }
       if ( us != 0 ) {
-        us_left = ( expires_ns - curr_ns ) / 1000;
+        us_left = ( this->expires - curr_ns ) / 1000;
         if ( us < 0 || us_left < (uint64_t) us ) {
           if ( (us = (int) us_left) == 0 )
             us = 1;
@@ -83,21 +81,11 @@ struct EvTimerQueue : public EvSocket {
   }
 #endif
   /* limit how long to dispatch poll events */
-  uint64_t busy_delta( uint64_t curr_ns ) {
-    if ( this->sock_state == 0 && this->delta > 0 ) {
-      uint64_t d = this->delta, sav = curr_ns;
-      curr_ns -= this->real;
-      /* coarse real time expires, adjust monotonic time */
-      if ( d <= curr_ns ) {
-        uint64_t mon_ns = current_monotonic_time_ns();
-        if ( mon_ns >= this->epoch + d )
-          return 0;
-        this->real -= ( this->epoch + d ) - mon_ns;
-        curr_ns = sav - this->real;
-      }
-      curr_ns = d - curr_ns;
-      if ( curr_ns < MAX_DELTA )
-        return curr_ns;
+  uint64_t busy_delta( uint64_t mono_ns ) {
+    if ( this->sock_state == 0 && this->expires != 0 ) {
+      if ( this->expires <= mono_ns )
+        return 0;
+      return mono_ns - this->expires;
     }
     return MAX_DELTA;
   }

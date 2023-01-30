@@ -18,8 +18,8 @@ using namespace kv;
 
 EvTimerQueue::EvTimerQueue( EvPoll &p )
             : EvSocket( p, p.register_type( "timer_queue" ) ),
-              last( 0 ), epoch( 0 ), delta( 0 ), real( 0 ),
-              cb( 0 ), cb_sz( 0 ), cb_used( 0 )
+              epoch( 0 ), cb( 0 ), cb_sz( 0 ),
+              cb_used( 0 ), processing_timers( false )
 {
 #ifdef HAVE_TIMERFD
   this->sock_opts = OPT_READ_HI;
@@ -62,10 +62,8 @@ EvTimerQueue::create_timer_queue( EvPoll &p ) noexcept
   }
   EvTimerQueue * q = new ( m ) EvTimerQueue( p );
   q->PeerData::init_peer( tfd, -1, NULL, "timer" );
-  q->last   = current_monotonic_time_ns();
-  q->epoch  = q->last;
-  q->delta  = 0;
-  q->real   = p.current_coarse_ns();
+  q->expires = 0;
+  q->epoch   = current_monotonic_time_ns();
   if ( p.add_sock( q ) < 0 ) {
     printf( "failed to add timer %d\n", tfd );
     goto fini;
@@ -94,7 +92,8 @@ EvTimerQueue::add_timer_units( int32_t id,  uint32_t ival,  TimerUnits u,
     fprintf( stderr, "timer queue alloc failed\n" );
     return false;
   }
-  this->idle_push( EV_PROCESS );
+  if ( ! this->processing_timers )
+    this->idle_push( EV_PROCESS );
   return true;
 }
 
@@ -165,15 +164,22 @@ EvTimerQueue::remove_timer_cb( EvTimerCallback &tcb,  uint64_t timer_id,
 }
 
 void
-EvTimerQueue::repost( void ) noexcept
+EvTimerQueue::repost( EvTimerEvent &ev ) noexcept
 {
-  EvTimerEvent el = this->queue.pop();
   /* this will skip intervals until expires > epoch */
-  do {
-    el.next_expire += (uint64_t) ( el.ival >> 2 ) *
-                      (uint64_t) to_ns[ el.ival & 3 ];
-  } while ( el.next_expire <= this->epoch );
-  this->queue.push( el );
+  uint64_t amt = (uint64_t) ( ev.ival >> 2 ) *
+                 (uint64_t) to_ns[ ev.ival & 3 ];
+  this->epoch = current_monotonic_time_ns();
+  ev.next_expire += amt;
+  if ( ev.next_expire <= this->epoch ) {
+    ev.next_expire += amt;
+    if ( ev.next_expire <= this->epoch ) {
+      uint64_t delta = this->epoch - ev.next_expire;
+      delta = ( delta / amt + (uint64_t) 1 ) * amt;
+      ev.next_expire += delta;
+    }
+  }
+  this->queue.push( ev );
 }
 
 void
@@ -205,10 +211,11 @@ EvTimerQueue::set_timer( void ) noexcept
 {
 #ifdef HAVE_TIMERFD
   struct itimerspec ts;
+  uint64_t delta = this->expires - this->epoch;
   ts.it_interval.tv_sec = 0;
   ts.it_interval.tv_nsec = 0;
-  ts.it_value.tv_sec  = this->delta / (uint64_t) 1000000000;
-  ts.it_value.tv_nsec = this->delta % (uint64_t) 1000000000;
+  ts.it_value.tv_sec  = delta / (uint64_t) 1000000000;
+  ts.it_value.tv_nsec = delta % (uint64_t) 1000000000;
 
   if ( timerfd_settime( this->fd, 0, &ts, NULL ) < 0 ) {
     perror( "set timer" );
@@ -222,14 +229,17 @@ void
 EvTimerQueue::process( void ) noexcept
 {
   bool rearm_timer;
-  this->last  = this->epoch;
+  this->processing_timers = true;
   this->epoch = current_monotonic_time_ns();
-  this->real  = this->poll.current_coarse_ns();
-  this->delta = 0;
 
-  while ( ! this->queue.is_empty() ) {
-    EvTimerEvent &ev = this->queue.heap[ 0 ];
+  for (;;) {
+    if ( this->queue.is_empty() ) {
+      this->expires = 0;
+      break;
+    }
+    EvTimerEvent ev = this->queue.heap[ 0 ];
     if ( ev.next_expire <= this->epoch ) { /* timers are ready to fire */
+      this->queue.pop();
       if ( ev.id < 0 ) {
         rearm_timer =
           this->cb[ -(ev.id+1) ]->timer_cb( ev.timer_id, ev.event_id );
@@ -242,24 +252,26 @@ EvTimerQueue::process( void ) noexcept
         rearm_timer = this->poll.timer_expire( ev );
       }
       if ( rearm_timer )
-        this->repost();    /* next timer interval */
-      else
-        this->queue.pop(); /* remove timer */
+        this->repost( ev );    /* next timer interval */
     }
     else {
-      this->delta = ev.next_expire - this->epoch;
-      /*printf( "delta %lu.%lu\n", this->delta / (uint64_t) 1000000000,
-                                 this->delta % (uint64_t) 1000000000 );*/
-      if ( ! this->set_timer() )
+      this->expires = ev.next_expire;
+
+      if ( ! this->set_timer() ) {
+        this->processing_timers = false;
         return; /* probably need to exit, this retries later */
+      }
       break;
     }
   }
   this->pop( EV_PROCESS ); /* all timers that expired are processed */
+  this->processing_timers = false;
 }
 
 void EvTimerQueue::write( void ) noexcept {}
-void EvTimerQueue::release( void ) noexcept { this->delta = 0; }
+void EvTimerQueue::release( void ) noexcept {
+  this->expires = 0;
+}
 
 /* start a timer event callback */
 bool
@@ -351,17 +363,5 @@ TimerQueue::remove_timer_cb( EvTimerCallback &tcb,  uint64_t timer_id,
                              uint64_t event_id ) noexcept
 {
   return this->queue->remove_timer_cb( tcb, timer_id, event_id );
-}
-
-uint64_t
-TimerQueue::current_monotonic_time_ns( void ) noexcept
-{
-  return this->queue->epoch;
-}
-
-uint64_t
-TimerQueue::current_time_ns( void ) noexcept
-{
-  return this->queue->real;
 }
 

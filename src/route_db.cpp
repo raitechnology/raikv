@@ -56,6 +56,10 @@ RouteCache::RouteCache() noexcept
   this->count      = 0;
   this->busy       = 0;
   this->need       = 0;
+  this->hit_cnt    = 0;
+  this->miss_cnt   = 0;
+  this->max_cnt    = 0;
+  this->max_size   = 0;
   this->is_invalid = false;
 }
 
@@ -756,8 +760,10 @@ BloomRef::BloomRef( uint32_t seed,  const char *nm,  BloomDB &db ) noexcept
           detail_mask( 0 ), nlinks( 0 ), ndetails( 0 ), ref_num( db.count ),
           bloom_db( db )
 {
-  ::strncpy( this->name, nm, sizeof( this->name ) );
-  this->name[ sizeof( this->name ) - 1 ] = '\0';
+  size_t len = ::strlen( nm );
+  len = min_int( len, sizeof( this->name ) - 1 );
+  ::memcpy( this->name, nm, len );
+  this->name[ len ] = '\0';
   ::memset( this->pref_count, 0, sizeof( this->pref_count ) );
   db[ this->ref_num ] = this;
   this->update_route( NULL, BloomBits::resize( NULL, seed, 52 ), NULL, 0 );
@@ -768,8 +774,10 @@ BloomRef::BloomRef( BloomBits *b,  const uint32_t *pref,
         : bits( 0 ), links( 0 ), details( 0 ), pref_mask( 0 ),
           detail_mask( 0 ), nlinks( 0 ), ndetails( 0 ), bloom_db( db )
 {
-  ::strncpy( this->name, nm, sizeof( this->name ) );
-  this->name[ sizeof( this->name ) - 1 ] = '\0';
+  size_t len = ::strlen( nm );
+  len = min_int( len, sizeof( this->name ) - 1 );
+  ::memcpy( this->name, nm, len );
+  this->name[ len ] = '\0';
   ::memset( this->pref_count, 0, sizeof( this->pref_count ) );
   if ( (this->ref_num = num) == (uint32_t) -1 )
     this->ref_num = db.count;
@@ -1198,6 +1206,10 @@ do_reset:;
   if ( this->cache.ht->elem_count >= this->cache.ht->max_count ) {
     if ( this->cache.ht->elem_count > RouteCache::MAX_CACHE )
       goto do_reset;
+    if ( this->cache.ht->elem_count >= this->cache.max_cnt )
+      this->cache.max_cnt = this->cache.ht->elem_count;
+    if ( this->cache.end >= this->cache.max_size )
+      this->cache.max_size = this->cache.end;
     RteCacheTab::check_resize( this->cache.ht );
   }
 }
@@ -1217,36 +1229,9 @@ RouteDB::cache_purge( size_t pos ) noexcept
   this->cache.ht->get( pos, h, val );
   this->cache.free += val.rcnt;
   this->cache.count--;
-#if 0
-  if ( this->cache.is_invalid || this->cache.free * 2 > this->cache.end ||
-       this->cache.end > RouteCache::MAX_CACHE ) {
-    this->cache.reset();
-    return;
-  }
-#endif
   this->cache.ht->remove( pos );
 }
-#if 0
-void
-RouteDB::cache_purge( uint16_t prefix_len,  uint32_t hash ) noexcept
-{
-  uint64_t    h = ( (uint64_t) prefix_len << 32 ) | (uint64_t) hash;
-  size_t      pos;
-  RteCacheVal val;
 
-  if ( this->cache.ht->find( h, pos, val ) ) {
-    this->cache.free += val.rcnt;
-    this->cache.count--;
-
-    if ( this->cache.is_invalid || this->cache.free * 2 > this->cache.end ||
-         this->cache.end > RouteCache::MAX_CACHE ) {
-      this->cache.reset();
-      return;
-    }
-    this->cache.ht->remove( pos );
-  }
-}
-#endif
 void
 RouteDB::add_prefix_len( uint16_t prefix_len,  bool is_rt_hash ) noexcept
 {
