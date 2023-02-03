@@ -520,7 +520,7 @@ struct EvPoll {
   };
   int dispatch( void ) noexcept;          /* process any sock in the queues */
   void drain_prefetch( void ) noexcept;   /* process prefetches */
-  uint64_t current_coarse_ns( void ) noexcept; /* current time from kv */
+  uint64_t current_coarse_ns( void ) noexcept; /* current time */
   uint64_t create_ns( void ) const noexcept; /* create time from kv */
   int get_null_fd( void ) noexcept;         /* return dup /dev/null fd */
   int add_sock( EvSocket *s ) noexcept;     /* add to poll set */

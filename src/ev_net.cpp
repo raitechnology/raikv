@@ -669,9 +669,9 @@ EvPoll::dispatch( void ) noexcept
       curr_ns = this->current_coarse_ns();
       this->state_ns[ state ] += this->mono_ns - mark_ns;
       this->state_cnt[ state ]++;
-      used_ns += this->mono_ns - mark_ns;
-      mark_ns  = this->mono_ns;
-      state    = EV_NO_STATE;
+      used_ns = this->mono_ns - mark_ns;
+      mark_ns = this->mono_ns;
+      state   = EV_NO_STATE;
     }
     if ( start + 300 < this->prio_tick ) { /* run poll() at least every 300 */
       ret |= POLL_NEEDED | DISPATCH_BUSY;
