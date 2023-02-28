@@ -352,6 +352,41 @@ CaresAddrInfo::get_address( const char *ip,  int port,  int opts ) noexcept
 void
 CaresAddrInfo::do_poll( void ) noexcept
 {
+  ares_socket_t socks[ ARES_GETSOCK_MAXNUM ];
+  EvCaresAsync * c;
+  uint32_t i, k, bitmap;
+  bool has_write = false;
+
+  bitmap = (uint32_t)
+    ares_getsock( this->channel, socks, ARES_GETSOCK_MAXNUM );
+  this->poll_count++;
+  /* add fds if polling them */
+  for ( k = 0; k < ARES_GETSOCK_MAXNUM; k++ ) {
+    if ( ARES_GETSOCK_READABLE( bitmap, k ) ) {
+      for ( i = 0; i < this->set.count; i++ ) {
+        if ( (c = this->set.ptr[ i ]) != NULL ) {
+          if ( c->fd == socks[ k ] ) {
+            c->poll_count = this->poll_count;
+            break;
+          }
+        }
+      }
+      if ( i == this->set.count ) {
+        c = this->poll.get_free_list<EvCaresAsync, CaresAddrInfo &>(
+              this->sock_type, *this );
+        this->set[ i ] = c;
+        c->PeerData::init_peer( socks[ k ], -1, NULL, "c-ares" );
+        c->poll_count = this->poll_count;
+        this->poll.add_sock( c );
+      }
+      ares_process_fd( this->channel, socks[ k ], ARES_SOCKET_BAD );
+    }
+    if ( ARES_GETSOCK_WRITABLE( bitmap, k ) ) {
+      ares_process_fd( this->channel, ARES_SOCKET_BAD, socks[ k ] );
+      has_write = true;
+    }
+  }
+#if 0
   fd_set readers, writers;
   EvCaresAsync * c;
   size_t i;
@@ -388,6 +423,7 @@ CaresAddrInfo::do_poll( void ) noexcept
       has_write = true;
     }
   }
+#endif
   /* remove fds not used */
   for ( i = 0; i < this->set.count; i++ ) {
     if ( (c = this->set.ptr[ i ]) != NULL ) {
@@ -398,7 +434,7 @@ CaresAddrInfo::do_poll( void ) noexcept
     }
   }
   /* no work left to do */
-  if ( nfds == 0 || this->done ) {
+  if ( bitmap == 0 || this->done ) {
     if ( this->event_id != 0 ) {
       this->poll.timer.remove_timer_cb( *this, this->timer_id, this->event_id );
       this->event_id = 0;
