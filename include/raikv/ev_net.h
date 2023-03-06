@@ -274,14 +274,20 @@ struct EvSocket : public PeerData /* fd and address of peer */EV_DBG_INHERIT {
 
   static const size_t MAX_USERID_LEN  = 64;
   static const size_t MAX_SESSION_LEN = 64;
+  /* get service, if none, return false */
+  virtual bool get_service( void *host,  uint16_t &svc ) noexcept;
+  /* assign a session to connection */
+  virtual bool set_session( const char session[ MAX_SESSION_LEN ] ) noexcept;
   /* get session name */
   virtual size_t get_userid( char userid[ MAX_USERID_LEN ] ) noexcept;
   /* get session name */
-  virtual size_t get_session( const char *svc,  size_t svc_len,
+  virtual size_t get_session( uint16_t svc,
                               char session[ MAX_SESSION_LEN ] ) noexcept;
   /* get session name */
-  virtual size_t get_subscriptions( SubRouteDB &subs,  SubRouteDB &pats,
-                                    int &pattern_fmt ) noexcept;
+  virtual size_t get_subscriptions( uint16_t svc,  SubRouteDB &subs ) noexcept;
+
+  virtual size_t get_patterns( uint16_t svc,  int pat_fmt,
+                               SubRouteDB &pats ) noexcept;
   /* PeerData */
   /* sprint socket info to buf */
   virtual int client_list( char *buf,  size_t buflen ) noexcept;

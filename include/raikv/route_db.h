@@ -907,7 +907,7 @@ struct NotifySub {
   uint32_t     subj_hash,
                src_fd,
                sub_count;
-  void       * src;
+  EvSocket   * src;
   RouteRef   * ref;
   BloomRef   * bref;
   uint8_t      hash_collision;
@@ -916,7 +916,7 @@ struct NotifySub {
   NotifySub( const char *s,  size_t slen,
              const char *r,  size_t rlen,
              uint32_t shash,  uint32_t fd,
-             bool coll,  char t,  void *source = NULL ) :
+             bool coll,  char t,  EvSocket *source = NULL ) :
     subject( s ), reply( r ), subject_len( (uint16_t) slen ),
     reply_len( (uint16_t) rlen ), subj_hash( shash ), src_fd( fd ),
     sub_count( 0 ), src( source ), ref( 0 ), bref( 0 ), hash_collision( coll ),
@@ -924,7 +924,7 @@ struct NotifySub {
 
   NotifySub( const char *s,  size_t slen,
              uint32_t shash,  uint32_t fd,
-             bool coll,  char t,  void *source = NULL ) :
+             bool coll,  char t,  EvSocket *source = NULL ) :
     subject( s ), reply( 0 ), subject_len( (uint16_t) slen ), reply_len( 0 ),
     subj_hash( shash ), src_fd( fd ), sub_count( 0 ), src( source ), ref( 0 ),
     bref( 0 ), hash_collision( coll ), src_type( t ) {}
@@ -939,7 +939,7 @@ struct NotifyPattern {
   uint32_t           prefix_hash,
                      src_fd,
                      sub_count;
-  void             * src;
+  EvSocket         * src;
   RouteRef         * ref;
   BloomRef         * bref;
   uint8_t            hash_collision;
@@ -949,7 +949,7 @@ struct NotifyPattern {
                  const char *s,  size_t slen,
                  const char *r,  size_t rlen,
                  uint32_t phash,  uint32_t fd,
-                 bool coll,  char t,  void *source = NULL ) :
+                 bool coll,  char t,  EvSocket *source = NULL ) :
     cvt( c ), pattern( s ), reply( r ), pattern_len( (uint16_t) slen ),
     reply_len( (uint16_t) rlen ), prefix_hash( phash ), src_fd( fd ),
     sub_count( 0 ), src( source ), ref( 0 ), bref( 0 ), hash_collision( coll ),
@@ -958,7 +958,7 @@ struct NotifyPattern {
   NotifyPattern( const PatternCvt &c,
                  const char *s,  size_t slen,
                  uint32_t phash,  uint32_t fd,
-                 bool coll,  char t,  void *source = NULL ) :
+                 bool coll,  char t,  EvSocket *source = NULL ) :
     cvt( c ), pattern( s ), reply( 0 ), pattern_len( (uint16_t) slen ),
     reply_len( 0 ), prefix_hash( phash ), src_fd( fd ), sub_count( 0 ),
     src( source ), ref( 0 ), bref( 0 ), hash_collision( coll ), src_type( t ) {}

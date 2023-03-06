@@ -124,6 +124,10 @@ struct CatPtrT {
     this->ptr += uint32_to_string( n, this->ptr, d );
     return (T &) *this;
   }
+  T &u( uint16_t n,  size_t d ) {
+    this->ptr += uint16_to_string( n, this->ptr, d );
+    return (T &) *this;
+  }
   T &i( int64_t n,  size_t d ) {
     this->ptr += int64_to_string( n, this->ptr, d );
     return (T &) *this;

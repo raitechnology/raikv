@@ -496,6 +496,22 @@ EvSocket::process_close( void ) noexcept
   this->poll.push_free_list( this );
 }
 
+  /* get service, if none, return false */
+bool
+EvSocket::get_service( void *host,  uint16_t &svc ) noexcept
+{
+  (void) host;
+  svc = 0;
+  return false;
+}
+/* assign a session to connection */
+bool
+EvSocket::set_session( const char session[ MAX_SESSION_LEN ] ) noexcept
+{
+  (void) session[ 0 ];
+  return false;
+}
+
 size_t
 EvSocket::get_userid( char userid[ MAX_USERID_LEN ] ) noexcept
 {
@@ -504,16 +520,19 @@ EvSocket::get_userid( char userid[ MAX_USERID_LEN ] ) noexcept
 }
 /* get session name */
 size_t
-EvSocket::get_session( const char *,  size_t,
-                       char session[ MAX_SESSION_LEN ] ) noexcept
+EvSocket::get_session( uint16_t,  char session[ MAX_SESSION_LEN ] ) noexcept
 {
   session[ 0 ] = '\0';
   return 0;
 }
 /* get session name */
 size_t
-EvSocket::get_subscriptions( SubRouteDB &,  SubRouteDB &,
-                             int & ) noexcept
+EvSocket::get_subscriptions( uint16_t, SubRouteDB & ) noexcept
+{
+  return 0;
+}
+size_t
+EvSocket::get_patterns( uint16_t, int, SubRouteDB & ) noexcept
 {
   return 0;
 }
