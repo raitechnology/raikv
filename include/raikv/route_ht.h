@@ -504,7 +504,6 @@ struct RouteVec {
       this->release_vec();
     }
   }
-
   void release_vec( void ) {
     if ( this->vec_size > 0 ) {
       ::free( this->vec );
@@ -513,7 +512,13 @@ struct RouteVec {
       this->vec_size     = 0;
     }
   }
-
+  bool is_empty( void ) const {
+    if ( this->vec_size == 0 )
+      return true;
+    if ( this->vec_size == 1 )
+      return this->vec[ 0 ]->count == this->vec[ 0 ]->rem_count;
+    return false;
+  }
   size_t pop_count( void ) const {
     size_t cnt = 0, rem = 0;
     for ( uint32_t i = 0; i < this->vec_size; i++ ) {
@@ -527,7 +532,6 @@ struct RouteVec {
              /* *vec[ i ]      + vec[ i ]            + max_hash_val[ i ] */
            ( sizeof( VecData ) + sizeof( VecData * ) + sizeof( uint32_t ) );
   }
-
   /* find the vec[] that hash belongs */
   uint32_t bsearch( uint32_t h ) const {
     uint32_t size = this->vec_size, k = 0, piv;
