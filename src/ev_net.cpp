@@ -914,9 +914,11 @@ struct ForwardNotFd2 : public ForwardBase {
 };
 }
 }
+#if __GNUC__ >= 12
 /* gcc doesn't like:
  * error: storing the address of local variable 'prefix' in '*pub.rai::kv::EvPublish::prefix' */
 #pragma GCC diagnostic ignored "-Wdangling-pointer"
+#endif
 /* different publishers for different size route matches, one() is the most
  * common, but multi / queue need to be used with multiple routes */
 template<class Forward>
@@ -1515,7 +1517,9 @@ RoutePublish::forward_to( EvPublish &pub,  uint32_t fd,  BPData *data ) noexcept
   }
   return b;
 }
+#if __GNUC__ >= 12
 #pragma GCC diagnostic pop
+#endif
 
 /* convert a hash into a subject string, this may have collisions */
 bool
