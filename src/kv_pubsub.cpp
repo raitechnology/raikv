@@ -613,8 +613,7 @@ KvPubSubPeer::bloom_del_msg( KvMsgIn &msg ) noexcept
   if ( ref != NULL && this->bloom_rt != NULL ) {
     this->bloom_rt->del_bloom_ref( ref );
     if ( ref->nlinks == 0 ) {
-      this->bloom_db[ ref_num ] = NULL;
-      delete ref;
+      this->sub_route.remove_bloom_ref( ref );
     }
   }
 }
@@ -643,12 +642,10 @@ KvPubSubPeer::drop_bloom_refs( void ) noexcept
     BloomRef * ref;
     while ( (ref = this->bloom_rt->del_bloom_ref( NULL )) != NULL ) {
       if ( ref->nlinks == 0 ) {
-        this->bloom_db[ ref->ref_num ] = NULL;
-        delete ref;
+        this->sub_route.remove_bloom_ref( ref );
       }
     }
     this->sub_route.remove_bloom_route( this->bloom_rt );
-    delete this->bloom_rt;
     this->bloom_rt = NULL;
   }
 }

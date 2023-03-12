@@ -103,8 +103,10 @@ struct CatPtrT {
     return (T &) *this;
   }
   T &x( const void *mem,  size_t sz ) {
-    const char *m = (const char *) mem;
-    do { *this->ptr++ = *m++; } while ( --sz > 0 );
+    if ( sz > 0 ) {
+      const char *m = (const char *) mem;
+      do { *this->ptr++ = *m++; } while ( --sz > 0 );
+    }
     return (T &) *this;
   }
   T &s( const char *str ) {

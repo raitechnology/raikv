@@ -128,6 +128,11 @@ struct MapFile {
       mapping = FILE_MAP_ALL_ACCESS;
       map_sz  = this->map_size;
     }
+    else if ( this->map_size == 0 ) {
+      this->maph = NULL;
+      this->map = NULL;
+      return true;
+    }
     this->maph = CreateFileMappingA( this->h, NULL, page, szh, szl, NULL );
     if ( this->maph == NULL ) {
       fprintf( stderr, "err map %s: %u\n", this->path ? this->path : "anon",
@@ -363,6 +368,10 @@ struct MapFile {
     }
     if ( ! map_readonly( how ) )
       prot |= PROT_WRITE;
+    else if ( this->map_size == 0 ) {
+      this->map = NULL;
+      return true;
+    }
     if ( this->path == NULL )
       type = MAP_ANONYMOUS;
     if ( map_private( how ) )

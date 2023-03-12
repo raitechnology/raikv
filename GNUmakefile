@@ -448,6 +448,17 @@ $(bind)/test_dns: $(test_dns_objs) $(test_dns_libs)
 all_exes       += $(bind)/test_dns
 all_depends    += $(test_dns_deps)
 
+test_balloc_files := test_balloc
+test_balloc_cfile := $(addprefix test/, $(addsuffix .cpp, $(test_balloc_files)))
+test_balloc_objs  := $(addprefix $(objd)/, $(addsuffix .o, $(test_balloc_files)))
+test_balloc_deps  := $(addprefix $(dependd)/, $(addsuffix .d, $(test_balloc_files)))
+test_balloc_libs  := $(libd)/libraikv.so
+test_balloc_lnk   := $(dlnk_lib)
+
+$(bind)/test_balloc: $(test_balloc_objs) $(test_balloc_libs)
+all_exes       += $(bind)/test_balloc
+all_depends    += $(test_balloc_deps)
+
 all_dirs := $(bind) $(libd) $(objd) $(dependd)
 
 ifeq ($(have_pandoc),true)

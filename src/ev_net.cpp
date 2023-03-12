@@ -2146,21 +2146,6 @@ EvConnection::resize_recv_buf( uint32_t need_bytes ) noexcept
     ex_recv_buf = this->recv_buf;
   else {
     ex_recv_buf = EvPoll::ev_poll_alloc( this, new_size );
-#if 0
-    if ( this->poll.free_buf != NULL ) {
-      ex_recv_buf = this->poll.free_buf;
-      if ( new_size != this->poll.free_size ) {
-        ex_recv_buf = ::realloc( ex_recv_buf, new_size );
-        this->malloc_count++;
-      }
-      this->poll.free_buf  = NULL;
-      this->poll.free_size = 0;
-    }
-    else {
-      ex_recv_buf = ::malloc( new_size );
-      this->malloc_count++;
-    }
-#endif
     if ( ex_recv_buf == NULL ) {
       this->set_sock_err( EV_ERR_ALLOC, errno );
       return false;
@@ -2177,12 +2162,6 @@ EvConnection::resize_recv_buf( uint32_t need_bytes ) noexcept
     }
     else {
       this->poll.poll_free( this->recv, this->recv_size );
-#if 0
-      if ( this->poll.free_buf != NULL )
-        ::free( this->poll.free_buf );
-      this->poll.free_buf  = this->recv;
-      this->poll.free_size = this->recv_size;
-#endif
     }
   }
   this->recv = (char *) ex_recv_buf;
@@ -2247,17 +2226,6 @@ EvPoll::zero_copy_deref( uint32_t zref_index,  bool owner ) noexcept
     return;
   }
 release_buf:;
-#if 0
-  if ( zr.buf_size > this->free_size && zr.buf_size <= 1024 * 1024 ) {
-    if ( this->free_buf != NULL )
-      ::free( this->free_buf );
-    this->free_buf  = zr.buf;
-    this->free_size = zr.buf_size;
-  }
-  else {
-    ::free( zr.buf );
-  }
-#endif
   this->poll_free( zr.buf, zr.buf_size );
   if ( zref_index == this->zref.count ) {
     this->zref.count--;
@@ -2267,45 +2235,17 @@ release_buf:;
   }
 }
 
-static const size_t BLOCK_SIZE = 16 * 1024;
-
 void *
 EvPoll::ev_poll_alloc( void *cl,  size_t size ) noexcept
 {
   EvSocket & sock = *(EvSocket *) cl;
-  if ( size <= 63 * BLOCK_SIZE ) {
-    size_t     asize = align<size_t>( size, BLOCK_SIZE );
-    uint32_t   bits  = asize / BLOCK_SIZE;
-    uint32_t & free_alloced = sock.poll.free_alloced;
-    static const uint32_t N = sizeof( sock.poll.free_size ) /
-                              sizeof( sock.poll.free_size[ 0 ] );
-    static const size_t ALLOC_SIZE = BLOCK_SIZE * 64 * N;
-
-    if ( free_alloced + bits <= N * 64 ) {
-      uint64_t   mask = ( (uint64_t) 1 << bits ) - 1;
-      uint64_t * free_size = sock.poll.free_size;
-      for ( uint32_t i = 0; i < N; i++ ) {
-        if ( ~free_size[ i ] == 0 )
-          continue;
-        uint32_t shift = kv_ffsl( ~free_size[ i ] ) - 1;
-        for ( ; shift <= 64 - bits; shift++ ) {
-          if ( ( free_size[ i ] & ( mask << shift ) ) == 0 ) {
-            char * buf = sock.poll.free_buf;
-            if ( buf == NULL ) {
-              if ( (buf = (char *) ::malloc( ALLOC_SIZE )) == NULL )
-                return NULL;
-              sock.poll.free_buf = buf;
-              sock.poll.free_end = &buf[ ALLOC_SIZE ];
-            }
-            free_size[ i ] |= ( mask << shift );
-            free_alloced   += bits;
-            if ( sock.sock_base == EV_CONNECTION_BASE )
-              ((EvConnection &) sock).palloc_count++;
-            return (void *) &buf[ BLOCK_SIZE * ( shift + 64 * i ) ];
-          }
-        }
-      }
-    }
+  EvPoll   & poll = sock.poll;
+  if ( size <= FREE_BUF_MAX_SIZE ) {
+    if ( poll.free_buf == NULL )
+      poll.free_buf = new ( ::malloc( sizeof( Balloc16k_2m ) ) ) Balloc16k_2m();
+    void * ptr = poll.free_buf->try_alloc( size );
+    if ( ptr != NULL )
+      return ptr;
   }
   if ( sock.sock_base == EV_CONNECTION_BASE )
     ((EvConnection &) sock).malloc_count++;
@@ -2315,19 +2255,9 @@ EvPoll::ev_poll_alloc( void *cl,  size_t size ) noexcept
 void
 EvPoll::poll_free( void *ptr,  size_t size ) noexcept
 {
-  if ( (char *) ptr >= this->free_buf && (char *) ptr < this->free_end ) {
-    size = align<size_t>( size, BLOCK_SIZE );
-    uint32_t bits = size / BLOCK_SIZE;
-    uint64_t mask = ( (uint64_t) 1 << bits ) - 1;
-    uint32_t shift = (size_t) ( (char *) ptr - this->free_buf ) / BLOCK_SIZE;
-    this->free_alloced -= bits;
-    for ( uint32_t i = 0; ; i++ ) {
-      if ( shift < 64 ) {
-        this->free_size[ i ] &= ~( mask << shift );
-        return;
-      }
-      shift -= 64;
-    }
+  if ( this->free_buf != NULL && this->free_buf->in_block( ptr ) ) {
+    this->free_buf->release( ptr, size );
+    return;
   }
   ::free( ptr );
 }

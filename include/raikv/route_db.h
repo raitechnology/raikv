@@ -11,7 +11,7 @@
 #include <raikv/prio_queue.h>
 #include <raikv/dlinklist.h>
 #include <raikv/route_ht.h>
-//#include <raikv/kv_msg.h>
+#include <raikv/balloc.h>
 #include <raikv/pattern_cvt.h>
 
 struct sockaddr;
@@ -211,7 +211,9 @@ struct RouteZip {
 };
 
 /* Map a subscription hash to a route list using RouteZip */
-typedef ArrayCount<BloomRef *, 128> BloomDB;
+struct BloomDB : public ArrayCount<BloomRef *, 128> {
+  BallocList<8, 16*1024> bloom_mem;
+};
 
 struct RouteDB {
   RouteCache    cache;               /* the route arrays indexed by ht */
@@ -227,7 +229,6 @@ struct RouteDB {
                 bloom_mask;
   uint8_t       prefix_len[ MAX_PRE ]; /* current set of prefix lengths */
   uint8_t       pat_bit_count;      /* how many bits in pat_mask are set */
-  void        * bloom_mem;
 
   RouteDB( BloomDB &g_db ) noexcept;
 
@@ -344,7 +345,6 @@ struct RouteDB {
   }
   BloomRoute * create_bloom_route( uint32_t r,  BloomRef *ref,
                                    uint32_t shard ) noexcept;
-  void * alloc_bloom( void ) noexcept;
   void remove_bloom_route( BloomRoute *b ) noexcept;
 
   BloomRef * create_bloom_ref( uint32_t *pref_count,  BloomBits *bits,
@@ -354,6 +354,7 @@ struct RouteDB {
   BloomRef * update_bloom_ref( const void *data,  size_t datalen,
                                uint32_t ref_num,  const char *nm,
                                BloomDB &db ) noexcept;
+  void remove_bloom_ref( BloomRef *ref ) noexcept;
   uint32_t get_bloom_count( uint16_t prefix_len,  uint32_t hash,
                             uint32_t shard ) noexcept;
   bool cache_find( uint16_t prefix_len,  uint32_t hash,
@@ -461,7 +462,7 @@ struct BloomRef {
   char          name[ 32 ];
 
   void * operator new( size_t, void *ptr ) { return ptr; }
-  void operator delete( void *ptr ) { ::free( ptr ); }
+  void operator delete( void * ) {}
 
   BloomRef( uint32_t seed,  const char *nm,  BloomDB &db ) noexcept;
   BloomRef( BloomBits *b,  const uint32_t *pref,  const char *nm,

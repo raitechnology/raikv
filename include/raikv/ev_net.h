@@ -361,6 +361,9 @@ struct ZeroRef {
            buf_size;
 };
 
+static const size_t FREE_BUF_MAX_SIZE = 2 * 1024 * 1024;
+typedef Balloc<16 * 1024, FREE_BUF_MAX_SIZE> Balloc16k_2m;
+
 struct EvPoll {
   static bool is_event_greater( EvSocket *s1,  EvSocket *s2 ) {
     int x1 = kv_ffsw( s1->sock_state ),
@@ -449,10 +452,7 @@ struct EvPoll {
   void                  * sock_mem;
   size_t                  sock_mem_left;
   ArrayCount<ZeroRef, 64> zref;
-  char                  * free_buf,
-                        * free_end;
-  uint64_t                free_size[ 2 ];
-  uint32_t                free_alloced;
+  Balloc16k_2m          * free_buf;
 
   void * operator new( size_t, void *ptr ) { return ptr; }
   void operator delete( void *ptr ) { ::free( ptr ); }
@@ -473,9 +473,8 @@ struct EvPoll {
       recv_highwater( DEFAULT_RCV_BUFSIZE - 256 ),
       efd( -1 ), null_fd( -1 ), quit( 0 ),
       prefetch_pending( 0 ), sub_route( *this ), sock_mem( 0 ),
-      sock_mem_left( 0 ), free_buf( 0 ), free_end( 0 ), free_alloced( 0 ) {
+      sock_mem_left( 0 ), free_buf( 0 ) {
     ::memset( this->sock_type_str, 0, sizeof( this->sock_type_str ) );
-    ::memset( this->free_size, 0, sizeof( this->free_size ) );
     ::memset( this->state_ns, 0, sizeof( this->state_ns ) );
     ::memset( this->state_cnt, 0, sizeof( this->state_cnt ) );
   }
@@ -620,9 +619,6 @@ struct EvConnection : public EvSocket, public StreamBuf {
       }
       else {
         this->poll.poll_free( this->recv, this->recv_size );
-#if 0
-        ::free( this->recv );
-#endif
       }
     }
     this->reset_recv();
@@ -645,9 +641,6 @@ struct EvConnection : public EvSocket, public StreamBuf {
         if ( this->len > 0 )
           ::memmove( this->recv, &this->recv[ this->off ], this->len );
         else if ( this->recv != this->recv_buf ) {
-#if 0
-          ::free( this->recv );
-#endif
           this->poll.poll_free( this->recv, this->recv_size );
           this->recv = this->recv_buf;
           this->recv_size = sizeof( this->recv_buf );
