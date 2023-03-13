@@ -917,6 +917,7 @@ struct ForwardNotFd2 : public ForwardBase {
 #if __GNUC__ >= 12
 /* gcc doesn't like:
  * error: storing the address of local variable 'prefix' in '*pub.rai::kv::EvPublish::prefix' */
+#pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wdangling-pointer"
 #endif
 /* different publishers for different size route matches, one() is the most
