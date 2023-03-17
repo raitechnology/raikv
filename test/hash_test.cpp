@@ -317,10 +317,10 @@ cmd_error:;
   }
 #if defined( USE_KV_MEOW_HASH )
   const char *ar[] = {
-    "security is for the messaging layer",
-    "authenticate the publisher to the s",
-    "subscribers must be able to trust t",
-    "uniquely serialized, and authentic "
+    "security is for the messaging la",
+    "authenticate the publisher to th",
+    "subscribers must be able to trus",
+    "uniquely serialized, and authent"
   };
 
   uint64_t x[ 8 ], y[ 8 ], d[ 8 ], e[ 8 ], z[ 8 ], u[ 8 ], v[ 8 ], w[ 16 ];

@@ -525,7 +525,9 @@ struct EvPoll {
   };
   int dispatch( void ) noexcept;          /* process any sock in the queues */
   void drain_prefetch( void ) noexcept;   /* process prefetches */
+  void update_time_ns( void ) noexcept;   /* update mono_ns and now_ns */
   uint64_t current_coarse_ns( void ) noexcept; /* current time */
+  uint64_t current_mono_ns( void ) noexcept; /* current mono */
   uint64_t create_ns( void ) const noexcept; /* create time from kv */
   int get_null_fd( void ) noexcept;         /* return dup /dev/null fd */
   int add_sock( EvSocket *s ) noexcept;     /* add to poll set */

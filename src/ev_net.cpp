@@ -328,9 +328,15 @@ EvPoll::add_sock( EvSocket *s ) noexcept
   if ( s->sock_state != 0 )
     this->push_event_queue( s );
   uint64_t ns = this->current_coarse_ns();
+  if ( ns <= this->next_id ) {
+    ns = this->next_id+1;
+    /*while ( this->current_coarse_ns() < ns )
+      ;*/
+  }
+  this->next_id = ns;
   s->start_ns   = ns;
   s->active_ns  = ns;
-  s->id         = ++this->next_id;
+  s->read_ns    = ns;
   s->init_stats();
   return 0;
 }
@@ -559,8 +565,10 @@ EvListen::EvListen( EvPoll &p,  const char *lname,  const char *name )
 void
 EvListen::read( void ) noexcept
 {
-  if ( this->accept() != NULL )
+  if ( this->accept() != NULL ) {
     this->accept_cnt++;
+    this->read_ns = this->poll.now_ns;
+  }
 }
 
 /* listeners don't do these */
@@ -642,8 +650,8 @@ EvPoll::drain_prefetch( void ) noexcept
   }
 }
 
-uint64_t
-EvPoll::current_coarse_ns( void ) noexcept
+void
+EvPoll::update_time_ns( void ) noexcept
 {
   uint64_t r_ns = current_realtime_coarse_ns(),
            m_ns = current_monotonic_time_ns();
@@ -656,7 +664,20 @@ EvPoll::current_coarse_ns( void ) noexcept
   }
   this->now_ns  = r_ns;
   this->mono_ns = m_ns;
-  return r_ns;
+}
+
+uint64_t
+EvPoll::current_coarse_ns( void ) noexcept
+{
+  this->update_time_ns();
+  return this->now_ns;
+}
+
+uint64_t
+EvPoll::current_mono_ns( void ) noexcept
+{
+  this->update_time_ns();
+  return this->mono_ns;
 }
 
 uint64_t
@@ -672,9 +693,9 @@ EvPoll::dispatch( void ) noexcept
 {
   EvSocket * s;
   uint64_t start   = this->prio_tick,
-           curr_ns = this->current_coarse_ns(),
-           busy_ns = this->timer.queue->busy_delta( this->mono_ns ),
-           mark_ns = this->mono_ns,
+           next_ns = this->current_mono_ns(),
+           busy_ns = this->timer.queue->busy_delta( next_ns ),
+           mark_ns = next_ns,
            used_ns = 0;
   int      ret     = DISPATCH_IDLE,
            next_state;
@@ -685,12 +706,12 @@ EvPoll::dispatch( void ) noexcept
   for (;;) {
   next_tick:;
     if ( state != EV_NO_STATE ) {
-      curr_ns = this->current_coarse_ns();
-      this->state_ns[ state ] += this->mono_ns - mark_ns;
+      next_ns = this->current_mono_ns();
+      this->state_ns[ state ] += next_ns - mark_ns;
       this->state_cnt[ state ]++;
-      used_ns = this->mono_ns - mark_ns;
-      mark_ns = this->mono_ns;
-      state   = EV_NO_STATE;
+      used_ns += next_ns - mark_ns;
+      mark_ns  = next_ns;
+      state    = EV_NO_STATE;
     }
     if ( start + 300 < this->prio_tick ) { /* run poll() at least every 300 */
       ret |= POLL_NEEDED | DISPATCH_BUSY;
@@ -699,9 +720,9 @@ EvPoll::dispatch( void ) noexcept
     if ( used_ns >= busy_ns ) { /* if a timer may expire, run poll() */
       if ( used_ns > 0 ) {
         /* the real time is updated at coarse intervals (10 to 100 us) */
-        curr_ns = this->current_coarse_ns();
+        next_ns = this->current_mono_ns();
         /* how much busy work before timer expires */
-        busy_ns = this->timer.queue->busy_delta( this->mono_ns );
+        busy_ns = this->timer.queue->busy_delta( next_ns );
       }
       if ( busy_ns == 0 ) {
         /* if timer is already an event (in_queue=1), dispatch that first */
@@ -745,7 +766,6 @@ EvPoll::dispatch( void ) noexcept
       case EV_READ:
       case EV_READ_LO:
       case EV_READ_HI:
-        s->active_ns = curr_ns;
         s->read();
         break;
       case EV_PROCESS:
@@ -1152,7 +1172,7 @@ EvSocket::notify_ready( void ) noexcept
       return;
     BPData * data = list.pop_hd();
     data->bp_flags &= ~BP_IN_LIST;
-    if ( data->bp_id == this->id )
+    if ( data->bp_id == this->start_ns )
       data->on_write_ready();
   }
 }
@@ -1202,7 +1222,7 @@ BPData::has_back_pressure( EvPoll &poll, uint32_t fd ) noexcept
       poll.bp_wait.pop( this->bp_fd, *this );
     this->bp_state = s->sock_state;
     this->bp_fd    = fd;
-    this->bp_id    = s->id;
+    this->bp_id    = s->start_ns;
     if ( this->bp_notify() )
       poll.bp_wait.push( fd, *this );
     return true;
@@ -1877,15 +1897,16 @@ EvSocket::client_list( char *buf,  size_t buflen ) noexcept
    * qbuf, obl=output buf len, oll=outut list len, omem=output mem usage,
    * events=sock rd/wr, cmd=last cmd issued */
   int n = ::snprintf( buf, buflen,
-    "id=%" PRIu64 " addr=%.*s fd=%d name=%.*s kind=%s age=%" PRId64 " idle=%" PRId64 " ",
-    this->PeerData::id,
+    "id=%" PRIu64 "addr=%.*s fd=%d name=%.*s kind=%s age=%" PRId64 " idle=%" PRId64 " rd=%" PRId64 " ",
+    this->PeerData::start_ns,
     (int) this->PeerData::get_peer_address_strlen(),
     this->PeerData::peer_address.buf,
     this->PeerData::fd,
     (int) this->PeerData::get_name_strlen(), this->PeerData::name,
     this->PeerData::kind,
     ( cur_time_ns - this->PeerData::start_ns ) / ONE_NS,
-    ( cur_time_ns - this->PeerData::active_ns ) / ONE_NS );
+    ( cur_time_ns - this->PeerData::active_ns ) / ONE_NS,
+    ( cur_time_ns - this->PeerData::read_ns ) / ONE_NS );
   return min_int( n, (int) buflen - 1 );
 }
 
@@ -1897,7 +1918,7 @@ EvSocket::client_match( PeerData &pd,  PeerMatchArgs *ka,  ... ) noexcept
 #endif
   /* match filters, if any don't match return false */
   if ( ka->id != 0 )
-    if ( (uint64_t) ka->id != pd.id ) /* match id */
+    if ( (uint64_t) ka->id != pd.start_ns ) /* match id */
       return false;
   if ( ka->ip_len != 0 ) /* match ip address string */
     if ( ka->ip_len != pd.get_peer_address_strlen() ||
@@ -1980,6 +2001,8 @@ EvSocket::client_stats( PeerStats &ps ) noexcept
   ps.msgs_sent  += this->msgs_sent;
   if ( this->active_ns > ps.active_ns )
     ps.active_ns = this->active_ns;
+  if ( this->read_ns > ps.read_ns )
+    ps.read_ns = this->read_ns;
 }
 
 void
@@ -2015,8 +2038,8 @@ void
 EvListen::client_stats( PeerStats &ps ) noexcept
 {
   ps.accept_cnt += this->accept_cnt;
-  if ( this->active_ns > ps.active_ns )
-    ps.active_ns = this->active_ns;
+  if ( this->read_ns > ps.read_ns )
+    ps.read_ns = this->read_ns;
 }
 
 bool
@@ -2091,6 +2114,7 @@ EvConnection::read( void ) noexcept
         this->len += (uint32_t) nbytes;
         this->bytes_recv += nbytes;
         this->recv_count++;
+        this->read_ns = this->poll.now_ns;
         this->push( EV_PROCESS );
         /* if buf almost full, switch to low priority read */
         if ( this->len >= this->recv_highwater )
@@ -2527,6 +2551,7 @@ EvDgram::read( void ) noexcept
     this->in_nmsgs += nmsgs;
     for ( int i = 0; i < nmsgs; i++ )
       this->bytes_recv += this->in_mhdr[ j++ ].msg_len;
+    this->read_ns = this->poll.now_ns;
     /* keep recvmmsg packet recv count to 8 at a time, that is close to
      * the sweet spot of latency vs bandwidth */
     this->in_nsize = ( ( this->in_nmsgs < 8 ) ? this->in_nmsgs + 1 : 8 );

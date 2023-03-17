@@ -743,9 +743,10 @@ struct PeerStats {
            accept_cnt,
            msgs_recv,
            msgs_sent,
-           active_ns;
+           active_ns,
+           read_ns;
   PeerStats() : bytes_recv( 0 ), bytes_sent( 0 ), accept_cnt( 0 ),
-                msgs_recv( 0 ), msgs_sent( 0 ), active_ns( 0 ) {}
+                msgs_recv( 0 ), msgs_sent( 0 ), active_ns( 0 ), read_ns( 0 ) {}
   void zero( void ) {
     this->bytes_recv = 0;
     this->bytes_sent = 0;
@@ -753,6 +754,7 @@ struct PeerStats {
     this->msgs_recv  = 0;
     this->msgs_sent  = 0;
     this->active_ns  = 0;
+    this->read_ns    = 0;
   }
 };
 #if 0
@@ -850,9 +852,10 @@ struct PeerData {
              * back;
   int32_t      fd;         /* fildes */
   uint32_t     route_id;   /* 64 * 3 */
-  uint64_t     id,         /* identifies peer */
+  uint64_t     /*id,         * identifies peer */
                start_ns,   /* start time */
-               active_ns;  /* last read time */
+               active_ns,  /* last write time */
+               read_ns;    /* last read time */
   const char * kind;       /* what protocol type */
   char         name[ 64 ]; /* name assigned to peer */
   PeerAddrStr  peer_address; /* ip4 1.2.3.4:p, ip6 [ab::cd]:p, other */
@@ -874,8 +877,8 @@ struct PeerData {
                   const char *k ) {
     this->fd = fildes;
     this->route_id = rte_id;
-    this->id = 0;
-    this->start_ns = this->active_ns = 0;
+    /*this->id = 0;*/
+    this->start_ns = this->active_ns = this->read_ns = 0;
     this->kind = k;
     this->name[ 0 ] = '\0';
     this->name[ 63 ] = '\0';

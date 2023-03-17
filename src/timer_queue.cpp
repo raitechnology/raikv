@@ -192,6 +192,7 @@ EvTimerQueue::read( void ) noexcept
     n = ::read( this->fd, buf, sizeof( buf ) );
     if ( n < 0 )
       break;
+    this->read_ns = this->poll.now_ns;
   }
   if ( errno != EINTR ) {
     if ( errno != EAGAIN ) {
