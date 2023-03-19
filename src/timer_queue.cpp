@@ -218,6 +218,8 @@ EvTimerQueue::set_timer( void ) noexcept
   ts.it_value.tv_sec  = delta / (uint64_t) 1000000000;
   ts.it_value.tv_nsec = delta % (uint64_t) 1000000000;
 
+  if ( this->fd == -1 ) /* shutdown */
+    return false;
   if ( timerfd_settime( this->fd, 0, &ts, NULL ) < 0 ) {
     perror( "set timer" );
     return false;
