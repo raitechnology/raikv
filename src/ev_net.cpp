@@ -934,12 +934,6 @@ struct ForwardNotFd2 : public ForwardBase {
 };
 }
 }
-#if __GNUC__ >= 12
-/* gcc doesn't like:
- * error: storing the address of local variable 'prefix' in '*pub.rai::kv::EvPublish::prefix' */
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wdangling-pointer"
-#endif
 /* different publishers for different size route matches, one() is the most
  * common, but multi / queue need to be used with multiple routes */
 template<class Forward>
@@ -952,11 +946,9 @@ publish_one( EvPublish &pub,  RoutePublishData &rpd,  Forward &fwd ) noexcept
   uint8_t    prefix[ 1 ];
   bool       flow_good = true;
 
-  pub.hash       = hash;
-  pub.prefix     = prefix;
-  pub.prefix_cnt = 1;
-  hash[ 0 ]      = rpd.hash;
-  prefix[ 0 ]    = rpd.prefix;
+  hash[ 0 ]   = rpd.hash;
+  prefix[ 0 ] = rpd.prefix;
+  EvPubTmp tmp_hash( pub, hash, prefix, 1 );
   for ( uint32_t i = 0; i < rcount; i++ ) {
     flow_good &= fwd.on_msg( routes[ i ], pub );
   }
@@ -982,8 +974,7 @@ publish_multi_64( EvPublish &pub,  RoutePublishData *rpd,  uint32_t n,
     bits        |= (uint64_t) 1 << fd;
     rpd_fds[ i ] = (uint8_t) fd;
   }
-  pub.hash   = hash;
-  pub.prefix = prefix;
+  EvPubTmp tmp_hash( pub, hash, prefix );
   for (;;) {
     if ( bits == 0 )
       break;
@@ -1035,8 +1026,7 @@ publish_multi( EvPublish &pub,  RoutePublishData *rpd,  uint32_t n,
     frame.fdset.add( fd );
     rpd_fds[ i ] = fd;
   }
-  pub.hash   = hash;
-  pub.prefix = prefix;
+  EvPubTmp tmp_hash( pub, hash, prefix );
   for (;;) {
     min_route = 0;
     if ( ! frame.fdset.scan( min_route ) )
@@ -1412,10 +1402,7 @@ RoutePublish::forward_set_no_route( EvPublish &pub,
   uint32_t cnt       = 0;
   bool     flow_good = true;
   uint8_t  prefix    = SUB_RTE;
-
-  pub.hash       = &pub.subj_hash;
-  pub.prefix     = &prefix;
-  pub.prefix_cnt = 1;
+  EvPubTmp tmp_hash( pub, &pub.subj_hash, &prefix, 1 );
 
   for ( size_t i = 0; i < fdset.size; i++ ) {
     uint32_t fd   = (uint32_t) ( i * fdset.WORD_BITS );
@@ -1449,10 +1436,7 @@ RoutePublish::forward_set_no_route_not_fd( EvPublish &pub,  const BitSpace &fdse
   uint32_t cnt       = 0;
   bool     flow_good = true;
   uint8_t  prefix    = SUB_RTE;
-
-  pub.hash       = &pub.subj_hash;
-  pub.prefix     = &prefix;
-  pub.prefix_cnt = 1;
+  EvPubTmp tmp_hash( pub, &pub.subj_hash, &prefix, 1 );
 
   for ( size_t i = 0; i < fdset.size; i++ ) {
     uint32_t fd   = (uint32_t) ( i * fdset.WORD_BITS );
@@ -1517,9 +1501,7 @@ RoutePublish::forward_to( EvPublish &pub,  uint32_t fd,  BPData *data ) noexcept
       }
     } while ( ++k < x );
   }
-  pub.hash       = phash;
-  pub.prefix     = prefix;
-  pub.prefix_cnt = n;
+  EvPubTmp tmp_hash( pub, phash, prefix, n );
 
   EvSocket * s;
   bool       b = true;
@@ -1538,9 +1520,6 @@ RoutePublish::forward_to( EvPublish &pub,  uint32_t fd,  BPData *data ) noexcept
   }
   return b;
 }
-#if __GNUC__ >= 12
-#pragma GCC diagnostic pop
-#endif
 
 /* convert a hash into a subject string, this may have collisions */
 bool

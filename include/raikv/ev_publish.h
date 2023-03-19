@@ -106,6 +106,21 @@ struct EvPublish {
       pub_host( p.pub_host ), hash( 0 ), prefix( 0 ), cnt( p.cnt ) {}
 };
 
+struct EvPubTmp {
+  EvPublish & pub;
+  EvPubTmp( EvPublish &p,  uint32_t * hsh,  uint8_t * pre,  uint8_t pcnt = 0 )
+      : pub( p ) {
+    p.hash       = hsh;
+    p.prefix     = pre;
+    p.prefix_cnt = pcnt;
+  }
+  ~EvPubTmp() {
+    this->pub.hash       = NULL;
+    this->pub.prefix     = NULL;
+    this->pub.prefix_cnt = 0;
+  }
+};
+
 }
 }
 #endif
