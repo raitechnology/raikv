@@ -129,6 +129,12 @@ template <class Int> static inline Int unaligned( const void *p ) {
 static const size_t KV_CACHE_ALIGN = 64;
 static inline void *aligned_malloc( size_t sz,
                                     size_t alignment = KV_CACHE_ALIGN ) {
+#ifndef USE_MEMALIGN
+  void * p   = ::malloc( sz + alignment );
+  size_t off = alignment - ( (uintptr_t) p & ( alignment - 1 ) );
+  *((void **) &((char *) p)[ off - sizeof( void * ) ]) = p;
+  return &((char *) p)[ off ];
+#else
   sz = align<size_t>( sz, alignment );
 #if defined( _MSC_VER )
   return ::_aligned_malloc( sz, alignment );
@@ -137,12 +143,17 @@ static inline void *aligned_malloc( size_t sz,
 #else
   return ::memalign( alignment, sz ); /* RH5, RH6.. */
 #endif
+#endif
 }
 static inline void aligned_free( void *p ) {
+#ifndef USE_MEMALIGN
+  ::free( *(void **) &((char *) p)[ -sizeof( void * ) ] );
+#else
 #if defined( _MSC_VER )
   ::_aligned_free( p );
 #else
   ::free( p ); /* libc allows this */
+#endif
 #endif
 }
 
