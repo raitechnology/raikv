@@ -903,6 +903,12 @@ struct PeerData {
   virtual void retired_stats( PeerStats & )  { return; }
 };
 
+enum {
+  NOTIFY_ADD_SUB = 0,
+  NOTIFY_REM_SUB = 1,
+  NOTIFY_ADD_REF = 2,
+  NOTIFY_SUB_REF = 3
+};
 struct NotifySub {
   const char * subject,
              * reply;
@@ -915,7 +921,8 @@ struct NotifySub {
   RouteRef   * ref;
   BloomRef   * bref;
   uint8_t      hash_collision;
-  char         src_type;
+  char         src_type;  /* C:console, M:session, V:rv, 'R:redis, K:kv */
+  uint8_t      notify_type; /* start, addref, minref, unsub */
 
   NotifySub( const char *s,  size_t slen,
              const char *r,  size_t rlen,
@@ -924,14 +931,14 @@ struct NotifySub {
     subject( s ), reply( r ), subject_len( (uint16_t) slen ),
     reply_len( (uint16_t) rlen ), subj_hash( shash ), src_fd( fd ),
     sub_count( 0 ), src( source ), ref( 0 ), bref( 0 ), hash_collision( coll ),
-    src_type( t ) {}
+    src_type( t ), notify_type( 0 ) {}
 
   NotifySub( const char *s,  size_t slen,
              uint32_t shash,  uint32_t fd,
              bool coll,  char t,  EvSocket *source = NULL ) :
     subject( s ), reply( 0 ), subject_len( (uint16_t) slen ), reply_len( 0 ),
     subj_hash( shash ), src_fd( fd ), sub_count( 0 ), src( source ), ref( 0 ),
-    bref( 0 ), hash_collision( coll ), src_type( t ) {}
+    bref( 0 ), hash_collision( coll ), src_type( t ), notify_type( 0 ) {}
 };
 
 struct NotifyPattern {
@@ -947,7 +954,8 @@ struct NotifyPattern {
   RouteRef         * ref;
   BloomRef         * bref;
   uint8_t            hash_collision;
-  char               src_type;
+  char               src_type;  /* C:console, M:session, V:rv, 'R:redis, K:kv */
+  uint8_t            notify_type; /* start, addref, minref, unsub */
 
   NotifyPattern( const PatternCvt &c,
                  const char *s,  size_t slen,
@@ -957,7 +965,7 @@ struct NotifyPattern {
     cvt( c ), pattern( s ), reply( r ), pattern_len( (uint16_t) slen ),
     reply_len( (uint16_t) rlen ), prefix_hash( phash ), src_fd( fd ),
     sub_count( 0 ), src( source ), ref( 0 ), bref( 0 ), hash_collision( coll ),
-    src_type( t ) {}
+    src_type( t ), notify_type( 0 ) {}
 
   NotifyPattern( const PatternCvt &c,
                  const char *s,  size_t slen,
@@ -965,7 +973,8 @@ struct NotifyPattern {
                  bool coll,  char t,  EvSocket *source = NULL ) :
     cvt( c ), pattern( s ), reply( 0 ), pattern_len( (uint16_t) slen ),
     reply_len( 0 ), prefix_hash( phash ), src_fd( fd ), sub_count( 0 ),
-    src( source ), ref( 0 ), bref( 0 ), hash_collision( coll ), src_type( t ) {}
+    src( source ), ref( 0 ), bref( 0 ), hash_collision( coll ),
+    src_type( t ), notify_type( 0 ) {}
 };
 
 struct RoutePublish;
@@ -1043,26 +1052,42 @@ struct RoutePublish : public RouteDB {
   int init_shm( EvShm &shm ) noexcept;
 
   void do_notify_sub( NotifySub &sub ) {
+    sub.notify_type = NOTIFY_ADD_SUB;
     for ( RouteNotify *p = this->notify_list.hd; p != NULL; p = p->next )
       p->on_sub( sub );
   }
   void do_notify_unsub( NotifySub &sub ) {
+    sub.notify_type = NOTIFY_REM_SUB;
     for ( RouteNotify *p = this->notify_list.hd; p != NULL; p = p->next )
       p->on_unsub( sub );
   }
   void do_notify_resub( NotifySub &sub ) {
+    sub.notify_type = NOTIFY_ADD_REF;
+    for ( RouteNotify *p = this->notify_list.hd; p != NULL; p = p->next )
+      p->on_resub( sub );
+  }
+  void do_notify_reunsub( NotifySub &sub ) {
+    sub.notify_type = NOTIFY_SUB_REF;
     for ( RouteNotify *p = this->notify_list.hd; p != NULL; p = p->next )
       p->on_resub( sub );
   }
   void do_notify_psub( NotifyPattern &pat ) {
+    pat.notify_type = NOTIFY_ADD_SUB;
     for ( RouteNotify *p = this->notify_list.hd; p != NULL; p = p->next )
       p->on_psub( pat );
   }
   void do_notify_punsub( NotifyPattern &pat ) {
+    pat.notify_type = NOTIFY_REM_SUB;
     for ( RouteNotify *p = this->notify_list.hd; p != NULL; p = p->next )
       p->on_punsub( pat );
   }
   void do_notify_repsub( NotifyPattern &pat ) {
+    pat.notify_type = NOTIFY_ADD_REF;
+    for ( RouteNotify *p = this->notify_list.hd; p != NULL; p = p->next )
+      p->on_repsub( pat );
+  }
+  void do_notify_repunsub( NotifyPattern &pat ) {
+    pat.notify_type = NOTIFY_SUB_REF;
     for ( RouteNotify *p = this->notify_list.hd; p != NULL; p = p->next )
       p->on_repsub( pat );
   }
@@ -1111,6 +1136,9 @@ struct RoutePublish : public RouteDB {
   void notify_sub( NotifySub &sub ) {
     this->do_notify_resub( sub );
   }
+  void notify_unsub( NotifySub &sub ) {
+    this->do_notify_reunsub( sub );
+  }
 
   void add_pat( NotifyPattern &pat ) {
     uint16_t prefix_len = (uint16_t) pat.cvt.prefixlen;
@@ -1148,6 +1176,9 @@ struct RoutePublish : public RouteDB {
 
   void notify_pat( NotifyPattern &pat ) {
     this->do_notify_repsub( pat );
+  }
+  void notify_unpat( NotifyPattern &pat ) {
+    this->do_notify_repunsub( pat );
   }
 
   bool forward_msg( EvPublish &pub,  BPData *data = NULL ) noexcept;
