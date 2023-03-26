@@ -914,7 +914,7 @@ struct RouteVec {
     return this->next( loc.i, loc.j );
   }
 
-  Data *remove_and_next( Data *old,  RouteLoc &loc) {
+  Data *remove_and_next( Data *old,  RouteLoc &loc ) {
     return this->remove_and_next( old, loc.i, loc.j );
   }
 };

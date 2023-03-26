@@ -536,44 +536,75 @@ struct BloomRef {
   }
 };
 
+struct BloomMatchArgs {
+  const char     * sub;
+  uint32_t         subj_hash;
+  uint16_t         sublen;
+  const uint32_t * seed;
+
+  BloomMatchArgs( uint32_t h, const char *s,  uint16_t l, const uint32_t * p )
+    : sub( s ), subj_hash( h ), sublen( l ), seed( p ) {
+    if ( h == 0 )
+      this->subj_hash = kv_crc_c( this->sub, this->sublen, 0 );
+  }
+  uint32_t hash( void ) { return this->subj_hash; }
+};
+
 struct BloomMatch {
   uint64_t pref_mask;
   uint16_t max_pref;
   uint32_t pref_hash[ MAX_PRE ];
 
-  bool match_sub( uint32_t subj_hash, const char *sub,  uint16_t sublen,
-                  const BloomRef &bloom ) {
-    if ( bloom.pref_count[ SUB_RTE ] != 0 && bloom.bits->is_member( subj_hash ))
-      return true;
-    for ( uint16_t i = 0; i < this->max_pref; i++ ) {
-      uint64_t mask = (uint64_t) 1 << i;
+  bool match_sub( BloomMatchArgs &args,  const BloomRef &bloom ) {
+    return this->sub_prefix( args, bloom ) != MAX_RTE;
+  }
+  uint16_t sub_prefix( BloomMatchArgs &args,  const BloomRef &bloom ) {
+    uint16_t test = this->test_prefix( args, bloom, SUB_RTE );
+    for ( uint16_t prefix_len = 0; ; prefix_len++ ) {
+      if ( test != MAX_RTE || prefix_len == this->max_pref )
+        return test;
+      test = this->test_prefix( args, bloom, prefix_len );
+    }
+  }
+  uint16_t test_prefix( BloomMatchArgs &args,  const BloomRef &bloom,
+                        uint16_t prefix_len ) {
+    if ( prefix_len == SUB_RTE ) {
+      if ( bloom.pref_count[ SUB_RTE ] != 0 &&
+           bloom.bits->is_member( args.hash() ) )
+        return SUB_RTE;
+      return MAX_RTE;
+    }
+    if ( prefix_len < this->max_pref ) {
+      uint64_t mask = (uint64_t) 1 << prefix_len;
       if ( ( bloom.pref_mask & mask ) != 0 ) {
-        if ( ( this->pref_mask & mask ) == 0 ) {
-          this->pref_mask |= mask;
-          this->pref_hash[ i ] = kv_crc_c( sub, i, this->pref_hash[ i ] );
-        }
-        bool has_detail;
-        if ( bloom.bits->is_member( this->pref_hash[ i ] ) &&
-             bloom.detail_matches( i, mask, this->pref_hash[ i ], sub, sublen,
-                                   subj_hash, has_detail ) )
-          return true;
+        uint32_t prefix_hash = this->get_prefix_hash( args, prefix_len, mask );
+        bool     has_det;
+        if ( bloom.bits->is_member( prefix_hash ) &&
+             ( ( bloom.detail_mask & mask ) == 0 ||
+               bloom.detail_matches( prefix_len, mask, prefix_hash, args.sub,
+                                     args.sublen, args.hash(), has_det ) ) )
+          return prefix_len;
       }
     }
-    return false;
+    return MAX_RTE;
   }
-  void init_match( uint16_t sublen,  const uint32_t *pref ) {
-    this->max_pref = sublen + 1;
+  uint32_t get_prefix_hash( BloomMatchArgs &args, uint16_t prefix_len,
+                            uint64_t mask ) {
+    if ( ( this->pref_mask & mask ) == 0 ) {
+      this->pref_mask |= mask;
+      this->pref_hash[ prefix_len ] = kv_crc_c( args.sub, prefix_len,
+                                                args.seed[ prefix_len ] );
+    }
+    return this->pref_hash[ prefix_len ];
+  }
+  void init_match( uint16_t sublen ) {
+    this->max_pref  = min_int<uint16_t>( sublen + 1, MAX_PRE );
     this->pref_mask = 0;
-    if ( this->max_pref > MAX_PRE )
-      this->max_pref = MAX_PRE;
-    ::memcpy( this->pref_hash, pref, sizeof( pref[ 0 ] ) * this->max_pref );
   }
   static size_t match_size( uint16_t sublen ) {
-    uint16_t max_pref = sublen + 1;
-    if ( max_pref > MAX_PRE )
-      max_pref = MAX_PRE;
-    size_t len = sizeof( BloomMatch ) -
-                 ( sizeof( uint32_t ) * ( MAX_PRE - max_pref ) );
+    uint16_t max_pref = min_int<uint16_t>( sublen + 1, MAX_PRE );
+    size_t   len = sizeof( BloomMatch ) -
+                   ( sizeof( uint32_t ) * ( MAX_PRE - max_pref ) );
     return ( len + 7 ) & ~(size_t) 7;
   }
 };
