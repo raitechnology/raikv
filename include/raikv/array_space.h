@@ -94,6 +94,10 @@ template <class T>
 struct CatPtrT {
   char * start, * ptr;
   CatPtrT( char *out ) { this->ptr = this->start = out; }
+  T &begin( void ) {
+    this->ptr = this->start;
+    return (T &) *this;
+  }
   size_t len( void ) {
     return this->ptr - this->start;
   }
