@@ -878,40 +878,49 @@ struct PeerAddrStr {
   bool set_peer_addr( int fd ) noexcept;
 };
 
-struct PeerData {
+struct PeerId {
+  uint64_t start_ns; /* start time */
+  int32_t  fd;
+  uint32_t route_id; /* upper layer route */
+
+  bool equals( const PeerId &pid ) const {
+    return pid.start_ns == this->start_ns &&
+           pid.fd       == this->fd       &&
+           pid.route_id == this->route_id;
+  }
+};
+
+struct PeerData : public PeerId {
   EvSocket   * next,       /* dbl link list, active and free list */
              * back;
-  int32_t      fd;         /* fildes */
-  uint32_t     route_id;   /* 64 * 3 */
-  uint64_t     /*id,         * identifies peer */
-               start_ns,   /* start time */
-               active_ns,  /* last write time */
+  uint64_t     active_ns,  /* last write time */
                read_ns;    /* last read time */
   const char * kind;       /* what protocol type */
   char         name[ 64 ]; /* name assigned to peer */
   PeerAddrStr  peer_address; /* ip4 1.2.3.4:p, ip6 [ab::cd]:p, other */
 
   PeerData() : next( 0 ), back( 0 ) {
-    this->init_peer( -1, -1, NULL, NULL );
+    this->init_peer( 0, -1, -1, NULL, NULL );
   }
   /* no address, attached directly to shm */
-  void init_ctx( int fildes,  uint32_t rte_id,  uint32_t ctx_id,
+  void init_ctx( uint64_t ns,  int fildes,  uint32_t rte_id,  uint32_t ctx_id,
                  const char *k ) {
-    this->init_peer( fildes, rte_id, NULL, k );
+    this->init_peer( ns, fildes, rte_id, NULL, k );
     this->peer_address.init_ctx( ctx_id );
   }
   void set_addr( const struct sockaddr *sa ) {
     this->peer_address.set_address( sa );
   }
   /* connected via ip address */
-  void init_peer( int fildes,  uint32_t rte_id,  const sockaddr *sa,
-                  const char *k ) {
-    this->fd = fildes;
-    this->route_id = rte_id;
-    /*this->id = 0;*/
-    this->start_ns = this->active_ns = this->read_ns = 0;
-    this->kind = k;
-    this->name[ 0 ] = '\0';
+  void init_peer( uint64_t ns,  int32_t fildes,  uint32_t rte_id,
+                  const sockaddr *sa,  const char *k ) {
+    this->start_ns   = ns;
+    this->fd         = fildes;
+    this->route_id   = rte_id;
+    this->active_ns  = 0;
+    this->read_ns    = 0;
+    this->kind       = k;
+    this->name[ 0 ]  = '\0';
     this->name[ 63 ] = '\0';
     this->peer_address.set_address( sa );
   }
@@ -941,34 +950,30 @@ enum {
   NOTIFY_SUB_REF = 3
 };
 struct NotifySub {
-  const char * subject,
-             * reply;
-  uint16_t     subject_len,
-               reply_len;
-  uint32_t     subj_hash,
-               src_fd,
-               sub_count;
-  EvSocket   * src;
-  RouteRef   * ref;
-  BloomRef   * bref;
-  uint8_t      hash_collision;
-  char         src_type;  /* C:console, M:session, V:rv, 'R:redis, K:kv */
-  uint8_t      notify_type; /* start, addref, minref, unsub */
+  const char   * subject,
+               * reply;
+  uint16_t       subject_len,
+                 reply_len;
+  uint32_t       subj_hash,
+                 sub_count;
+  const PeerId & src;
+  RouteRef     * ref;
+  BloomRef     * bref;
+  uint8_t        hash_collision;
+  char           src_type;  /* C:console, M:session, V:rv, 'R:redis, K:kv */
+  uint8_t        notify_type; /* start, addref, minref, unsub */
 
-  NotifySub( const char *s,  size_t slen,
-             const char *r,  size_t rlen,
-             uint32_t shash,  uint32_t fd,
-             bool coll,  char t,  EvSocket *source = NULL ) :
+  NotifySub( const char *s,  size_t slen, const char *r,  size_t rlen,
+             uint32_t shash,  bool coll,  char t,  const PeerId &source ) :
     subject( s ), reply( r ), subject_len( (uint16_t) slen ),
-    reply_len( (uint16_t) rlen ), subj_hash( shash ), src_fd( fd ),
+    reply_len( (uint16_t) rlen ), subj_hash( shash ),
     sub_count( 0 ), src( source ), ref( 0 ), bref( 0 ), hash_collision( coll ),
     src_type( t ), notify_type( 0 ) {}
 
-  NotifySub( const char *s,  size_t slen,
-             uint32_t shash,  uint32_t fd,
-             bool coll,  char t,  EvSocket *source = NULL ) :
+  NotifySub( const char *s,  size_t slen, uint32_t shash,  bool coll,
+             char t,  const PeerId &source ) :
     subject( s ), reply( 0 ), subject_len( (uint16_t) slen ), reply_len( 0 ),
-    subj_hash( shash ), src_fd( fd ), sub_count( 0 ), src( source ), ref( 0 ),
+    subj_hash( shash ), sub_count( 0 ), src( source ), ref( 0 ),
     bref( 0 ), hash_collision( coll ), src_type( t ), notify_type( 0 ) {}
 };
 
@@ -979,9 +984,8 @@ struct NotifyPattern {
   uint16_t           pattern_len,
                      reply_len;
   uint32_t           prefix_hash,
-                     src_fd,
                      sub_count;
-  EvSocket         * src;
+  const PeerId     & src;
   RouteRef         * ref;
   BloomRef         * bref;
   uint8_t            hash_collision;
@@ -989,21 +993,17 @@ struct NotifyPattern {
   uint8_t            notify_type; /* start, addref, minref, unsub */
 
   NotifyPattern( const PatternCvt &c,
-                 const char *s,  size_t slen,
-                 const char *r,  size_t rlen,
-                 uint32_t phash,  uint32_t fd,
-                 bool coll,  char t,  EvSocket *source = NULL ) :
+                 const char *s,  size_t slen,  const char *r,  size_t rlen,
+                 uint32_t phash,  bool coll,  char t,  const PeerId &source ) :
     cvt( c ), pattern( s ), reply( r ), pattern_len( (uint16_t) slen ),
-    reply_len( (uint16_t) rlen ), prefix_hash( phash ), src_fd( fd ),
+    reply_len( (uint16_t) rlen ), prefix_hash( phash ),
     sub_count( 0 ), src( source ), ref( 0 ), bref( 0 ), hash_collision( coll ),
     src_type( t ), notify_type( 0 ) {}
 
-  NotifyPattern( const PatternCvt &c,
-                 const char *s,  size_t slen,
-                 uint32_t phash,  uint32_t fd,
-                 bool coll,  char t,  EvSocket *source = NULL ) :
+  NotifyPattern( const PatternCvt &c,  const char *s,  size_t slen,
+                 uint32_t phash,  bool coll,  char t,  const PeerId &source ) :
     cvt( c ), pattern( s ), reply( 0 ), pattern_len( (uint16_t) slen ),
-    reply_len( 0 ), prefix_hash( phash ), src_fd( fd ), sub_count( 0 ),
+    reply_len( 0 ), prefix_hash( phash ), sub_count( 0 ),
     src( source ), ref( 0 ), bref( 0 ), hash_collision( coll ),
     src_type( t ), notify_type( 0 ) {}
 };
@@ -1137,7 +1137,7 @@ struct RoutePublish : public RouteDB {
   void add_sub( NotifySub &sub ) {
     RouteRef rte( *this, this->zip.route_spc[ SUB_RTE ] );
     if ( sub.hash_collision == 0 )
-      sub.sub_count = this->add_route( SUB_RTE, sub.subj_hash, sub.src_fd, rte );
+      sub.sub_count = this->add_route( SUB_RTE, sub.subj_hash, sub.src.fd, rte );
     else if ( ! this->notify_list.is_empty() )
       sub.sub_count = this->ref_route( SUB_RTE, sub.subj_hash, rte );
     else
@@ -1152,7 +1152,7 @@ struct RoutePublish : public RouteDB {
   void del_sub( NotifySub &sub ) {
     RouteRef rte( *this, this->zip.route_spc[ SUB_RTE ] );
     if ( sub.hash_collision == 0 )
-      sub.sub_count = this->del_route( SUB_RTE, sub.subj_hash, sub.src_fd, rte );
+      sub.sub_count = this->del_route( SUB_RTE, sub.subj_hash, sub.src.fd, rte );
     else if ( ! this->notify_list.is_empty() )
       sub.sub_count = this->ref_route( SUB_RTE, sub.subj_hash, rte );
     else
@@ -1175,7 +1175,7 @@ struct RoutePublish : public RouteDB {
     uint16_t prefix_len = (uint16_t) pat.cvt.prefixlen;
     RouteRef rte( *this, this->zip.route_spc[ prefix_len ] );
     if ( pat.hash_collision == 0 )
-      pat.sub_count = this->add_route( prefix_len, pat.prefix_hash, pat.src_fd,
+      pat.sub_count = this->add_route( prefix_len, pat.prefix_hash, pat.src.fd,
                                        rte );
     else if ( ! this->notify_list.is_empty() )
       pat.sub_count = this->ref_route( prefix_len, pat.prefix_hash, rte );
@@ -1192,7 +1192,7 @@ struct RoutePublish : public RouteDB {
     uint16_t prefix_len = (uint16_t) pat.cvt.prefixlen;
     RouteRef rte( *this, this->zip.route_spc[ prefix_len ] );
     if ( pat.hash_collision == 0 )
-      pat.sub_count = this->del_route( prefix_len, pat.prefix_hash, pat.src_fd,
+      pat.sub_count = this->del_route( prefix_len, pat.prefix_hash, pat.src.fd,
                                        rte );
     else if ( ! this->notify_list.is_empty() )
       pat.sub_count = this->ref_route( prefix_len, pat.prefix_hash, rte ) - 1;
@@ -1219,6 +1219,8 @@ struct RoutePublish : public RouteDB {
                        BPData *data = NULL ) noexcept;
   bool forward_except_with_cnt( EvPublish &pub,  const BitSpace &fdexcpt,
                                 uint32_t &rcnt,  BPData *data = NULL ) noexcept;
+  bool forward_set( EvPublish &pub,  const BitSpace &fdset,
+                    BPData *data = NULL ) noexcept;
   bool forward_set_with_cnt( EvPublish &pub,  const BitSpace &fdset,
                              uint32_t &rcnt,  BPData *data = NULL ) noexcept;
   bool forward_some( EvPublish &pub, uint32_t *routes, uint32_t rcnt,

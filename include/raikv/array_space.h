@@ -122,22 +122,27 @@ struct CatPtrT {
     *this->ptr++ = ch;
     return (T &) *this;
   }
+  T &u( uint64_t n ) { return this->u( n, uint64_digits( n ) ); }
   T &u( uint64_t n,  size_t d ) {
     this->ptr += uint64_to_string( n, this->ptr, d );
     return (T &) *this;
   }
+  T &u( uint32_t n ) { return this->u( n, uint32_digits( n ) ); }
   T &u( uint32_t n,  size_t d ) {
     this->ptr += uint32_to_string( n, this->ptr, d );
     return (T &) *this;
   }
+  T &u( uint16_t n ) { return this->u( n, uint16_digits( n ) ); }
   T &u( uint16_t n,  size_t d ) {
     this->ptr += uint16_to_string( n, this->ptr, d );
     return (T &) *this;
   }
+  T &i( int64_t n ) { return this->i( n, int64_digits( n ) ); }
   T &i( int64_t n,  size_t d ) {
     this->ptr += int64_to_string( n, this->ptr, d );
     return (T &) *this;
   }
+  T &i( int32_t n ) { return this->i( n, int32_digits( n ) ); }
   T &i( int32_t n,  size_t d ) {
     this->ptr += int32_to_string( n, this->ptr, d );
     return (T &) *this;
@@ -156,6 +161,11 @@ struct CatBuf : public CatPtrT<CatBuf<maxsize>> {
 
 struct CatPtr : public CatPtrT<CatPtr> {
   CatPtr( char *out ) : CatPtrT( out ) {}
+};
+
+struct CatMalloc : public CatPtrT<CatMalloc> {
+  CatMalloc( size_t sz ) : CatPtrT( (char *) ::malloc( sz + 1 ) ) {}
+  ~CatMalloc() { ::free( this->start ); }
 };
 
 }

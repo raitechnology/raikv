@@ -61,7 +61,7 @@ EvTimerQueue::create_timer_queue( EvPoll &p ) noexcept
     return NULL;
   }
   EvTimerQueue * q = new ( m ) EvTimerQueue( p );
-  q->PeerData::init_peer( tfd, -1, NULL, "timer" );
+  q->PeerData::init_peer( p.get_next_id(), tfd, -1, NULL, "timer" );
   q->expires = 0;
   q->epoch   = current_monotonic_time_ns();
   if ( p.add_sock( q ) < 0 ) {

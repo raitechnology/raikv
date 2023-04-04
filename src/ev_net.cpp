@@ -327,6 +327,15 @@ EvPoll::add_sock( EvSocket *s ) noexcept
   s->prio_cnt = this->prio_tick;
   if ( s->sock_state != 0 )
     this->push_event_queue( s );
+  s->active_ns  = this->current_coarse_ns();
+  s->read_ns    = s->active_ns;
+  s->init_stats();
+  return 0;
+}
+
+uint64_t
+EvPoll::get_next_id( void ) noexcept
+{
   uint64_t ns = this->current_coarse_ns();
   if ( ns <= this->next_id ) {
     ns = this->next_id+1;
@@ -334,13 +343,9 @@ EvPoll::add_sock( EvSocket *s ) noexcept
       ;*/
   }
   this->next_id = ns;
-  s->start_ns   = ns;
-  s->active_ns  = ns;
-  s->read_ns    = ns;
-  s->init_stats();
-  return 0;
+  return ns;
 }
-/* remove a sock fd from epolling */
+
 void
 EvPoll::remove_sock( EvSocket *s ) noexcept
 {
@@ -504,7 +509,7 @@ EvSocket::process_close( void ) noexcept
 
   /* get service, if none, return false */
 bool
-EvSocket::get_service( void *host,  uint16_t &svc ) noexcept
+EvSocket::get_service( void *host,  uint16_t &svc ) const noexcept
 {
   (void) host;
   svc = 0;
@@ -519,14 +524,14 @@ EvSocket::set_session( const char session[ MAX_SESSION_LEN ] ) noexcept
 }
 
 size_t
-EvSocket::get_userid( char userid[ MAX_USERID_LEN ] ) noexcept
+EvSocket::get_userid( char userid[ MAX_USERID_LEN ] ) const noexcept
 {
   userid[ 0 ] = '\0';
   return 0;
 }
 /* get session name */
 size_t
-EvSocket::get_session( uint16_t,  char session[ MAX_SESSION_LEN ] ) noexcept
+EvSocket::get_session( uint16_t,  char session[ MAX_SESSION_LEN ] ) const noexcept
 {
   session[ 0 ] = '\0';
   return 0;
@@ -1284,6 +1289,8 @@ static bool
 forward_message( EvPublish &pub,  RoutePublish &sub_route,
                  Forward &fwd,  BPData *data ) noexcept
 {
+  volatile bool is_invalid = sub_route.cache.is_invalid;
+  (void) is_invalid;
   RoutePublishCache cache( sub_route, pub.subject, pub.subject_len,
                            pub.subj_hash, pub.shard );
   if ( cache.n == 0 )
@@ -1338,6 +1345,13 @@ RoutePublish::forward_except_with_cnt( EvPublish &pub, const BitSpace &fdexcept,
   bool b = forward_message<ForwardExcept>( pub, *this, fwd, data );
   rcnt = fwd.total;
   return b;
+}
+bool
+RoutePublish::forward_set( EvPublish &pub, const BitSpace &fdset,
+                           BPData *data ) noexcept
+{
+  ForwardSet fwd( *this, fdset );
+  return forward_message<ForwardSet>( pub, *this, fwd, data );
 }
 bool
 RoutePublish::forward_set_with_cnt( EvPublish &pub, const BitSpace &fdset,
@@ -1679,7 +1693,7 @@ RouteNotify::on_sub( NotifySub &sub ) noexcept
 {
   printf( "on_sub( sub=%.*s, rep=%.*s, h=0x%x, fd=%u, cnt=%u, col=%u, %c )\n",
           sub.subject_len, sub.subject, sub.reply_len, sub.reply,
-          sub.subj_hash, sub.src_fd, sub.sub_count, sub.hash_collision,
+          sub.subj_hash, sub.src.fd, sub.sub_count, sub.hash_collision,
           sub.src_type );
 }
 void
@@ -1691,7 +1705,7 @@ RouteNotify::on_unsub( NotifySub &sub ) noexcept
 {
   printf( "on_unsub( sub=%.*s, h=0x%x, fd=%u, cnt=%u, col=%u, %c )\n",
           sub.subject_len, sub.subject,
-          sub.subj_hash, sub.src_fd, sub.sub_count, sub.hash_collision,
+          sub.subj_hash, sub.src.fd, sub.sub_count, sub.hash_collision,
           sub.src_type );
 }
 void
@@ -1699,7 +1713,7 @@ RouteNotify::on_psub( NotifyPattern &pat ) noexcept
 {
   printf( "on_psub( sub=%.*s, rep=%.*s, h=0x%x, fd=%u, cnt=%u, col=%u, %c )\n",
           pat.pattern_len, pat.pattern, pat.reply_len, pat.reply,
-          pat.prefix_hash, pat.src_fd, pat.sub_count, pat.hash_collision,
+          pat.prefix_hash, pat.src.fd, pat.sub_count, pat.hash_collision,
           pat.src_type );
 }
 void
@@ -1711,7 +1725,7 @@ RouteNotify::on_punsub( NotifyPattern &pat ) noexcept
 {
   printf( "on_punsub( sub=%.*s, h=0x%x, fd=%u, cnt=%u, col=%u, %c )\n",
           pat.pattern_len, pat.pattern,
-          pat.prefix_hash, pat.src_fd, pat.sub_count,
+          pat.prefix_hash, pat.src.fd, pat.sub_count,
           pat.hash_collision, pat.src_type );
 }
 void

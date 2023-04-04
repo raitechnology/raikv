@@ -470,7 +470,7 @@ KvPubSubPeer::fwd_msg( KvMsgIn &msg ) noexcept
   if ( kv_ps_debug )
     msg.print();
   EvPublish pub( subject, subject_len, reply, reply_len, data, data_len,
-                 this->sub_route, this->fd, subj_hash, msg_enc, 'K' );
+                 this->sub_route, *this, subj_hash, msg_enc, 'K' );
   if ( msg.is_set( KV_FLD_PUB_STATUS ) )
     pub.pub_status = msg.get<uint16_t>( KV_FLD_PUB_STATUS );
   this->sub_route.forward_msg( pub );
@@ -692,7 +692,7 @@ KvPubSubPeer::do_sub_msg( KvMsgIn &msg,  bool is_sub ) noexcept
     }
     else {
       NotifySub nsub( subject, subject_len, reply, reply_len, subj_hash,
-                      this->fd, hash_coll, 'K', this );
+                      hash_coll, 'K', *this );
       nsub.sub_count = sub_count;
       if ( is_sub )
         this->sub_route.add_sub( nsub );
@@ -769,7 +769,7 @@ KvPubSubPeer::do_psub_msg( KvMsgIn &msg,  bool is_sub ) noexcept
     }
     else {
       NotifyPattern npat( cvt, pattern, pattern_len, reply, reply_len,
-                          pref_hash, this->fd, hash_coll, 'K', this );
+                          pref_hash, hash_coll, 'K', *this );
       npat.sub_count = sub_count;
       if ( is_sub )
         this->sub_route.add_pat( npat );
@@ -851,8 +851,7 @@ KvPubSubPeer::iter_sub_tab( PsSubTab &sub_tab,  bool add ) noexcept
   for ( PsSub *sub = sub_tab.first( loc ); sub != NULL;
         sub = sub_tab.next( loc ) ) {
     if ( sub->type == PS_SUB ) {
-      NotifySub nsub( sub->value, sub->len, sub->hash, this->fd, 0, 'K',
-                      this );
+      NotifySub nsub( sub->value, sub->len, sub->hash, 0, 'K', *this );
       if ( add )
         this->sub_route.add_sub( nsub );
       else
@@ -869,8 +868,7 @@ KvPubSubPeer::iter_sub_tab( PsSubTab &sub_tab,  bool add ) noexcept
       if ( b ) {
         uint32_t h = kv_crc_c( sub->value, cvt.prefixlen,
                                this->sub_route.prefix_seed( cvt.prefixlen ) );
-        NotifyPattern npat( cvt, sub->value, sub->len, h, this->fd, 0, 'K',
-                            this );
+        NotifyPattern npat( cvt, sub->value, sub->len, h, 0, 'K', *this );
         if ( add )
           this->sub_route.add_pat( npat );
         else
@@ -1108,7 +1106,7 @@ KvPubSub::on_sub( NotifySub &sub ) noexcept
     if ( rte.rcnt > 1 ) { /* check if subscribed already */
       for ( uint32_t i = 0; i < rte.rcnt; i++ ) {
         uint32_t r = rte.routes[ i ];
-        if ( r != sub.src_fd && ! this->peer_set.is_member( r ) &&
+        if ( r != (uint32_t) sub.src.fd && ! this->peer_set.is_member( r ) &&
              r <= this->poll.maxfd ) {
           EvSocket *s;
           if ( (s = this->poll.sock[ r ]) != NULL ) {
@@ -1136,7 +1134,7 @@ KvPubSub::on_unsub( NotifySub &sub ) noexcept
     if ( rte.rcnt > 0 ) { /* check all unsubs */
       for ( uint32_t i = 0; i < rte.rcnt; i++ ) {
         uint32_t r = rte.routes[ i ];
-        if ( r != sub.src_fd && ! this->peer_set.is_member( r ) &&
+        if ( r != (uint32_t) sub.src.fd && ! this->peer_set.is_member( r ) &&
              r <= this->poll.maxfd ) {
           EvSocket *s;
           if ( (s = this->poll.sock[ r ]) != NULL ) {
@@ -1189,7 +1187,7 @@ KvPubSub::on_psub( NotifyPattern &pat ) noexcept
     if ( rte.rcnt > 1 ) { /* check if psubscribed already */
       for ( uint32_t i = 0; i < rte.rcnt; i++ ) {
         uint32_t r = rte.routes[ i ];
-        if ( r != pat.src_fd && ! this->peer_set.is_member( r ) &&
+        if ( r != (uint32_t) pat.src.fd && ! this->peer_set.is_member( r ) &&
              r <= this->poll.maxfd ) {
           EvSocket *s;
           if ( (s = this->poll.sock[ r ]) != NULL ) {
@@ -1219,7 +1217,7 @@ KvPubSub::on_punsub( NotifyPattern &pat ) noexcept
     if ( rte.rcnt > 0 ) { /* check all unsubs */
       for ( uint32_t i = 0; i < rte.rcnt; i++ ) {
         uint32_t r = rte.routes[ i ];
-        if ( r != pat.src_fd && ! this->peer_set.is_member( r ) &&
+        if ( r != (uint32_t) pat.src.fd && ! this->peer_set.is_member( r ) &&
              r <= this->poll.maxfd ) {
           EvSocket *s;
           if ( (s = this->poll.sock[ r ]) != NULL ) {

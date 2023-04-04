@@ -42,7 +42,7 @@ finish_init( int sock,  EvPoll &poll,  EvSocket &me,  struct sockaddr *addr,
 {
   int status;
   set_nonblock( sock );
-  me.PeerData::init_peer( sock, rte_id, addr, k );
+  me.PeerData::init_peer( poll.get_next_id(), sock, rte_id, addr, k );
   if ( (status = poll.add_sock( &me )) != 0 )
     me.fd = -1;
   return status;
@@ -70,7 +70,7 @@ finish_init( SOCKET sock,  EvPoll &poll,  EvSocket &me,  struct sockaddr *addr,
   int status, fd;
   set_nonblock( sock );
   fd = wp_register_fd( sock );
-  me.PeerData::init_peer( fd, rte_id, addr, k );
+  me.PeerData::init_peer( poll.get_next_id(), fd, rte_id, addr, k );
   if ( (status = poll.add_sock( &me )) != 0 ) {
     wp_unregister_fd( fd );
     me.fd = -1;

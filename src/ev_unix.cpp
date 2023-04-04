@@ -63,7 +63,8 @@ EvUnixListen::listen2( const char *path,  int opts,  const char *k,
     goto fail;
   }
   ::fcntl( sock, F_SETFL, O_NONBLOCK | ::fcntl( sock, F_GETFL ) );
-  this->PeerData::init_peer( sock, rte_id, (struct sockaddr *) &sunaddr, k );
+  this->PeerData::init_peer( this->poll.get_next_id(), sock, rte_id,
+                             (struct sockaddr *) &sunaddr, k );
   if ( (status = this->poll.add_sock( this )) < 0 )
     goto fail;
   return 0;
@@ -90,7 +91,7 @@ EvUnixListen::accept2( EvConnection &conn,  const char *k ) noexcept
     goto fail;
   }
   ::fcntl( sock, F_SETFL, O_NONBLOCK | ::fcntl( sock, F_GETFL ) );
-  conn.PeerData::init_peer( sock, this->route_id,
+  conn.PeerData::init_peer( this->poll.get_next_id(), sock, this->route_id,
                             (struct sockaddr *) &sunaddr, k );
   if ( this->poll.add_sock( &conn ) < 0 ) {
     ::close( sock );
@@ -127,7 +128,8 @@ EvUnixConnection::connect( EvConnection &conn,  const char *path,
     goto fail;
   }
   ::fcntl( sock, F_SETFL, O_NONBLOCK | ::fcntl( sock, F_GETFL ) );
-  conn.PeerData::init_peer( sock, rte_id, (struct sockaddr *) &sunaddr, k );
+  conn.PeerData::init_peer( conn.poll.get_next_id(), sock, rte_id,
+                            (struct sockaddr *) &sunaddr, k );
   if ( (status = conn.poll.add_sock( &conn )) < 0 ) {
   fail:;
     conn.fd = -1;
@@ -173,7 +175,8 @@ EvUnixDgram::bind( const char *path,  int opts,  const char *k,
     goto fail;
   }
   ::fcntl( sock, F_SETFL, O_NONBLOCK | ::fcntl( sock, F_GETFL ) );
-  this->PeerData::init_peer( sock, rte_id, (struct sockaddr *) &sunaddr, k );
+  this->PeerData::init_peer( this->poll.get_next_id(), sock, rte_id,
+                             (struct sockaddr *) &sunaddr, k );
   if ( (status = this->poll.add_sock( this )) < 0 ) {
   fail:;
     this->fd = -1;

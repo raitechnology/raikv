@@ -275,14 +275,14 @@ struct EvSocket : public PeerData /* fd and address of peer */EV_DBG_INHERIT {
   static const size_t MAX_USERID_LEN  = 64;
   static const size_t MAX_SESSION_LEN = 64;
   /* get service, if none, return false */
-  virtual bool get_service( void *host,  uint16_t &svc ) noexcept;
+  virtual bool get_service( void *host,  uint16_t &svc ) const noexcept;
   /* assign a session to connection */
   virtual bool set_session( const char session[ MAX_SESSION_LEN ] ) noexcept;
   /* get session name */
-  virtual size_t get_userid( char userid[ MAX_USERID_LEN ] ) noexcept;
+  virtual size_t get_userid( char userid[ MAX_USERID_LEN ] ) const noexcept;
   /* get session name */
   virtual size_t get_session( uint16_t svc,
-                              char session[ MAX_SESSION_LEN ] ) noexcept;
+                              char session[ MAX_SESSION_LEN ] ) const noexcept;
   /* get session name */
   virtual size_t get_subscriptions( uint16_t svc,  SubRouteDB &subs ) noexcept;
 
@@ -531,6 +531,7 @@ struct EvPoll {
   uint64_t create_ns( void ) const noexcept; /* create time from kv */
   int get_null_fd( void ) noexcept;         /* return dup /dev/null fd */
   int add_sock( EvSocket *s ) noexcept;     /* add to poll set */
+  uint64_t get_next_id( void ) noexcept;
   void remove_sock( EvSocket *s ) noexcept; /* remove from poll set */
   bool timer_expire( EvTimerEvent &ev ) noexcept; /* process timer event fired */
   void process_quit( void ) noexcept;       /* quit state close socks */

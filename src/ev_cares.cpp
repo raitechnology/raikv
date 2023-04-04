@@ -375,7 +375,8 @@ CaresAddrInfo::do_poll( void ) noexcept
         c = this->poll.get_free_list<EvCaresAsync, CaresAddrInfo &>(
               this->sock_type, *this );
         this->set[ i ] = c;
-        c->PeerData::init_peer( socks[ k ], -1, NULL, "c-ares" );
+        c->PeerData::init_peer( this->poll.get_next_id(), socks[ k ], -1,
+                                NULL, "c-ares" );
         c->poll_count = this->poll_count;
         this->poll.add_sock( c );
       }

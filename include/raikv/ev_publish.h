@@ -60,16 +60,17 @@ enum EvPubStatus {
 };
 
 struct RoutePublish;
+struct PeerId;
 struct EvPublish {
   const char   * subject;     /* target subject */
   const void   * reply,       /* if rpc style pub w/reply */
                * msg;         /* the message attached */
   RoutePublish & sub_route;   /* source if publish */
+  const PeerId & src_route;   /* fd of sender */
   uint16_t       subject_len, /* length of subject */
                  reply_len;   /* length of reply */
   uint32_t       msg_len,     /* length of msg */
                  subj_hash,   /* crc of subject */
-                 src_route,   /* fd of sender */
                  msg_enc,     /* the type of message (ex: MD_STRING) */
                  shard,       /* route to shard */
                  hdr_len;     /* hdr prefix of msg */
@@ -84,23 +85,21 @@ struct EvPublish {
   EvPublish( const char *subj,  size_t subj_len,
              const void *repl,  size_t repl_len,
              const void *mesg,  size_t mesg_len,
-             RoutePublish &sub_rt,  uint32_t src,  uint32_t shash,
+             RoutePublish &sub_rt,  const PeerId &src,  uint32_t shash,
              uint32_t msg_encoding,  uint8_t publish_type,
              uint16_t status = 0,  uint32_t host = 0,
              uint64_t counter = 0 )
     : subject( subj ), reply( repl ), msg( mesg ),
-      sub_route( sub_rt ), subject_len( (uint16_t) subj_len ),
-      reply_len( (uint16_t) repl_len ), msg_len( (uint32_t) mesg_len ),
-      subj_hash( shash ), src_route( src ),
+      sub_route( sub_rt ), src_route( src ), subject_len( (uint16_t) subj_len ),
+      reply_len( (uint16_t) repl_len ), msg_len( (uint32_t) mesg_len ), subj_hash( shash ),
       msg_enc( msg_encoding ), shard( 0 ), hdr_len( 0 ),
       pub_type( publish_type ), prefix_cnt( 0 ), pub_status( status ),
       pub_host( host ), hash( 0 ), prefix( 0 ), cnt( counter ) {}
 
   EvPublish( const EvPublish &p )
     : subject( p.subject ), reply( p.reply ), msg( p.msg ),
-      sub_route( p.sub_route ), subject_len( p.subject_len ),
-      reply_len( p.reply_len ), msg_len( p.msg_len ),
-      subj_hash( p.subj_hash ), src_route( p.src_route ),
+      sub_route( p.sub_route ), src_route( p.src_route ), subject_len( p.subject_len ),
+      reply_len( p.reply_len ), msg_len( p.msg_len ), subj_hash( p.subj_hash ),
       msg_enc( p.msg_enc ), shard( p.shard ), hdr_len( p.hdr_len ),
       pub_type( p.pub_type ), prefix_cnt( 0 ), pub_status( p.pub_status ),
       pub_host( p.pub_host ), hash( 0 ), prefix( 0 ), cnt( p.cnt ) {}
