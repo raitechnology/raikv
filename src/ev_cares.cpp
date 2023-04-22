@@ -2,11 +2,14 @@
 #include <stdint.h>
 #include <string.h>
 #include <errno.h>
+#if ! defined( _MSC_VER ) && ! defined( __MINGW32__ )
 #include <netdb.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <arpa/nameser.h>
-#include <netdb.h>
+#else
+#include <raikv/win.h>
+#endif
 #include <raikv/ev_cares.h>
 #include <raikv/ev_tcp.h>
 #include <raikv/dlinklist.h>
@@ -365,7 +368,7 @@ CaresAddrInfo::do_poll( void ) noexcept
     if ( ARES_GETSOCK_READABLE( bitmap, k ) ) {
       for ( i = 0; i < this->set.count; i++ ) {
         if ( (c = this->set.ptr[ i ]) != NULL ) {
-          if ( c->fd == socks[ k ] ) {
+          if ( (ares_socket_t) c->fd == socks[ k ] ) {
             c->poll_count = this->poll_count;
             break;
           }

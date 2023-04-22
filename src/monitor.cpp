@@ -4,7 +4,7 @@
 #include <string.h>
 #define __STDC_FORMAT_MACROS
 #include <inttypes.h>
-#ifndef _MSC_VER
+#if ! defined( _MSC_VER ) && ! defined( __MINGW32__ )
 #include <unistd.h>
 #include <signal.h>
 #else
@@ -141,7 +141,7 @@ Monitor::check_broken_locks( void )
     uint32_t pid = this->map.ctx[ ctx_id ].ctx_pid;
     if ( pid == 0 || this->map.ctx[ ctx_id ].ctx_id == KV_NO_CTX_ID )
       continue;
-#ifndef _MSC_VER
+#if ! defined( _MSC_VER ) && ! defined( __MINGW32__ )
     if ( ::kill( pid, 0 ) == 0 )
       continue;
     if ( errno == EPERM )
@@ -154,7 +154,7 @@ Monitor::check_broken_locks( void )
     CloseHandle( process );
     if ( ret == WAIT_TIMEOUT )
       continue;
-    printf( "ctx %u: pid %u = wait status %d\n",
+    printf( "ctx %u: pid %u = wait status %ld\n",
             ctx_id, pid, ret );
 #endif
 

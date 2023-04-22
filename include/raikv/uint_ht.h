@@ -60,9 +60,6 @@ struct IntHashUsage {
     if ( this->elem_count <  this->min_count ) return sz / 2;
     if ( this->elem_count >= this->max_count ) return sz * 2;
     return sz;
-    /* preferred is between load of 33% and 66% */
-    /*size_t cnt = this->elem_count + this->elem_count / 2;
-    return cnt ? ( (size_t) 1 << ( 64 - __builtin_clzl( cnt ) ) ) : 1;*/
   }
   /* check if current size is preferred */
   bool need_resize( void ) const {

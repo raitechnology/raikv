@@ -7,7 +7,7 @@
 #include <inttypes.h>
 #include <fcntl.h>
 #include <errno.h>
-#ifndef _MSC_VER
+#if ! defined( _MSC_VER ) && ! defined( __MINGW32__ )
 #include <unistd.h>
 #include <sys/epoll.h>
 #include <sys/socket.h>
@@ -194,7 +194,7 @@ EvPoll::wait( int ms ) noexcept
   EvState do_event;
 #ifndef HAVE_TIMERFD
   uint64_t us = ms * 1000;
-  if ( this->timer.queue->is_timer_ready( us ) ) {
+  if ( this->timer.queue->is_timer_ready( us, this->mono_ns ) ) {
     this->timer.queue->idle_push( EV_PROCESS );
     return 1;
   }
@@ -278,7 +278,7 @@ EvPoll::wait( int ms ) noexcept
 int
 EvPoll::get_null_fd( void ) noexcept
 {
-#ifndef _MSC_VER
+#if ! defined( _MSC_VER ) && ! defined( __MINGW32__ )
   if ( this->null_fd < 0 ) {
     this->null_fd = ::open( "/dev/null", O_RDWR | O_NONBLOCK );
     return this->null_fd;
@@ -374,7 +374,7 @@ EvPoll::remove_sock( EvSocket *s ) noexcept
   /* close if wants */
   if ( ! s->test_opts( OPT_NO_CLOSE ) && s->fd != this->null_fd ) {
     int status;
-#ifndef _MSC_VER
+#if ! defined( _MSC_VER ) && ! defined( __MINGW32__ )
     status = ::close( s->fd );
 #else
     status = ::wp_close_fd( s->fd );
@@ -585,7 +585,7 @@ void
 EvListen::reset_read_poll( void ) noexcept
 {
   this->pop3( EV_READ, EV_READ_LO, EV_READ_HI );
-#ifdef _MSC_VER
+#if defined( _MSC_VER ) || defined( __MINGW32__ )
   /* reset EPOLLET */
   struct epoll_event event;
   event.data.fd = this->fd;
@@ -1844,7 +1844,7 @@ PeerAddrStr::set_addr( const sockaddr *sa ) noexcept
         len = uint64_to_string( ntohs( in_port ), &t[ 1 ] );
         t   = &t[ 1 + len ];
         break;
-#ifndef _MSC_VER
+#if ! defined( _MSC_VER ) && ! defined( __MINGW32__ )
       case AF_LOCAL:
         len = ::strnlen( ((struct sockaddr_un *) sa)->sun_path,
                          sizeof( ((struct sockaddr_un *) sa)->sun_path ) );
@@ -1906,9 +1906,6 @@ EvSocket::client_list( char *buf,  size_t buflen ) noexcept
 bool
 EvSocket::client_match( PeerData &pd,  PeerMatchArgs *ka,  ... ) noexcept
 {
-#ifdef _MSC_VER
-#define strncasecmp _strnicmp
-#endif
   /* match filters, if any don't match return false */
   if ( ka->id != 0 )
     if ( (uint64_t) ka->id != pd.start_ns ) /* match id */
@@ -2096,7 +2093,7 @@ EvConnection::read( void ) noexcept
   for (;;) {
     if ( this->len < this->recv_size ) {
       ssize_t nbytes;
-#ifndef _MSC_VER
+#if ! defined( _MSC_VER ) && ! defined( __MINGW32__ )
       nbytes = ::read( this->fd, &this->recv[ this->len ],
                        this->recv_size - this->len );
 #else
@@ -2118,7 +2115,7 @@ EvConnection::read( void ) noexcept
       }
       /* wait for epoll() to set EV_READ again */
       this->pop3( EV_READ, EV_READ_LO, EV_READ_HI );
-#ifdef _MSC_VER
+#if defined( _MSC_VER ) || defined( __MINGW32__ )
       /* reset EPOLLET */
       struct epoll_event event;
       event.data.fd = this->fd;
@@ -2328,7 +2325,7 @@ write_notify:;
 
   ssize_t nbytes;
   size_t  nb = 0;
-#ifndef _MSC_VER
+#if ! defined( _MSC_VER ) && ! defined( __MINGW32__ )
   struct msghdr h;
   ::memset( &h, 0, sizeof( h ) );
   h.msg_iov    = strm.iov;
@@ -2487,7 +2484,7 @@ EvDgram::discard_pkt( void ) noexcept
   hdr.msg_control    = NULL;
   hdr.msg_controllen = 0;
   hdr.msg_flags      = 0;
-#ifndef _MSC_VER
+#if ! defined( _MSC_VER ) && ! defined( __MINGW32__ )
   nbytes = ::recvmsg( this->fd, &hdr, 0 );
 #else
   nbytes = ::wp_recvmsg( this->fd, &hdr );
@@ -2508,7 +2505,7 @@ EvDgram::read( void ) noexcept
   if ( this->in_nmsgs == this->in_size && ! this->alloc_mmsg() ) {
     nbytes = this->discard_pkt();
   }
-#if ! defined( NO_RECVMMSG ) && ! defined( _MSC_VER )
+#if ! defined( NO_RECVMMSG ) && ! defined( _MSC_VER ) && ! defined( __MINGW32__ )
   else if ( this->in_nmsgs + 1 < this->in_size ) {
     nmsgs = ::recvmmsg( this->fd, &this->in_mhdr[ this->in_nmsgs ],
                         this->in_size - this->in_nmsgs, 0, NULL );
@@ -2523,7 +2520,7 @@ EvDgram::read( void ) noexcept
 #else
   else {
     while ( this->in_nmsgs + nmsgs < this->in_size ) {
-#ifndef _MSC_VER
+#if ! defined( _MSC_VER ) && ! defined( __MINGW32__ )
       nbytes = ::recvmsg( this->fd,
                           &this->in_mhdr[ this->in_nmsgs + nmsgs ].msg_hdr, 0 );
 #else
@@ -2555,7 +2552,7 @@ EvDgram::read( void ) noexcept
   this->in_nsize = 1;
   /* wait for epoll() to set EV_READ again */
   this->pop3( EV_READ, EV_READ_LO, EV_READ_HI );
-#ifdef _MSC_VER
+#if defined( _MSC_VER ) || defined( __MINGW32__ )
   /* reset EPOLLET */
   struct epoll_event event;
   event.data.fd = this->fd;
@@ -2579,7 +2576,7 @@ EvDgram::write( void ) noexcept
 {
   bool is_high = this->test( EV_WRITE_HI );
   int  nmsgs = 0;
-#if ! defined( NO_SENDMMSG ) && ! defined( _MSC_VER )
+#if ! defined( NO_SENDMMSG ) && ! defined( _MSC_VER ) && ! defined( __MINGW32__ )
   if ( this->out_nmsgs > 1 ) {
     nmsgs = ::sendmmsg( this->fd, this->out_mhdr, this->out_nmsgs, 0 );
     if ( nmsgs > 0 ) {
@@ -2589,11 +2586,13 @@ EvDgram::write( void ) noexcept
     }
   }
   else
+#else
+#define NO_LABEL_WRITE_NOTIFY
 #endif
   {
     for ( uint32_t i = 0; i < this->out_nmsgs; i++ ) {
       ssize_t nbytes;
-#ifndef _MSC_VER
+#if ! defined( _MSC_VER ) && ! defined( __MINGW32__ )
       nbytes = ::sendmsg( this->fd, &this->out_mhdr[ i ].msg_hdr, 0 );
 #else
       nbytes = ::wp_sendmsg( this->fd, &this->out_mhdr[ i ].msg_hdr );
@@ -2616,7 +2615,9 @@ EvDgram::write( void ) noexcept
     this->push( EV_CLOSE );
   }
   /* if msgs were unsent, this drops them */
+#ifndef NO_LABEL_WRITE_NOTIFY
 write_notify:;
+#endif
   this->clear_buffers();
   this->pop3( EV_WRITE, EV_WRITE_HI, EV_WRITE_POLL );
   if ( is_high ) {

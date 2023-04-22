@@ -34,23 +34,32 @@ static bool ws_init_done;
 int
 ws_global_init( void )
 {
-  WSADATA wsa_data;
-  int     r = WSAStartup( MAKEWORD( 2, 2 ), &wsa_data );
-  if ( r != 0 )
-    return_set_error( -1, r );
+  if ( ! ws_init_done ) {
+    WSADATA wsa_data;
+    int     r = WSAStartup( MAKEWORD( 2, 2 ), &wsa_data );
+    if ( r != 0 )
+      return_set_error( -1, r );
+  }
   ws_init_done = true;
   return 0;
 }
 
 static int
-wp_register( wp_fd_type_t t,  SOCKET sock )
+wp_register( wp_fd_type_t t,  SOCKET sock,  int is_listener )
 {
   for ( size_t i = 0; i < MAX_FD_MAP_SIZE; i++ ) {
     if ( fdmap[ i ].type == WP_FD_NONE ) {
       memset( &fdmap[ i ], 0, sizeof( fdmap[ i ] ) );
       fdmap[ i ].type = t;
-      if ( t == WP_FD_SOCKET )
+      if ( t == WP_FD_SOCKET ) {
         fdmap[ i ].sock.socket = sock;
+        WSAEVENT event = WSACreateEvent();
+        fdmap[ i ].sock.event = event;
+        if ( is_listener )
+          WSAEventSelect( sock, event, FD_ACCEPT );
+        else
+          WSAEventSelect( sock, event, FD_READ | FD_CLOSE );
+      }
       return (int) i;
     }
   }
@@ -60,13 +69,35 @@ wp_register( wp_fd_type_t t,  SOCKET sock )
 int
 wp_make_null_fd( void )
 {
-  return wp_register( WP_FD_USED, 0 );
+  return wp_register( WP_FD_USED, 0, 0 );
 }
 
 int
 wp_register_fd( SOCKET sock )
 {
-  return wp_register( WP_FD_SOCKET, sock );
+  return wp_register( WP_FD_SOCKET, sock, 0 );
+}
+
+int
+wp_register_listen_fd( SOCKET sock )
+{
+  return wp_register( WP_FD_SOCKET, sock, 1 );
+}
+
+int
+wp_register_tty_fd( HANDLE h,  void *cl,  tty_reader_f rdr )
+{
+  for ( size_t i = 0; i < MAX_FD_MAP_SIZE; i++ ) {
+    if ( fdmap[ i ].type == WP_FD_NONE ) {
+      memset( &fdmap[ i ], 0, sizeof( fdmap[ i ] ) );
+      fdmap[ i ].type = WP_FD_TTY;
+      fdmap[ i ].tty.handle = h;
+      fdmap[ i ].tty.closure = cl;
+      fdmap[ i ].tty.tty_reader = rdr;
+      return (int) i;
+    }
+  }
+  return_set_error( -1, ERROR_NO_MORE_FILES );
 }
 
 int
@@ -75,8 +106,10 @@ wp_unregister_fd( int fd )
   if ( fd < 0 || (size_t) fd >= MAX_FD_MAP_SIZE ||
        fdmap[ fd ].type == WP_FD_NONE )
     return_set_error( -1, ERROR_INVALID_PARAMETER );
-  if ( fdmap[ fd ].type == WP_FD_SOCKET )
+  if ( fdmap[ fd ].type == WP_FD_SOCKET ) {
     closesocket( fdmap[ fd ].sock.socket );
+    WSACloseEvent( fdmap[ fd ].sock.event );
+  }
   fdmap[ fd ].type = WP_FD_NONE;
   return 0;
 }
@@ -108,17 +141,42 @@ wp_get_socket( int fd,  SOCKET *s )
   return 0;
 }
 
+static inline int is_socket( int fd ) {
+  return ( fd >= 0 && (size_t) fd < MAX_FD_MAP_SIZE &&
+           fdmap[ fd ].type == WP_FD_SOCKET );
+}
+
+static inline int is_tty( int fd ) {
+  return ( fd >= 0 && (size_t) fd < MAX_FD_MAP_SIZE &&
+           fdmap[ fd ].type == WP_FD_TTY );
+}
+
+static inline int is_epoll( int fd ) {
+  return ( fd >= 0 && (size_t) fd < MAX_FD_MAP_SIZE &&
+           fdmap[ fd ].type == WP_FD_EPOLL );
+}
+
 ssize_t
 wp_read( int fd,  void *buf,  size_t buflen )
 {
-  SOCKET s;
-  int    n;
-  if ( wp_get_socket( fd, &s ) < 0 )
-    return -1;
-  n = recv( s, (char *) buf, (int) buflen, 0 );
-  if ( n == SOCKET_ERROR )
-    return_map_error( -1 );
-  return n;
+  int n;
+  if ( is_socket( fd ) ) {
+    SOCKET s = fdmap[ fd ].sock.socket;
+    n = recv( s, (char *) buf, (int) buflen, 0 );
+    if ( n == SOCKET_ERROR )
+      return_map_error( -1 );
+    return n;
+  }
+  else if ( is_tty( fd ) ) {
+    void *p = fdmap[ fd ].tty.closure;
+    n = fdmap[ fd ].tty.tty_reader( p, buf, buflen );
+    if ( n == 0 )
+      return_set_error( -1, WSAEWOULDBLOCK );
+    if ( n < 0 )
+      return_map_error( -1 );
+    return n;
+  }
+  return_set_error( -1, ERROR_INVALID_HANDLE );
 }
 
 #define MAX_IOV 64
@@ -194,7 +252,7 @@ epoll_create( int size )
 
   if ( ! ws_init_done && ws_global_init() != 0 )
     return -1;
-  return wp_register( WP_FD_EPOLL, 0 );
+  return wp_register( WP_FD_EPOLL, 0, 0 );
 }
 
 int
@@ -205,7 +263,7 @@ epoll_create1( int flags )
 
   if ( ! ws_init_done && ws_global_init() != 0 )
     return -1;
-  return wp_register( WP_FD_EPOLL, 0 );
+  return wp_register( WP_FD_EPOLL, 0, 0 );
 }
 
 int
@@ -217,26 +275,39 @@ epoll_close( int fd )
 int
 epoll_ctl( int fd,  int op,  int s,  struct epoll_event* event )
 {
-  wp_port_state_t * port;
-  wp_sock_state_t * sock;
-  uint32_t          s_off  = (uint32_t) s / 64;
-  uint64_t          s_mask = (uint64_t) 1 << ( (uint32_t) s % 64 );
+  wp_port_state_t  * port   = NULL;
+  wp_sock_state_t  * sock   = NULL;
+  wp_epoll_state_t * state  = NULL;
+  uint32_t           s_off  = (uint32_t) s / 64;
+  uint64_t           s_mask = (uint64_t) 1 << ( (uint32_t) s % 64 );
 
-  if ( fd < 0 || (size_t) fd >= MAX_FD_MAP_SIZE ||
-       fdmap[ fd ].type != WP_FD_EPOLL )
+  if ( is_epoll( fd ) )
+    port = &fdmap[ fd ].port;
+  if ( is_socket( s ) )
+    sock = &fdmap[ s ].sock;
+  if ( is_socket( s ) || is_tty( s ) )
+    state = &fdmap[ s ].state;
+  if ( port == NULL || state == NULL )
     return_set_error( -1, ERROR_INVALID_HANDLE );
-
-  if ( s < 0 || (size_t) s >= MAX_FD_MAP_SIZE ||
-       fdmap[ s ].type != WP_FD_SOCKET )
-    return_set_error( -1, ERROR_INVALID_HANDLE );
-
-  port = &fdmap[ fd ].port;
-  sock = &fdmap[ s ].sock;
 
   if ( op == EPOLL_CTL_ADD || op == EPOLL_CTL_MOD ) {
     port->poll_set_fds[ s_off ] |= s_mask;
-    sock->user_data   = event->data;
-    sock->user_events = event->events;
+    state->user_data = event->data;
+    if ( ( event->events & EPOLLOUT ) != 0 &&
+         ( state->user_events & EPOLLIN ) != 0 ) {
+      if ( sock != NULL )
+        WSAEventSelect( sock->socket, sock->event, FD_WRITE | FD_CLOSE );
+    }
+    else if ( ( state->user_events & EPOLLOUT ) != 0 &&
+              ( event->events & EPOLLIN ) != 0 ) {
+      if ( sock != NULL )
+        WSAEventSelect( sock->socket, sock->event, FD_READ | FD_CLOSE );
+    }
+    else {
+      if ( sock != NULL )
+        WSAResetEvent( sock->event );
+    }
+    state->user_events = event->events;
   }
   else if ( op == EPOLL_CTL_DEL )
     port->poll_set_fds[ s_off ] &= ~s_mask;
@@ -248,24 +319,23 @@ int
 wp_epoll_wait( int fd,  struct epoll_event* events,  int maxevents,
                uint64_t us_timeout )
 {
-  fd_set rd_set, wr_set, ex_set;
-  struct timeval tv;
-  wp_port_state_t * port;
-  wp_sock_state_t * sock;
-  uint32_t          i, j,
-                    rd_count = 0,
-                    wr_count = 0,
-                    rd[ MAX_FD_MAP_SIZE ],
-                    wr[ MAX_FD_MAP_SIZE ];
-  int               n;
+  wp_port_state_t  * port;
+  wp_sock_state_t  * sock;
+  wp_tty_state_t   * tty;
+  WSAEVENT           ws_ev[ MAX_FD_MAP_SIZE ];
+  wp_epoll_state_t * ws_state[ MAX_FD_MAP_SIZE ],
+                   * state;
+  uint32_t           i, j, user_events;
+  DWORD              ev_count = 0,
+                     wait_cnt,
+                     wait_time = 0,
+                     cnt_off,
+                     cnt;
+  int                n = 0;
 
-  if ( fd < 0 || (size_t) fd >= MAX_FD_MAP_SIZE ||
-       fdmap[ fd ].type != WP_FD_EPOLL )
+  if ( ! is_epoll( fd ) )
     return_set_error( -1, ERROR_INVALID_HANDLE );
 
-  FD_ZERO( &rd_set );
-  FD_ZERO( &wr_set );
-  FD_ZERO( &ex_set );
   port = &fdmap[ fd ].port;
   for ( i = 0; i < MAX_FD_MAP_SIZE / 64; i++ ) {
     if ( port->poll_set_fds[ i ] != 0 ) {
@@ -273,78 +343,90 @@ wp_epoll_wait( int fd,  struct epoll_event* events,  int maxevents,
         uint64_t s_mask = (uint64_t) 1 << j;
         if ( ( port->poll_set_fds[ i ] & s_mask ) != 0 ) {
           uint32_t s = i * 64 + j;
-          sock = &fdmap[ s ].sock;
-          if ( ( sock->user_events & EPOLLIN ) != 0 ) {
+          sock = NULL; tty = NULL; state = NULL;
+          user_events = 0;
+          if ( fdmap[ s ].type == WP_FD_SOCKET ) {
+            sock  = &fdmap[ s ].sock;
+            state = &fdmap[ s ].state;
+            ws_state[ ev_count ] = state;
+            user_events = sock->user_events;
+            ws_ev[ ev_count ] = sock->event;
+          }
+          else if ( fdmap[ s ].type == WP_FD_TTY ) {
+            tty   = &fdmap[ s ].tty;
+            state = &fdmap[ s ].state;
+            ws_state[ ev_count ] = state;
+            user_events = tty->user_events;
+            ws_ev[ ev_count ] = tty->handle;
+          }
+          if ( ( user_events & EPOLLIN ) != 0 ) {
             /* if ET is unset or not triggered */
-            if ( ( sock->user_events & EPOLLET ) == 0 ||
-                 ( ( sock->user_events & EPOLLET ) != 0 &&
-                   ( sock->user_events & EPOLLET_TRIGGERED ) == 0 ) ) {
-              FD_SET( sock->socket, &rd_set );
-              rd[ rd_count++ ] = s;
+            if ( ( user_events & EPOLLET ) == 0 ||
+                 ( ( user_events & EPOLLET ) != 0 &&
+                   ( user_events & EPOLLET_TRIGGERED ) == 0 ) ) {
+              ev_count++;
             }
           }
-          if ( ( sock->user_events & EPOLLOUT ) != 0 ) {
-            FD_SET( sock->socket, &wr_set );
-            FD_SET( sock->socket, &ex_set );
-            sock->user_events &= ~EPOLLOUT_TRIGGERED;
-            wr[ wr_count++ ] = s;
+          else {
+            if ( ( user_events & EPOLLOUT ) != 0 ) {
+              if ( ( user_events & EPOLLOUT_TRIGGERED ) != 0 ) {
+                if ( sock != NULL )
+                  WSAResetEvent( sock->event );
+                state->user_events &= ~EPOLLOUT_TRIGGERED;
+              }
+              ev_count++;
+            }
           }
         }
       }
     }
   }
-  if ( rd_count + wr_count == 0 ) {
-    Sleep( (DWORD) ( us_timeout / 1000 ) );
-    return 0;
-  }
-  tv.tv_sec  = 0;
-  tv.tv_usec = (long) us_timeout;
-  n = select( 0, &rd_set, &wr_set, NULL, &tv );
-  if ( n == 0 || maxevents <= 0 )
-    return 0;
-  if ( n == SOCKET_ERROR )
-    return_map_error( -1 );
-  n = 0;
-  for ( i = 0; i < rd_count; i++ ) {
-    sock = &fdmap[ rd[ i ] ].sock;
-    if ( FD_ISSET( sock->socket, &rd_set ) ) {
-      events[ n ].events = EPOLLIN;
-      events[ n ].data   = sock->user_data;
-      if ( ( sock->user_events & EPOLLET ) != 0 )
-        sock->user_events |= EPOLLET_TRIGGERED;
-      if ( ( sock->user_events & EPOLLOUT ) != 0 ) {
-        if ( FD_ISSET( sock->socket, &wr_set ) )
-          events[ n ].events |= EPOLLOUT;
-        sock->user_events |= EPOLLOUT_TRIGGERED;
+  port->us_wait_accum += us_timeout;
+  for ( cnt_off = 0; cnt_off < ev_count; ) {
+    wait_cnt  = ev_count - cnt_off;
+    wait_time = (DWORD) ( port->us_wait_accum / 1000 );
+    if ( wait_cnt > WSA_MAXIMUM_WAIT_EVENTS ) {
+      wait_cnt  = WSA_MAXIMUM_WAIT_EVENTS;
+      wait_time = 0;
+    }
+    else if ( n > 0 || ev_count > WSA_MAXIMUM_WAIT_EVENTS ) {
+      wait_time = 0;
+    }
+    cnt = WaitForMultipleObjects( wait_cnt, &ws_ev[ cnt_off ], FALSE,
+                                  wait_time );
+    if ( cnt < WAIT_OBJECT_0 + wait_cnt ) {
+      port->us_wait_accum = 0;
+      cnt -= WAIT_OBJECT_0;
+      state = ws_state[ cnt_off + cnt ];
+      cnt_off += cnt + 1;
+      if ( ( state->user_events & EPOLLOUT ) != 0 ) {
+        events[ n ].events = EPOLLOUT;
+        events[ n ].data   = state->user_data;
+      }
+      else if ( ( state->user_events & EPOLLIN ) != 0 ) {
+        events[ n ].events = EPOLLIN;
+        events[ n ].data   = state->user_data;
+        if ( ( state->user_events & EPOLLET ) != 0 )
+          state->user_events |= EPOLLET_TRIGGERED;
       }
       if ( ++n == maxevents )
         return n;
     }
-  }
-  for ( i = 0; i < wr_count; i++ ) {
-    sock = &fdmap[ wr[ i ] ].sock;
-    if ( ( sock->user_events & EPOLLOUT_TRIGGERED ) == 0 ) {
-      events[ n ].events = 0;
-      if ( FD_ISSET( sock->socket, &wr_set ) ) {
-        events[ n ].events = EPOLLOUT;
-        events[ n ].data   = sock->user_data;
-      }
-      if ( FD_ISSET( sock->socket, &ex_set ) ) {
-        events[ n ].events |= EPOLLIN;
-        events[ n ].data   = sock->user_data;
-      }
-      if ( events[ n ].events != 0 ) {
-        if ( ++n == maxevents )
-          return n;
-      }
-    }
     else {
-      sock->user_events &= ~EPOLLOUT_TRIGGERED;
+      cnt_off += WSA_MAXIMUM_WAIT_EVENTS;
+      if ( wait_time > 0 )
+        port->us_wait_accum -= ( (uint64_t) wait_time * 1000 );
     }
+  }
+  if ( n == 0 ) {
+    if ( port->us_wait_accum >= 1000 ) {
+      Sleep( (DWORD) ( port->us_wait_accum / 1000 ) );
+      port->us_wait_accum %= 1000;
+    }
+    return 0;
   }
   return n;
 }
-
 
 #include <errno.h>
 

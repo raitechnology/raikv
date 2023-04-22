@@ -231,7 +231,7 @@ main( int argc,  const char *argv[] )
   for ( width = 12; width < 64; width += 4 ) {
     printf( "width:%u -- ", width );
     for ( size_t j = 0; j < cnt[ i ]; j++ ) {
-      printf( "%lu=%.2f%% ", elem_count[ off + j ], false_ratio[ off + j ] );
+      printf( "%" PRIu64 "=%.2f%% ", elem_count[ off + j ], false_ratio[ off + j ] );
     }
     printf( "\n" );
     off += cnt[ i ];

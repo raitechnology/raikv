@@ -3,7 +3,7 @@
 
 #include <raikv/ev_net.h>
 
-#ifndef _MSC_VER
+#if ! defined( _MSC_VER ) && ! defined( __MINGW32__ )
 #define KVPS_USE_UNIX_SOCKET
 #endif
 

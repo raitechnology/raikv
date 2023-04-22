@@ -486,8 +486,8 @@ Test::run( void ) noexcept
   }
   this->dbx_id = this->map.attach_db( this->ctx_id, this->db_num );
   this->init_hash_seed();
-  printf( "ctx_id %u dbx_id %u hs %lx %lx\n", this->ctx_id, this->dbx_id,
-          this->hs.hash1, this->hs.hash2 );
+  printf( "ctx_id %u dbx_id %u hs %" PRIx64 " %" PRIx64 "\n", this->ctx_id,
+          this->dbx_id, this->hs.hash1, this->hs.hash2 );
 
   if ( ! this->quiet ) {
     const char *s = print_map_geom( &this->map, this->ctx_id );

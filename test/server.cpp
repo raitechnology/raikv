@@ -2,7 +2,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
-#ifndef _MSC_VER
+#if ! defined( _MSC_VER ) && ! defined( __MINGW32__ )
 #include <unistd.h>
 #include <fcntl.h>
 #else
@@ -144,7 +144,7 @@ main( int argc, char *argv[] )
   Monitor svr( *map, stats_ival, check_ival );
   sighndl.install();
 
-#ifndef _MSC_VER
+#if ! defined( _MSC_VER ) && ! defined( __MINGW32__ )
   bool tty = false;
   if ( isatty( 0 ) ) {
     fcntl( 0, F_SETFL, fcntl( 0, F_GETFL, 0 ) | O_NONBLOCK );

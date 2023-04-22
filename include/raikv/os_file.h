@@ -1,8 +1,10 @@
 #ifndef __rai_raikv__os_file_h__
 #define __rai_raikv__os_file_h__
 
+#if defined( MSC_VER ) || defined( __MINGW32__ )
 #ifdef _MSC_VER
 #pragma warning( disable : 4291 4996 )
+#endif
 #include <windows.h>
 #include <io.h>
 #include <direct.h>
@@ -56,7 +58,7 @@ static inline bool map_shm( int how ) {
   return ( how & MAP_FILE_SHM ) != 0;
 }
 
-#ifdef _MSC_VER
+#if defined( MSC_VER ) || defined( __MINGW32__ )
 
 struct MapFile {
   const char * path;
@@ -64,11 +66,12 @@ struct MapFile {
   size_t       map_size;
   HANDLE       h,
                maph;
-  bool         no_unmap;
+  bool         no_unmap,
+               is_new;
 
   MapFile( const char *p = NULL,  size_t sz = 0 )
     : path( p ), map( NULL ), map_size( sz ), h( INVALID_HANDLE_VALUE ),
-      maph( NULL ), no_unmap( false ) {}
+      maph( NULL ), no_unmap( false ), is_new( false ) {}
   ~MapFile() {
     this->close();
   }
@@ -89,6 +92,7 @@ struct MapFile {
     }
   }
   static void unmap( void *p,  size_t len ) {
+    (void) len;
     UnmapViewOfFile( p );
   }
   bool open( int how = ( MAP_FILE_RDONLY | MAP_FILE_PRIVATE ) ) {
@@ -112,7 +116,7 @@ struct MapFile {
       this->h = CreateFileA( this->path, access, mode, NULL,
                              OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL );
       if ( this->h == INVALID_HANDLE_VALUE ) {
-        fprintf( stderr, "err open %s: %u\n", this->path, GetLastError() );
+        fprintf( stderr, "err open %s: %ld\n", this->path, GetLastError() );
         return false;
       }
       GetFileSizeEx( this->h, &st );
@@ -135,13 +139,13 @@ struct MapFile {
     }
     this->maph = CreateFileMappingA( this->h, NULL, page, szh, szl, NULL );
     if ( this->maph == NULL ) {
-      fprintf( stderr, "err map %s: %u\n", this->path ? this->path : "anon",
+      fprintf( stderr, "err map %s: %ld\n", this->path ? this->path : "anon",
                GetLastError() );
       return false;
     }
     this->map = MapViewOfFile( this->maph, mapping, 0, 0, map_sz );
     if ( this->map == NULL ) {
-      fprintf( stderr, "err view %s: %u\n", this->path ? this->path : "anon",
+      fprintf( stderr, "err view %s: %ld\n", this->path ? this->path : "anon",
                GetLastError() );
       return false;
     }
@@ -149,7 +153,15 @@ struct MapFile {
       return mem_lock( this->map, this->map_size, map_secure( how ) );
     return true;
   }
+  static int unlink( const char *path,  bool is_shm ) {
+    /*if ( ! is_shm )
+      return ::unlink( path );
+    return ::shm_unlink( path );*/
+    (void) path; (void) is_shm;
+    return 0;
+  }
   static bool mem_lock( void *map,  size_t map_size,  bool secure ) {
+    (void) secure;
     bool res = true;
     for ( int i = 0; i < 2; i++ ) {
       if ( ! VirtualLock( map, map_size ) ) {
@@ -172,7 +184,7 @@ struct MapFile {
       }
     }
     if ( ! res )
-      fprintf( stderr, "err virtual lock: %u\n", GetLastError() );
+      fprintf( stderr, "err virtual lock: %ld\n", GetLastError() );
     return res;
   }
   static size_t page_size( void ) {
@@ -198,8 +210,10 @@ struct iovec {
 };
 #endif
 
+#ifndef STDIN_FILENO
 #define STDIN_FILENO _fileno( stdin )
 #define STDOUT_FILENO _fileno( stdout )
+#endif
 typedef struct _stat64 os_stat;
 
 static inline int
@@ -252,9 +266,11 @@ os_unlink( const char *fn ) noexcept
 {
   return ::remove( fn );
 }
+#ifndef F_OK
 #define F_OK 0
 #define W_OK 02
 #define R_OK 04
+#endif
 static inline int
 os_access( const char *fn,  int mode ) noexcept
 {
@@ -263,6 +279,7 @@ os_access( const char *fn,  int mode ) noexcept
 static inline int
 os_mkdir( const char *dn,  int mode ) noexcept
 {
+  (void) mode;
   return _mkdir( dn );
 }
 static inline int

@@ -3,7 +3,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <errno.h>
-#ifndef _MSC_VER
+#if ! defined( _MSC_VER ) && ! defined( __MINGW32__ )
 #include <unistd.h>
 #include <sys/time.h>
 #include <sys/timerfd.h>

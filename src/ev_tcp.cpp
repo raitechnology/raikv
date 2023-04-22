@@ -2,7 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
-#ifndef _MSC_VER
+#if ! defined( _MSC_VER ) && ! defined( __MINGW32__ )
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/socket.h>
@@ -20,7 +20,7 @@
 using namespace rai;
 using namespace kv;
 
-#ifndef _MSC_VER
+#if ! defined( _MSC_VER ) && ! defined( __MINGW32__ )
 typedef int SOCKET;
 static const int INVALID_SOCKET = -1;
 
@@ -177,7 +177,10 @@ finish_init( SOCKET sock,  EvPoll &poll,  EvSocket &me,  struct sockaddr *addr,
 {
   int status, fd;
   set_nonblock( sock );
-  fd = wp_register_fd( sock );
+  if ( me.sock_base == EV_LISTEN_BASE )
+    fd = wp_register_listen_fd( sock );
+  else
+    fd = wp_register_fd( sock );
   me.PeerData::init_peer( poll.get_next_id(), fd, rte_id, addr, k );
   if ( (status = poll.add_sock( &me )) != 0 ) {
     wp_unregister_fd( fd );
@@ -224,7 +227,7 @@ rai::kv::bind_socket( int sock,  int fam,  int opts,  struct sockaddr *ai_addr,
 uint32_t
 rai::kv::fix_ip4_address( uint32_t ipaddr ) noexcept
 {
-#ifndef _MSC_VER
+#if ! defined( _MSC_VER ) && ! defined( __MINGW32__ )
   ifconf conf;
   ifreq  ifbuf[ 256 ],
        * ifp, ifa, ifm;
@@ -305,7 +308,7 @@ rai::kv::fix_ip4_device( const char *dev, char *ipbuf ) noexcept
 {
   if ( dev == NULL )
     return NULL;
-#ifndef _MSC_VER
+#if ! defined( _MSC_VER ) && ! defined( __MINGW32__ )
   ifreq ifa;
   int   s  = ::socket( PF_INET, SOCK_DGRAM, IPPROTO_UDP );
   if ( ::strlen( dev ) < sizeof( ifa.ifr_name ) ) {
@@ -319,6 +322,8 @@ rai::kv::fix_ip4_device( const char *dev, char *ipbuf ) noexcept
     }
   }
   ::close( s );
+#else
+  (void) ipbuf;
 #endif
   return dev;
 }
@@ -366,8 +371,8 @@ AddrInfo::get_address( const char *ip,  int port,  int opts ) noexcept
     return status;
   if ( this->ai != NULL && this->ai->ai_next == NULL &&
        this->ai->ai_family == AF_INET ) {
-    uint32_t & a = ((struct sockaddr_in *) this->ai->ai_addr)->sin_addr.s_addr;
-    a = fix_ip4_address( a );
+    struct sockaddr_in *sin = (struct sockaddr_in *) this->ai->ai_addr;
+    sin->sin_addr.s_addr = fix_ip4_address( sin->sin_addr.s_addr );
   }
   return 0;
 }
@@ -453,7 +458,7 @@ EvTcpListen::accept2( EvConnection &c,  const char *k ) noexcept
             listen_fd;
   int       status;
 
-#ifdef _MSC_VER
+#if defined( _MSC_VER ) || defined( __MINGW32__ )
   status = ::wp_get_socket( this->fd, &listen_fd );
   if ( status != 0 )
     goto fail;
@@ -520,7 +525,7 @@ EvTcpConnection::connect3( EvConnection &conn, const struct addrinfo *addr_list,
     if ( ( fam == AF_INET6 && ( opts & OPT_AF_INET6 ) != 0 ) ||
          ( fam == AF_INET  && ( opts & OPT_AF_INET ) != 0 ) ) {
       sock = ::socket( fam, p->ai_socktype, p->ai_protocol );
-      if ( sock < 0 )
+      if ( invalid_socket( sock ) )
         continue;
       if ( fam == AF_INET6 && ( opts & OPT_AF_INET ) != 0 ) {
         if ( ::setsockopt( sock, IPPROTO_IPV6, IPV6_V6ONLY, (char *) &off,
@@ -549,7 +554,7 @@ break_loop:;
     status = conn.set_sock_err( EV_ERR_CONNECT, get_errno() );
     goto fail;
   }
-  if ( sock == -1 ) {
+  if ( invalid_socket( sock ) ) {
     status = conn.set_sock_err( EV_ERR_SOCKET, get_errno() );
     goto fail;
   }

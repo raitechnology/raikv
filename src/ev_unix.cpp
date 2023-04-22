@@ -2,7 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
-#ifndef _MSC_VER
+#if ! defined( _MSC_VER ) && ! defined( __MINGW32__ )
 #include <unistd.h>
 #include <fcntl.h>
 #include <errno.h>
@@ -26,7 +26,8 @@ int
 EvUnixListen::listen2( const char *path,  int opts,  const char *k,
                        uint32_t rte_id ) noexcept
 {
-#ifdef _MSC_VER
+#if defined( _MSC_VER ) || defined( __MINGW32__ )
+  (void) path; (void) opts; (void) k; (void) rte_id;
   return -1;
 #else
   struct sockaddr_un sunaddr;
@@ -78,7 +79,7 @@ fail:;
 bool
 EvUnixListen::accept2( EvConnection &conn,  const char *k ) noexcept
 {
-#ifndef _MSC_VER
+#if ! defined( _MSC_VER ) && ! defined( __MINGW32__ )
   struct sockaddr_un sunaddr;
   socklen_t addrlen = sizeof( sunaddr );
   int sock = ::accept( this->fd, (struct sockaddr *) &sunaddr, &addrlen );
@@ -99,6 +100,8 @@ EvUnixListen::accept2( EvConnection &conn,  const char *k ) noexcept
   }
   return true;
 fail:;
+#else
+  (void) k;
 #endif
   this->poll.push_free_list( &conn );
   return false;
@@ -108,7 +111,8 @@ int
 EvUnixConnection::connect( EvConnection &conn,  const char *path,
                            int opts,  const char *k,  uint32_t rte_id ) noexcept
 {
-#ifdef _MSC_VER
+#if defined( _MSC_VER ) || defined( __MINGW32__ )
+  (void) conn; (void) path; (void) opts; (void) k; (void) rte_id;
   return -1;
 #else
   struct sockaddr_un sunaddr;
@@ -143,7 +147,8 @@ int
 EvUnixDgram::bind( const char *path,  int opts,  const char *k,
                    uint32_t rte_id ) noexcept
 {
-#ifdef _MSC_VER
+#if defined( _MSC_VER ) || defined( __MINGW32__ )
+  (void) path; (void) opts; (void) k; (void) rte_id;
   return -1;
 #else
   struct sockaddr_un sunaddr;

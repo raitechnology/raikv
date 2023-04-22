@@ -124,13 +124,15 @@ typedef enum {
   WP_FD_NONE = 0,
   WP_FD_USED,
   WP_FD_EPOLL,
-  WP_FD_SOCKET
+  WP_FD_SOCKET,
+  WP_FD_TTY
 } wp_fd_type_t;
 
-#define MAX_FD_MAP_SIZE ( 4 * 64 )
+#define MAX_FD_MAP_SIZE ( 8 * 64 ) /* 512 */
 
 typedef struct wp_port_state {
   uint64_t poll_set_fds[ MAX_FD_MAP_SIZE / 64 ];
+  uint64_t us_wait_accum; /* wait is in usecs, this accumulates */
 } wp_port_state_t;
 
 typedef union epoll_data {
@@ -145,25 +147,45 @@ struct epoll_event {
   epoll_data_t data; /* User data variable */
 };
 
+typedef struct wp_epoll_state {
+  epoll_data_t      user_data;   /* fd */
+  uint32_t          user_events; /* EPOLLIN, EPOLLOUT */
+} wp_epoll_state_t;
+
 typedef struct wp_sock_state {
-  wp_port_state_t * poll_group;
-  SOCKET            socket;
-  epoll_data_t      user_data;
-  uint32_t          user_events;
-  uint32_t          pending_events;
+  epoll_data_t      user_data;   /* fd */
+  uint32_t          user_events; /* EPOLLIN, EPOLLOUT */
+  wp_port_state_t * poll_group;  /* which wp_port_state_t group */
+  SOCKET            socket;      /* windows handle */
+  WSAEVENT          event;       /* WaitForMultipleEvents */
 } wp_sock_state_t;
+
+typedef ssize_t (* tty_reader_f )( void *p,  void *buf,  size_t buflen );
+
+typedef struct wp_tty_state {
+  epoll_data_t      user_data;   /* fd */
+  uint32_t          user_events; /* EPOLLIN, EPOLLOUT */
+  wp_port_state_t * poll_group;  /* which wp_port_state_t group */
+  HANDLE            handle;      /* windows console handle */
+  void            * closure;
+  tty_reader_f      tty_reader;
+} wp_tty_state_t;
 
 typedef struct wp_fd_map {
   wp_fd_type_t type;
   union {
-    wp_port_state_t port; /* POLL */
-    wp_sock_state_t sock; /* SOCKET */
+    wp_port_state_t  port; /* POLL */
+    wp_epoll_state_t state;/* common state */
+    wp_sock_state_t  sock; /* SOCKET */
+    wp_tty_state_t   tty;  /* HANDLE */
   };
 } wp_fd_map_t;
 
 int ws_global_init( void );
 int wp_get_socket( int fd,  SOCKET *s );
 int wp_register_fd( SOCKET sock );
+int wp_register_listen_fd( SOCKET sock );
+int wp_register_tty_fd( HANDLE h,  void *cl,  tty_reader_f rdr );
 int wp_unregister_fd( int fd );
 
 #ifdef __cplusplus

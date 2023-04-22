@@ -5,7 +5,7 @@
 #define __STDC_FORMAT_MACROS
 #include <inttypes.h>
 #include <assert.h>
-#ifdef _MSC_VER
+#if defined( _MSC_VER ) || defined( __MINGW32__ )
 #include <raikv/win.h>
 #else
 #include <unistd.h>
@@ -304,6 +304,7 @@ parse_map_name( const char *&fn )
  * https://lwn.net/Articles/374424/ */
 /*static const uint64_t PGSZ_2M = 2 * 1024 * 1024,
                       PGSZ_1G = 1024 * 1024 * 1024;*/
+#if ! defined( _MSC_VER ) && ! defined( __MINGW32__ )
 static void
 show_perror( const char *what,  const char *map_name )
 {
@@ -317,6 +318,7 @@ show_perror( const char *what,  const char *map_name )
   buf[ 1023 ] = '\0';
   ::perror( buf );
 }
+#endif
 
 #ifndef MAP_HUGETLB
 /* flag set for page size */
@@ -351,12 +353,13 @@ HashTab::create_map( const char *map_name,  uint8_t facility,
   uint64_t     page_align,
                map_size;
 
-#ifndef _MSC_VER
+#if ! defined( _MSC_VER ) && ! defined( __MINGW32__ )
   page_align = (uint64_t) ::sysconf( _SC_PAGESIZE );
 #else
   SYSTEM_INFO info;
   GetSystemInfo( &info );
   page_align = info.dwPageSize;
+  (void) map_mode;
 #endif
 
   map_size = align<uint64_t>( geom.map_size, page_align );
@@ -370,7 +373,7 @@ HashTab::create_map( const char *map_name,  uint8_t facility,
     return NULL;
   }
 
-#ifndef _MSC_VER
+#if ! defined( _MSC_VER ) && ! defined( __MINGW32__ )
   int    j,
          flags[ 3 ], /* flags for normal, 2m pages, 1g pages */
          oflags,
@@ -566,13 +569,13 @@ HashTab::create_map( const char *map_name,  uint8_t facility,
   HANDLE fh  = CreateFileMappingA( INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE,
                                    szh, szl, gbuf );
   if ( fh == NULL ) {
-    fprintf( stderr, "Can't create file mapping %s (%d)\n", fn,
+    fprintf( stderr, "Can't create file mapping %s (%ld)\n", fn,
              GetLastError() );
     return NULL;
   }
   p = MapViewOfFile( fh, FILE_MAP_ALL_ACCESS, 0, 0, map_size );
   if ( p == NULL ) {
-    fprintf( stderr, "Can't map view of file %s (%d)\n", fn,
+    fprintf( stderr, "Can't map view of file %s (%ld)\n", fn,
              GetLastError() );
     CloseHandle( fh );
     return NULL;
@@ -596,7 +599,7 @@ HashTab::attach_map( const char *map_name,  uint8_t facility,
                map_size;
   HashHdr      hdr;
 
-#ifndef _MSC_VER
+#if ! defined( _MSC_VER ) && ! defined( __MINGW32__ )
   page_align = (uint64_t) ::sysconf( _SC_PAGESIZE );
 #else
   SYSTEM_INFO info;
@@ -607,7 +610,7 @@ HashTab::attach_map( const char *map_name,  uint8_t facility,
   if ( facility == 0 && (facility = parse_map_name( fn )) == 0 )
     return NULL;
 
-#ifndef _MSC_VER
+#if ! defined( _MSC_VER ) && ! defined( __MINGW32__ )
   int     fd, j, flags[ 3 ];
   key_t   key;
   bool    is_file_mmap;
@@ -747,19 +750,19 @@ HashTab::attach_map( const char *map_name,  uint8_t facility,
   ::snprintf( gbuf, sizeof( gbuf ), "Local\\%s", fn );
   HANDLE fh  = OpenFileMappingA( FILE_MAP_ALL_ACCESS, FALSE, gbuf );
   if ( fh == NULL ) {
-    fprintf( stderr, "Can't open file mapping %s (%d)\n", fn,
+    fprintf( stderr, "Can't open file mapping %s (%ld)\n", fn,
              GetLastError() );
     return NULL;
   }
   uint64_t hdr_align = align<uint64_t>( sizeof( hdr ), page_align );
   p = MapViewOfFile( fh, FILE_MAP_ALL_ACCESS, 0, 0, hdr_align );
   if ( p == NULL ) {
-    fprintf( stderr, "Can't map view of file %s (%d)\n", fn,
+    fprintf( stderr, "Can't map view of file %s (%ld)\n", fn,
              GetLastError() );
     CloseHandle( fh );
     return NULL;
   }
-  ::memcpy( &hdr, p, sizeof( hdr ) );
+  ::memcpy( (void *) &hdr, p, sizeof( hdr ) );
   map_size = align<uint64_t>( hdr.map_size, page_align );
   UnmapViewOfFile( p );
 
@@ -787,7 +790,7 @@ HashTab::remove_map( const char *map_name,  uint8_t facility ) noexcept
   if ( facility == 0 && (facility = parse_map_name( fn )) == 0 )
     return -1;
 
-#ifndef _MSC_VER
+#if ! defined( _MSC_VER ) && ! defined( __MINGW32__ )
   int          fd, j, flags[ 3 ];
   key_t        key;
   bool         is_file_mmap;
@@ -869,7 +872,7 @@ HashTab::close_map( void ) noexcept
   if ( p == NULL )
     return -2;
 
-#ifndef _MSC_VER
+#if ! defined( _MSC_VER ) && ! defined( __MINGW32__ )
   uint64_t     page_align,
                map_size;
   const char * s = &this->hdr.sig[ SHM_TYPE_IDX ];

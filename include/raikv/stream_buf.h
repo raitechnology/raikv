@@ -1,7 +1,7 @@
 #ifndef __rai_raikv__stream_buf_h__
 #define __rai_raikv__stream_buf_h__
 
-#ifndef _MSC_VER
+#if ! defined( _MSC_VER ) && ! defined( __MINGW32__ )
 #include <sys/uio.h>
 #else
 #ifndef kv_iovec_defined

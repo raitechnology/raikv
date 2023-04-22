@@ -89,5 +89,5 @@ fi
 /usr/sbin/userdel %{name}
 
 %changelog
-* __DATE__ <support@raitechnology.com>
+* Sat Jan 01 2000 <support@raitechnology.com>
 - Hello world

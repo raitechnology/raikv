@@ -59,6 +59,29 @@ int pidexists( uint32_t pid );
 #define kv_stringify(S) kv_str(S)
 #define kv_str(S) #S
 
+#if defined( _MSC_VER ) || defined( __MINGW32__ )
+inline void *
+kv_memmem( const void *hs, size_t n, const void *ndl, size_t m )
+{
+  const uint8_t * y = (const uint8_t *) hs,
+                * x = (const uint8_t *) ndl;
+  if ( m > 1 && m <= n ) {
+    const uint8_t * end = &y[ n - m ], * p;
+    while ( y <= end ) {
+      size_t len = &end[ 1 ] - y;
+      if ( (p = (uint8_t *) memchr( &y[ 1 ], x[ 1 ], len )) == NULL )
+        return NULL; 
+      if ( memcmp( p - 1, x, m ) == 0 )
+        return (void *)( p - 1 );
+      y = p + 1;
+    }
+  }
+  else if ( m == 1 )
+    return memchr( y, x[ 0 ], n );
+  return NULL;
+}
+#endif
+
 #ifdef _MSC_VER
 #define kv_strncasecmp _strnicmp
 #define kv_strcasecmp _stricmp
@@ -79,6 +102,7 @@ kv_ctzw( uint32_t val )
     return (uint8_t) z;
   return 32;
 }
+
 inline uint8_t kv_clzl( uint64_t val ) { return (uint8_t) __lzcnt64( val ); }
 inline uint8_t kv_clzw( uint32_t val ) { return (uint8_t) __lzcnt( val ); }
 inline uint8_t kv_ffsl( uint64_t val ) { return val == 0 ? 0 : ( kv_ctzl( val ) + 1 ); }
@@ -92,15 +116,18 @@ inline uint64_t kv_bswap64( uint64_t x ) { return _byteswap_uint64( x ); }
 #else
 #define kv_strncasecmp strncasecmp
 #define kv_strcasecmp strcasecmp
+#ifndef __MINGW32__
+#define kv_memmem memmem
+#endif
 
 /* gcc style */
-inline uint8_t kv_ctzl( uint64_t val ) { return __builtin_ctzl( val ); }
+inline uint8_t kv_ctzl( uint64_t val ) { return __builtin_ctzll( val ); }
 inline uint8_t kv_ctzw( uint32_t val ) { return __builtin_ctz( val ); }
-inline uint8_t kv_clzl( uint64_t val ) { return __builtin_clzl( val ); }
+inline uint8_t kv_clzl( uint64_t val ) { return __builtin_clzll( val ); }
 inline uint8_t kv_clzw( uint32_t val ) { return __builtin_clz( val ); }
-inline uint8_t kv_ffsl( uint64_t val ) { return __builtin_ffsl( val ); }
+inline uint8_t kv_ffsl( uint64_t val ) { return __builtin_ffsll( val ); }
 inline uint8_t kv_ffsw( uint32_t val ) { return __builtin_ffs( val ); }
-inline uint8_t kv_popcountl( uint64_t val ) { return __builtin_popcountl( val ); }
+inline uint8_t kv_popcountl( uint64_t val ) { return __builtin_popcountll( val ); }
 inline uint8_t kv_popcountw( uint32_t val ) { return __builtin_popcount( val ); }
 inline uint16_t kv_bswap16( uint16_t x ) { return __builtin_bswap16( x ); }
 inline uint32_t kv_bswap32( uint32_t x ) { return __builtin_bswap32( x ); }

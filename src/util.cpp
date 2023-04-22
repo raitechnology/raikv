@@ -1,7 +1,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
-#ifndef _MSC_VER
+#if ! defined( _MSC_VER ) && ! defined( __MINGW32__ )
 #include <signal.h>
 #include <unistd.h>
 #include <sys/syscall.h>
@@ -19,7 +19,7 @@
 using namespace rai;
 using namespace kv;
 
-#ifndef _MSC_VER
+#if ! defined( _MSC_VER ) && ! defined( __MINGW32__ )
 extern "C"
 uint32_t
 getthrid( void )
@@ -83,7 +83,7 @@ rai::kv::rand::fill_urandom_bytes( void *buf,  uint16_t sz ) noexcept
   else {
     static uint8_t ubuf[ 16384 ];
     static int32_t nbytes = 0;
-#ifdef _MSC_VER
+#if defined( _MSC_VER ) ||  defined( __MINGW32__ )
     static HMODULE advapi;
     static BOOLEAN (APIENTRY * RtlGenRandom)( void *, ULONG );
     static bool advapi_init;
@@ -91,14 +91,14 @@ rai::kv::rand::fill_urandom_bytes( void *buf,  uint16_t sz ) noexcept
       advapi = GetModuleHandle( "advapi32.dll" );
       if ( advapi != NULL ) {
         RtlGenRandom = (BOOLEAN( APIENTRY * )( void *, ULONG ))
-          GetProcAddress( advapi, "SystemFunction036" );
+          (void *) GetProcAddress( advapi, "SystemFunction036" );
       }
       advapi_init = true;
     }
 #endif
     while ( sz > 0 ) {
       if ( nbytes <= 0 ) {
-#ifndef _MSC_VER
+#if ! defined( _MSC_VER ) && ! defined( __MINGW32__ )
         int fd = ::open( "/dev/urandom", O_RDONLY );
         if ( fd >= 0 ) {
           nbytes = ::read( fd, ubuf, sizeof( ubuf ) );
@@ -183,7 +183,7 @@ rai::kv::rand::xoroshiro128plus::init( void *seed,  uint16_t sz ) noexcept
   return true;
 }
 
-#ifdef _MSC_VER
+#if defined( _MSC_VER ) || defined( __MINGW32__ )
 static inline void kv_localtime( time_t t, struct tm &tmbuf ) {
   ::localtime_s( &tmbuf, &t );
 }
@@ -226,7 +226,7 @@ rai::kv::timestamp( uint64_t ns,  int precision,  char *buf,
 uint64_t
 rai::kv::get_rdtsc( void ) noexcept
 {
-#ifndef _MSC_VER
+#if ! defined( _MSC_VER ) && ! defined( __MINGW32__ )
    uint32_t lo, hi;
   __asm__ __volatile__("rdtsc" : "=a" (lo), "=d" (hi));
   return ( (uint64_t) hi << 32 ) | (uint64_t) lo;
@@ -251,7 +251,7 @@ rai::kv::get_rdtscp( void ) noexcept
 #endif
 }
 #endif
-#ifdef _MSC_VER
+#if defined( _MSC_VER ) || defined( __MINGW32__ )
 enum { TO_NS = 0, TO_US = 1, TO_MS = 2, TO_SEC = 3 };
 static uint64_t freq_mul[ 4 ], freq_div[ 4 ];
 static double   freq_mul_f[ 4 ];
@@ -261,19 +261,19 @@ qpc_init( void ) noexcept
 {
   LARGE_INTEGER freq;
   QueryPerformanceFrequency( &freq );
-  if ( freq.QuadPart > 1000000000ULL )
+  if ( (uint64_t) freq.QuadPart > 1000000000ULL )
     freq_div[ TO_NS ] = freq.QuadPart / 1000000000ULL;
   else
     freq_mul[ TO_NS ] = 1000000000ULL / freq.QuadPart;
   freq_mul_f[ TO_NS ] = 1000000000.0 / (double) freq.QuadPart;
 
-  if ( freq.QuadPart > 1000000ULL )
+  if ( (uint64_t) freq.QuadPart > 1000000ULL )
     freq_div[ TO_US ] = freq.QuadPart / 1000000ULL;
   else
     freq_mul[ TO_US ] = 1000000ULL / freq.QuadPart;
   freq_mul_f[ TO_US ] = 1000000.0 / (double) freq.QuadPart;
 
-  if ( freq.QuadPart > 1000ULL )
+  if ( (uint64_t) freq.QuadPart > 1000ULL )
     freq_div[ TO_MS ] = freq.QuadPart / 1000ULL;
   else
     freq_mul[ TO_MS ] = 1000ULL / freq.QuadPart;
@@ -288,7 +288,7 @@ qpc_to( int to ) noexcept
 {
   LARGE_INTEGER lrg;
   QueryPerformanceCounter( &lrg );
-  if ( freq_mul[ to ] == 0 || freq_div[ to ] == 0 )
+  if ( freq_mul[ to ] == 0 && freq_div[ to ] == 0 )
     qpc_init();
   if ( freq_mul[ to ] == 0 )
     return lrg.QuadPart / freq_div[ to ];
@@ -314,6 +314,7 @@ fs_to( int to ) noexcept
   uint64_t t;
   GetSystemTimeAsFileTime( &ft );
   t = ( (uint64_t) ft.dwHighDateTime << 32 ) | (uint64_t) ft.dwLowDateTime;
+  t -= DELTA_EPOCH;
   if ( to == TO_NS )
     return t * 100ULL;
   if ( to == TO_US )
@@ -330,6 +331,7 @@ fs_to_f( int to ) noexcept
   uint64_t t;
   GetSystemTimeAsFileTime( &ft );
   t = ( (uint64_t) ft.dwHighDateTime << 32 ) | (uint64_t) ft.dwLowDateTime;
+  t -= DELTA_EPOCH;
   if ( to == TO_NS )
     return (double) t * 100.0;
   if ( to == TO_US )
@@ -360,7 +362,7 @@ cget_f( int clock,  double mul ) noexcept
 uint64_t
 rai::kv::current_monotonic_time_ns( void ) noexcept
 {
-#ifndef _MSC_VER
+#if ! defined( _MSC_VER ) && ! defined( __MINGW32__ )
   return cget( CLOCK_MONOTONIC, 1000000000 );
 #else
   return qpc_to( TO_NS );
@@ -370,7 +372,7 @@ rai::kv::current_monotonic_time_ns( void ) noexcept
 uint64_t
 rai::kv::current_monotonic_time_us( void ) noexcept
 {
-#ifndef _MSC_VER
+#if ! defined( _MSC_VER ) && ! defined( __MINGW32__ )
   return cget( CLOCK_MONOTONIC, 1000000 );
 #else
   return qpc_to( TO_US );
@@ -380,7 +382,7 @@ rai::kv::current_monotonic_time_us( void ) noexcept
 double
 rai::kv::current_monotonic_time_s( void ) noexcept
 {
-#ifndef _MSC_VER
+#if ! defined( _MSC_VER ) && ! defined( __MINGW32__ )
   return cget_f( CLOCK_MONOTONIC, 1.0 );
 #else
   return qpc_to_f( TO_SEC );
@@ -390,7 +392,7 @@ rai::kv::current_monotonic_time_s( void ) noexcept
 uint64_t
 rai::kv::current_monotonic_coarse_ns( void ) noexcept
 {
-#ifndef _MSC_VER
+#if ! defined( _MSC_VER ) && ! defined( __MINGW32__ )
 #ifndef CLOCK_MONOTONIC_COARSE
 #define CLOCK_MONOTONIC_COARSE 6
 #endif
@@ -403,7 +405,7 @@ rai::kv::current_monotonic_coarse_ns( void ) noexcept
 double
 rai::kv::current_monotonic_coarse_s( void ) noexcept
 {
-#ifndef _MSC_VER
+#if ! defined( _MSC_VER ) && ! defined( __MINGW32__ )
   return cget_f( CLOCK_MONOTONIC_COARSE, 1.0 );
 #else
   return qpc_to_f( TO_SEC );
@@ -413,7 +415,7 @@ rai::kv::current_monotonic_coarse_s( void ) noexcept
 uint64_t
 rai::kv::current_realtime_ns( void ) noexcept
 {
-#ifndef _MSC_VER
+#if ! defined( _MSC_VER ) && ! defined( __MINGW32__ )
   return cget( CLOCK_REALTIME, 1000000000 );
 #else
   return fs_to( TO_NS );
@@ -423,7 +425,7 @@ rai::kv::current_realtime_ns( void ) noexcept
 uint64_t
 rai::kv::current_realtime_ms( void ) noexcept
 {
-#ifndef _MSC_VER
+#if ! defined( _MSC_VER ) && ! defined( __MINGW32__ )
   return cget( CLOCK_REALTIME, 1000 );
 #else
   return fs_to( TO_MS );
@@ -433,7 +435,7 @@ rai::kv::current_realtime_ms( void ) noexcept
 uint64_t
 rai::kv::current_realtime_us( void ) noexcept
 {
-#ifndef _MSC_VER
+#if ! defined( _MSC_VER ) && ! defined( __MINGW32__ )
   return cget( CLOCK_REALTIME, 1000000 );
 #else
   return fs_to( TO_US );
@@ -443,7 +445,7 @@ rai::kv::current_realtime_us( void ) noexcept
 double
 rai::kv::current_realtime_s( void ) noexcept
 {
-#ifndef _MSC_VER
+#if ! defined( _MSC_VER ) && ! defined( __MINGW32__ )
   return cget_f( CLOCK_REALTIME, 1.0 );
 #else
   return fs_to_f( TO_SEC );
@@ -453,7 +455,7 @@ rai::kv::current_realtime_s( void ) noexcept
 uint64_t
 rai::kv::current_realtime_coarse_ns( void ) noexcept
 {
-#ifndef _MSC_VER
+#if ! defined( _MSC_VER ) && ! defined( __MINGW32__ )
 #ifndef CLOCK_REALTIME_COARSE
 #define CLOCK_REALTIME_COARSE 5
 #endif
@@ -466,7 +468,7 @@ rai::kv::current_realtime_coarse_ns( void ) noexcept
 uint64_t
 rai::kv::current_realtime_coarse_ms( void ) noexcept
 {
-#ifndef _MSC_VER
+#if ! defined( _MSC_VER ) && ! defined( __MINGW32__ )
   return cget( CLOCK_REALTIME_COARSE, 1000 );
 #else
   return fs_to( TO_MS );
@@ -476,7 +478,7 @@ rai::kv::current_realtime_coarse_ms( void ) noexcept
 uint64_t
 rai::kv::current_realtime_coarse_us( void ) noexcept
 {
-#ifndef _MSC_VER
+#if ! defined( _MSC_VER ) && ! defined( __MINGW32__ )
   return cget( CLOCK_REALTIME_COARSE, 1000000 );
 #else
   return fs_to( TO_US );
@@ -486,7 +488,7 @@ rai::kv::current_realtime_coarse_us( void ) noexcept
 double
 rai::kv::current_realtime_coarse_s( void ) noexcept
 {
-#ifndef _MSC_VER
+#if ! defined( _MSC_VER ) && ! defined( __MINGW32__ )
   return cget_f( CLOCK_REALTIME_COARSE, 1.0 );
 #else
   return fs_to_f( TO_SEC );
@@ -544,7 +546,7 @@ uint64_t kv_current_realtime_coarse_us( void ) {
 
 static kv_signal_handler_t * the_sh;
 
-#ifndef _MSC_VER
+#if ! defined( _MSC_VER ) && ! defined( __MINGW32__ )
 static void
 kv_termination_handler( int signum )
 {
@@ -581,7 +583,7 @@ kv_sighndl_install( kv_signal_handler_t *sh )
   sh->sig = 0;
   the_sh = sh;
 
-#ifndef _MSC_VER
+#if ! defined( _MSC_VER ) && ! defined( __MINGW32__ )
   struct sigaction new_action, old_action, ign_action;
 
   /* Set up the structure to specify the new action. */

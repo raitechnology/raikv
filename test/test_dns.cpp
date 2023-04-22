@@ -2,11 +2,14 @@
 #include <stdint.h>
 #include <string.h>
 #include <errno.h>
+#if ! defined( _MSC_VER ) && ! defined( __MINGW32__ )
 #include <netdb.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <arpa/nameser.h>
-#include <netdb.h>
+#else
+#include <raikv/win.h>
+#endif
 #include <raikv/ev_cares.h>
 #include <ares_dns.h>
 

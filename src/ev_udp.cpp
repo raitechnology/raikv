@@ -2,7 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
-#ifndef _MSC_VER
+#if ! defined( _MSC_VER ) && ! defined( __MINGW32__ )
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/socket.h>
@@ -17,10 +17,10 @@
 using namespace rai;
 using namespace kv;
 
-#ifndef _MSC_VER
+#if ! defined( _MSC_VER ) && ! defined( __MINGW32__ )
 typedef int SOCKET;
 static const int INVALID_SOCKET = -1;
-
+typedef void * setsockopt_cast;
 static inline bool invalid_socket( int fd ) { return fd < 0; }
 
 static inline void set_nonblock( int fd ) {
@@ -50,6 +50,7 @@ finish_init( int sock,  EvPoll &poll,  EvSocket &me,  struct sockaddr *addr,
 
 #else
 static inline bool invalid_socket( SOCKET fd ) { return fd == INVALID_SOCKET; }
+typedef char * setsockopt_cast;
 static inline void set_nonblock( SOCKET fd ) {
   u_long mode = 1;
   ioctlsocket( fd, FIONBIO, &mode );
@@ -175,7 +176,8 @@ UdpData::multicast_setup( void ) noexcept
   this->sock = ::socket( AF_INET, SOCK_DGRAM, IPPROTO_UDP );
   if ( invalid_socket( this->sock ) )
     return true;
-  this->status = ::setsockopt( this->sock, IPPROTO_IP, IP_MULTICAST_IF, (void *)
+  this->status = ::setsockopt( this->sock, IPPROTO_IP, IP_MULTICAST_IF,
+                               (setsockopt_cast)
                                &mr.imr_interface, sizeof( mr.imr_interface ) );
   if ( this->status != 0 ) {
     this->status = this->udp.set_sock_err( EV_ERR_MULTI_IF, get_errno() );
@@ -232,7 +234,7 @@ UdpData::multicast_setup( void ) noexcept
     }
     mr.imr_multiaddr.s_addr = mc_addr;
     this->status = ::setsockopt( this->sock, IPPROTO_IP, IP_ADD_MEMBERSHIP,
-                                 (void *) &mr, sizeof( mr ) );
+                                 (setsockopt_cast) &mr, sizeof( mr ) );
     if ( this->status != 0 ) {
       this->status = this->udp.set_sock_err( EV_ERR_ADD_MCAST, get_errno() );
       return true;
@@ -278,12 +280,12 @@ UdpData::unicast_setup( void ) noexcept
             this->sock = INVALID_SOCKET;
           }
           this->sock = ::socket( p->ai_family, SOCK_DGRAM, IPPROTO_UDP );
-          if ( sock < 0 )
+          if ( invalid_socket( sock ) )
             continue;
           static int off = 0;
           if ( fam == AF_INET6 && ( this->opts & OPT_AF_INET ) != 0 ) {
             if ( ::setsockopt( this->sock, IPPROTO_IPV6, IPV6_V6ONLY,
-                               (char *) &off, sizeof( off ) ) != 0 )
+                               (setsockopt_cast) &off, sizeof( off ) ) != 0 )
               if ( ( this->opts & OPT_VERBOSE ) != 0 )
                 show_error( "warning: IPV6_V6ONLY" );
           }

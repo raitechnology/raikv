@@ -203,10 +203,10 @@ struct MainLoop {
     }
     return true;
   }
-#ifdef _MSC_VER
-  void idle( void ) { Sleep( 1 ); }
-#else
+#if ! defined( _MSC_VER ) && ! defined( __MINGW32__ )
   void idle( void ) { usleep( 1 ); }
+#else
+  void idle( void ) { Sleep( 1 ); }
 #endif
   /* mainloop runner */
   void run( void ) {
@@ -253,7 +253,7 @@ struct Runner {
   static const size_t MAX_THREADS = KV_MAX_CTX_ID;
 
   MAIN_LOOP * children[ MAX_THREADS ];
-#ifndef _MSC_VER
+#if ! defined( _MSC_VER ) && ! defined( __MINGW32__ )
   pthread_t   tid[ MAX_THREADS ];
 #endif
   size_t      num_thr;
@@ -279,7 +279,7 @@ struct Runner {
       r.sighndl.install(); /* catch sig int */
       this->children[ 0 ]->run();
     }
-#ifndef _MSC_VER
+#if ! defined( _MSC_VER ) && ! defined( __MINGW32__ )
     else {
       r.sighndl.install(); /* catch sig int */
 

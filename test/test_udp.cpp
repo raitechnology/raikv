@@ -2,7 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
-#ifndef _MSC_VER
+#if ! defined( _MSC_VER ) && ! defined( __MINGW32__ )
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #else
@@ -16,7 +16,7 @@ using namespace kv;
 
 struct McastPingRec {
   double   time;
-  uint32_t s_addr;
+  uint32_t ip_addr;
   uint16_t sin_port;
 };
 
@@ -83,7 +83,7 @@ UdpSvc::process( void ) noexcept
       dest_len = sizeof( *sa );
       d        = rec.time;
       sa->sin_family      = AF_INET;
-      sa->sin_addr.s_addr = rec.s_addr;
+      sa->sin_addr.s_addr = rec.ip_addr;
       sa->sin_port        = rec.sin_port;
     }
     mmsghdr & oh  = this->out_mhdr[ k ];
@@ -267,7 +267,7 @@ main( int argc, char *argv[] )
       }
 
       ping.reply = (McastPingRec *) ::malloc( sizeof( McastPingRec ) );
-      ping.reply->s_addr   = sa.sin_addr.s_addr;
+      ping.reply->ip_addr  = sa.sin_addr.s_addr;
       ping.reply->sin_port = sa.sin_port;
 
       paddr.set_sock_addr( ping_recv.fd );

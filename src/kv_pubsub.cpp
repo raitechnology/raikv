@@ -2,13 +2,15 @@
 #include <stdint.h>
 #include <string.h>
 #include <stdlib.h>
-#ifndef _MSC_VER
+#define __STDC_FORMAT_MACROS
+#include <inttypes.h>
+#if ! defined( _MSC_VER ) && ! defined( __MINGW32__ )
 #include <unistd.h>
 #include <signal.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #else
-#include <windows.h>
+#include <raikv/win.h>
 #endif
 #include <errno.h>
 
@@ -124,7 +126,7 @@ KvPubSub::create( RoutePublish &sr,  const char *ipc_name,
   if ( ! magic_ok )
     fprintf( stderr, "kv ctrl file bad magic (%s)\n", ipc_name );
   if ( ! ipc_ok )
-    fprintf( stderr, "kv ctrl ipc token %lx not matched "
+    fprintf( stderr, "kv ctrl ipc token %" PRIx64 " not matched "
                      "(old kv app still alive?), pids alive %u (%s)\n",
              ipc_token, alive, ipc_name );
   fprintf( stderr, "unable to attach to ipc ctrl file (%s)\n", ipc_name );
@@ -143,7 +145,7 @@ PsCtrlFile::check_dead_pids( uint32_t &dead,  uint32_t &alive ) noexcept
     if ( el.serial != 0 ) {
       uint32_t pid = el.pid;
       alive++;
-  #ifndef _MSC_VER
+  #if ! defined( _MSC_VER ) && ! defined( __MINGW32__ )
       if ( ::kill( pid, 0 ) == 0 )
         continue;
       if ( errno == EPERM )
@@ -156,7 +158,7 @@ PsCtrlFile::check_dead_pids( uint32_t &dead,  uint32_t &alive ) noexcept
       CloseHandle( process );
       if ( ret == WAIT_TIMEOUT )
         continue;
-      fprintf( stderr, "ctx %u: pid %u = wait status %d\n",
+      fprintf( stderr, "ctx %u: pid %u = wait status %ld\n",
                ctx_id, pid, ret );
   #endif
       el.serial = 0;
@@ -223,7 +225,7 @@ KvPubSub::init( void ) noexcept
         if ( el.serial < this->serial ) {
           peer_ns = el.time_ns;
           if ( kv_ps_debug )
-            printf( "connect to %lx ser=%u my=%u\n", peer_ns, el.serial,
+            printf( "connect to %" PRIx64 " ser=%u my=%u\n", peer_ns, el.serial,
                     this->serial );
         }
       }
@@ -360,7 +362,7 @@ void
 KvPubSubPeer::process_shutdown( void ) noexcept
 {
   if ( kv_ps_debug )
-    printf( "shutdown %lx\n", this->time_ns );
+    printf( "shutdown %" PRIx64 "\n", this->time_ns );
   if ( ! this->is_shutdown ) {
     this->is_shutdown = true;
     if ( this->poll.quit )
@@ -513,7 +515,7 @@ KvMsgIn::print( void ) noexcept
       else if ( print_fld[ i ].sz == 4 )
         printf( "%s%s:%u", c, print_fld[ i ].nm, this->get<uint32_t>( i ) );
       else if ( print_fld[ i ].sz == 8 )
-        printf( "%s%s:%lu", c, print_fld[ i ].nm, this->get<uint64_t>( i ) );
+        printf( "%s%s:%" PRIu64, c, print_fld[ i ].nm, this->get<uint64_t>( i ) );
       else if ( print_fld[ i ].sz == 1 )
         printf( "%s%s:%u", c, print_fld[ i ].nm, this->get<uint8_t>( i ) );
       else if ( print_fld[ i ].sz == 2 )
@@ -792,7 +794,7 @@ void
 KvPubSubPeer::release( void ) noexcept
 {
   if ( kv_ps_debug )
-    printf( "kv_pubsub: release %u %lx\n", this->ctx_id, this->time_ns );
+    printf( "kv_pubsub: release %u %" PRIx64 "\n", this->ctx_id, this->time_ns );
   if ( this->time_ns != 0 )
     fprintf( stderr, "kv_pubsub: peer did not msg bye\n" );
   if ( this->bloom_rt != NULL )
@@ -813,10 +815,10 @@ KvPubSubPeer::assert_subs( void *data,  uint32_t data_len ) noexcept
   if ( sub_tab.load( data, data_len ) ) {
     uint32_t count = this->iter_sub_tab( sub_tab, true );
     if ( kv_ps_debug )
-      printf( "kv_pubsub: assert %u from sub_tab %lx\n", count, this->time_ns );
+      printf( "kv_pubsub: assert %u from sub_tab %" PRIx64 "\n", count, this->time_ns );
   }
   else {
-    fprintf( stderr, "kv_pubsub: failed to assert sub_tab %lx\n",
+    fprintf( stderr, "kv_pubsub: failed to assert sub_tab %" PRIx64 "\n",
              this->time_ns );
   }
   sub_tab.release_vec();
@@ -832,11 +834,11 @@ KvPubSubPeer::drop_sub_tab( void ) noexcept
     if ( sub_tab.recover_lost_subs() ) {
       uint32_t count = this->iter_sub_tab( sub_tab, false );
       sub_tab.unmap_vec_data();
-      fprintf( stderr, "kv_pubsub: recovered %u from lost sub_tab %lx\n", count,
+      fprintf( stderr, "kv_pubsub: recovered %u from lost sub_tab %" PRIx64 "\n", count,
                this->time_ns );
     }
     else {
-      fprintf( stderr, "kv_pubsub: failed to load lost sub_tab %lx\n",
+      fprintf( stderr, "kv_pubsub: failed to load lost sub_tab %" PRIx64 "\n",
                this->time_ns );
     }
   }
@@ -906,7 +908,7 @@ void *
 PsSubTab::get_vec_data( uint32_t id ) noexcept
 {
   char path[ 64 ];
-  ::snprintf( path, sizeof( path ), "%lx.%u", this->time_ns, id );
+  ::snprintf( path, sizeof( path ), "%" PRIx64 ".%u", this->time_ns, id );
   MapFile map( path, sizeof( VecData ) );
   int fl = MAP_FILE_SHM | MAP_FILE_RDWR | MAP_FILE_NOUNMAP;
   if ( ! map.open( fl ) )
@@ -964,7 +966,7 @@ void *
 PsSubTab::new_vec_data( uint32_t id,  size_t sz ) noexcept
 {
   char path[ 64 ];
-  ::snprintf( path, sizeof( path ), "%lx.%u", this->time_ns, id );
+  ::snprintf( path, sizeof( path ), "%" PRIx64 ".%u", this->time_ns, id );
   MapFile map( path, sz );
   int fl = MAP_FILE_SHM | MAP_FILE_CREATE | MAP_FILE_RDWR | MAP_FILE_NOUNMAP;
   if ( ! map.open( fl ) )
@@ -986,7 +988,7 @@ PsSubTab::free_vec_data( uint32_t id,  void *p,  size_t sz ) noexcept
     else
       this->sub_upd[ 0 ] = prev_id;
   }
-  ::snprintf( path, sizeof( path ), "%lx.%u", this->time_ns, id );
+  ::snprintf( path, sizeof( path ), "%" PRIx64 ".%u", this->time_ns, id );
   MapFile::unmap( p, sz );
   MapFile::unlink( path, true );
 }

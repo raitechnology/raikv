@@ -1,7 +1,7 @@
 #ifndef __rai_raikv__timer_queue_h__
 #define __rai_raikv__timer_queue_h__
 
-#ifndef _MSC_VER
+#if ! defined( _MSC_VER ) && ! defined( __MINGW32__ )
 #define HAVE_TIMERFD
 #endif
 #include <raikv/ev_net.h>
@@ -61,20 +61,17 @@ struct EvTimerQueue : public EvSocket {
   bool set_timer( void ) noexcept;
 #ifndef HAVE_TIMERFD
   /* limit how long to set poll timer, only necessary when no timerfd */
-  bool is_timer_ready( uint64_t &us ) {
-    if ( this->delta > 0 ) {
-      uint64_t curr_ns = current_monotonic_time_ns(),
-               us_left;
-      if ( curr_ns >= this->expires ) {
-        us = 0;
-        return true;
-      }
-      if ( us != 0 ) {
-        us_left = ( this->expires - curr_ns ) / 1000;
-        if ( us < 0 || us_left < (uint64_t) us ) {
-          if ( (us = (int) us_left) == 0 )
-            us = 1;
-        }
+  bool is_timer_ready( uint64_t &us,  uint64_t mono_ns ) {
+    uint64_t us_left;
+    if ( this->expires <= mono_ns ) {
+      us = 0;
+      return true;
+    }
+    if ( us != 0 ) {
+      us_left = ( this->expires - mono_ns ) / 1000;
+      if ( us_left < (uint64_t) us ) {
+        if ( (us = (int) us_left) == 0 )
+          us = 1;
       }
     }
     return false;

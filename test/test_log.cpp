@@ -23,9 +23,10 @@ using namespace kv;
 
 struct LogTest : public EvTimerCallback {
   Logger & log;
-  int      out_fd;
+  int      out_fd,
+           log_trunc;
   ArrayCount<char, 256> spc;
-  LogTest( Logger &l ) : log( l ), out_fd( -1 ) {}
+  LogTest( Logger &l ) : log( l ), out_fd( -1 ), log_trunc( 0 ) {}
   virtual bool timer_cb( uint64_t ,  uint64_t ) noexcept;
   void log_output( int stream,  uint64_t stamp,  size_t len,
                    const char *buf ) noexcept;
@@ -52,7 +53,10 @@ void
 LogTest::flush_output( void ) noexcept
 {
   if ( this->spc.count > 0 ) {
-    ::write( this->out_fd, this->spc.ptr, (uint32_t) this->spc.count );
+    uint32_t len = (uint32_t) this->spc.count;
+    if ( (uint32_t) ::write( this->out_fd, this->spc.ptr, len ) != len ||
+         this->spc.count > (size_t) len )
+      this->log_trunc = 1;
     this->spc.clear();
   }
 }

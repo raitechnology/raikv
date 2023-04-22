@@ -2,7 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
-#ifndef _MSC_VER
+#if ! defined( _MSC_VER ) && ! defined( __MINGW32__ )
 #include <unistd.h>
 #include <fcntl.h>
 #include <poll.h>
@@ -58,7 +58,7 @@ static const int STDOUT_FD = 1,
 struct LoggerContext : public Logger {
   LogOutput  out,       /* stdout buffer */
              err;       /* stderr buffer */
-#ifndef _MSC_VER
+#if ! defined( _MSC_VER ) && ! defined( __MINGW32__ )
   int        pout[ 2 ], /* pipe fds, out[ 0 ] = logger input, out[ 1 ] = stdout*/
              perr[ 2 ]; /* pipe fds, err[ 0 ] = logger input, err[ 1 ] = stderr*/
 #else
@@ -76,7 +76,7 @@ struct LoggerContext : public Logger {
 
   void * operator new( size_t, void *ptr ) { return ptr; }
   LoggerContext() : quit( 0 ) {
-#ifndef _MSC_VER
+#if ! defined( _MSC_VER ) && ! defined( __MINGW32__ )
     this->pout[ 0 ] = -1;
     this->pout[ 1 ] = -1;
     this->perr[ 0 ] = -1;
@@ -94,7 +94,7 @@ struct LoggerContext : public Logger {
     this->err_ov.hEvent = this->event[ 1 ];
 #endif
   }
-#ifdef _MSC_VER
+#if defined( _MSC_VER ) || defined( __MINGW32__ )
   void read( int fd ) noexcept;
   int wait( void ) noexcept;
   int result( int fd, char *&buf ) noexcept;
@@ -102,7 +102,7 @@ struct LoggerContext : public Logger {
   /* poll fds and eat pipes */
   bool run( void ) noexcept;
 };
-#ifdef _MSC_VER
+#if defined( _MSC_VER ) || defined( __MINGW32__ )
 static bool create_named_pipe( HANDLE *p ) noexcept;
 static bool dup_pipe_to_fd( HANDLE p,  int fd ) noexcept;
 #endif
@@ -199,7 +199,7 @@ bool
 LoggerContext::run( void ) noexcept
 {
   bool b   = false;
-#ifndef _MSC_VER
+#if ! defined( _MSC_VER ) && ! defined( __MINGW32__ )
   char buf[ 16 * 1024 ];
   int  out = this->pout[ 0 ],
        err = this->perr[ 0 ];
@@ -257,7 +257,7 @@ int
 Logger::start( void ) noexcept
 {
   LoggerContext & log = (LoggerContext &) *this;
-#ifndef _MSC_VER
+#if ! defined( _MSC_VER ) && ! defined( __MINGW32__ )
   if ( ::pipe( log.pout ) < 0 ||
        ::pipe( log.perr ) < 0 ||
        ::dup2( log.pout[ 1 ], STDOUT_FD ) < 0 ||
@@ -308,7 +308,7 @@ Logger::start_ev( EvPoll &p ) noexcept
   LoggerContext & log = (LoggerContext &) *this;
   if ( log.start() != 0 )
     return -1;
-#ifndef _MSC_VER
+#if ! defined( _MSC_VER ) && ! defined( __MINGW32__ )
   void * x = aligned_malloc( sizeof( EvLogger ) ),
        * y = aligned_malloc( sizeof( EvLogger ) );
   log.ev_out = new ( x ) EvLogger( p, log, log.out );
@@ -317,6 +317,8 @@ Logger::start_ev( EvPoll &p ) noexcept
   if ( ! log.ev_out->start( log.pout[ 0 ], "stdout" ) ||
        ! log.ev_err->start( log.perr[ 0 ], "stderr" ) )
     return -1;
+#else
+  (void) p;
 #endif
   return 0;
 }
@@ -327,7 +329,7 @@ Logger::shutdown( void ) noexcept
   LoggerContext & log = (LoggerContext &) *this;
   if ( log.quit == 0 ) {
     log.quit = 1;
-#ifndef _MSC_VER
+#if ! defined( _MSC_VER ) && ! defined( __MINGW32__ )
     if ( log.ev_out == NULL && log.pout[ 0 ] != -1 )
       ::close( log.pout[ 0 ] );
     if ( log.ev_err == NULL && log.perr[ 0 ] != -1 )
@@ -351,7 +353,7 @@ Logger::create( void ) noexcept
   return new ( p ) LoggerContext();
 }
 
-#ifdef _MSC_VER
+#if defined( _MSC_VER ) || defined( __MINGW32__ )
 static bool
 create_named_pipe( HANDLE *p ) noexcept
 {
@@ -361,7 +363,7 @@ create_named_pipe( HANDLE *p ) noexcept
   HANDLE rd, wr;
   char   name[ 64 ];
 
-  ::snprintf( name, sizeof( name ), "\\\\.\\pipe\\LOCAL.%08x.%08x",
+  ::snprintf( name, sizeof( name ), "\\\\.\\pipe\\LOCAL.%08lx.%08lx",
               GetCurrentProcessId(), InterlockedIncrement( &serial_no ) );
 
   rd = CreateNamedPipeA( name, PIPE_ACCESS_INBOUND | FILE_FLAG_OVERLAPPED,
