@@ -1178,7 +1178,7 @@ cli( void )
             for (;;) {
               /*t3 = get_rdtscp();*/
               if ( is_msg_list ) {
-                msg_size_t msz;
+                msg_size_t msz = 0;
                 i = j;
                 j = i + 1;
                 if ( (status = kctx.msg_value( i, j, &data, &msz )) != KEY_OK )
