@@ -100,11 +100,26 @@ wp_register_tty_fd( HANDLE h,  void *cl,  tty_reader_f rdr )
   return_set_error( -1, ERROR_NO_MORE_FILES );
 }
 
+static inline int is_valid( int fd ) {
+  return ( fd >= 0 && (size_t) fd < MAX_FD_MAP_SIZE &&
+           fdmap[ fd ].type != WP_FD_NONE);
+}
+
 int
 wp_unregister_fd( int fd )
 {
-  if ( fd < 0 || (size_t) fd >= MAX_FD_MAP_SIZE ||
-       fdmap[ fd ].type == WP_FD_NONE )
+  if ( ! is_valid( fd ) )
+    return_set_error( -1, ERROR_INVALID_PARAMETER );
+  if ( fdmap[ fd ].type == WP_FD_SOCKET )
+    WSACloseEvent( fdmap[ fd ].sock.event );
+  fdmap[ fd ].type = WP_FD_NONE;
+  return 0;
+}
+
+int
+wp_close_fd( int fd )
+{
+  if ( ! is_valid( fd ) )
     return_set_error( -1, ERROR_INVALID_PARAMETER );
   if ( fdmap[ fd ].type == WP_FD_SOCKET ) {
     closesocket( fdmap[ fd ].sock.socket );
@@ -115,35 +130,29 @@ wp_unregister_fd( int fd )
 }
 
 int
-wp_close_fd( int fd )
-{
-  return wp_unregister_fd( fd );
-}
-
-int
 wp_shutdown_fd( int fd, int how )
 {
-  if ( fd < 0 || (size_t) fd >= MAX_FD_MAP_SIZE ||
-       fdmap[ fd ].type == WP_FD_NONE )
+  if ( ! is_valid( fd ) )
     return_set_error( -1, ERROR_INVALID_PARAMETER );
   if ( fdmap[ fd ].type == WP_FD_SOCKET )
     return shutdown( fdmap[ fd ].sock.socket, how );
   return 0;
 }
 
-int
-wp_get_socket( int fd,  SOCKET *s )
-{
-  if ( fd < 0 || (size_t) fd >= MAX_FD_MAP_SIZE ||
-       fdmap[ fd ].type != WP_FD_SOCKET )
-    return_set_error( -1, ERROR_INVALID_HANDLE );
-  *s = fdmap[ fd ].sock.socket;
-  return 0;
-}
-
 static inline int is_socket( int fd ) {
   return ( fd >= 0 && (size_t) fd < MAX_FD_MAP_SIZE &&
            fdmap[ fd ].type == WP_FD_SOCKET );
+}
+
+int
+wp_get_socket( int fd,  SOCKET *s )
+{
+  if ( ! is_socket( fd ) ) {
+    *s = INVALID_SOCKET;
+    return_set_error( -1, ERROR_INVALID_HANDLE );
+  }
+  *s = fdmap[ fd ].sock.socket;
+  return 0;
 }
 
 static inline int is_tty( int fd ) {

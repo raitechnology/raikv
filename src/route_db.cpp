@@ -554,7 +554,8 @@ RouteDB::get_bloom_route2( const char *sub,  uint16_t sublen,
   bool         has_detail = false;
 
   if ( ( mask & this->bloom_mask ) != 0 ) {
-    for ( BloomRoute *b = this->bloom_list.hd( shard ); b != NULL; b = b->next){
+    BloomRoute *b = this->bloom_list.hd( shard );
+    for ( ; b != NULL; b = b->next ){
       if ( b->in_list != shard + 1 )
         continue;
 
@@ -585,11 +586,11 @@ RouteDB::get_bloom_route2( const char *sub,  uint16_t sublen,
           goto match;
       }
       if ( 0 ) {
-      match:;
+    match:;
         uint32_t * p = spc.make( count + 1 );
         p[ count++ ] = b->r; /* route matches */
       }
-      no_match:; /* next bloom route */
+    no_match:; /* next bloom route */
     }
   }
   if ( count == 0 ) {
@@ -605,6 +606,38 @@ RouteDB::get_bloom_route2( const char *sub,  uint16_t sublen,
     this->cache_save( prefix_len, hash, spc.ptr, count, shard );
   routes = spc.ptr;
   return count;
+}
+
+bool
+BloomRef::detail_matches( uint16_t prefix_len,  uint64_t mask, uint32_t hash,
+                          const char *sub,  uint16_t sublen,
+                          uint32_t subj_hash,  bool &has_detail ) const noexcept
+{
+  if ( ( this->detail_mask & mask ) == 0 ) /* no detail */
+    return true;
+  uint32_t j = 0, n = this->ndetails, detail_not_matched = 0;
+  BloomDetail * d = this->details;
+
+  for ( ; j < n; j++ ) {
+    if ( d[ j ].prefix_len >= prefix_len )
+      break;
+  }
+  for ( ; j < n && d[ j ].prefix_len == prefix_len; j++ ) {
+    if ( this->details[ j ].hash != hash )
+      continue;
+    has_detail = true;
+    if ( this->details[ j ].match( sub, sublen, subj_hash ) )
+      return true;
+    detail_not_matched++; /* hash match, but match filtered */
+  }
+  /* no more details left, is a match */
+  if ( detail_not_matched > 0 ) {
+    /* if has a regular prefix match */
+    if ( this->bits->ht_refs( hash ) >= detail_not_matched )
+      return true;
+    return false;
+  }
+  return true;
 }
 
 void
@@ -934,17 +967,31 @@ BloomRef::add_route( uint16_t prefix_len,  uint32_t hash ) noexcept
   return this->bits->test_resize();
 }
 
+BloomDetail &
+BloomRef::add_detail( uint16_t prefix_len ) noexcept
+{
+  BloomDetail * d = this->details;
+  uint32_t      n = this->ndetails++;
+  d = (BloomDetail *) ::realloc( d, sizeof( d[ 0 ] ) * ( n + 1 ) );
+  this->details = d;
+
+  for ( ; ; n -= 1 ) {
+    if ( n == 0 || d[ n - 1 ].prefix_len <= prefix_len )
+      break;
+    d[ n ].copy( d[ n - 1 ] );
+  }
+  this->detail_mask |= (uint64_t) 1 << prefix_len;
+  return d[ n ];
+}
+
 bool
 BloomRef::add_shard_route( uint16_t prefix_len,  uint32_t hash,
                            const ShardMatch &match ) noexcept
 {
-  this->details = (BloomDetail *) ::realloc( this->details,
-                      sizeof( this->details[ 0 ] ) * ( this->ndetails + 1 ) );
-  BloomDetail &d = this->details[ this->ndetails++ ];
+  BloomDetail &d = this->add_detail( prefix_len );
   d.hash       = hash;
   d.prefix_len = prefix_len;
   d.init_shard( match );
-  this->detail_mask |= (uint64_t) 1 << prefix_len;
   return this->add_route( prefix_len, hash );
 }
 
@@ -952,13 +999,10 @@ bool
 BloomRef::add_suffix_route( uint16_t prefix_len,  uint32_t hash,
                             const SuffixMatch &match ) noexcept
 {
-  this->details = (BloomDetail *) ::realloc( this->details,
-                      sizeof( this->details[ 0 ] ) * ( this->ndetails + 1 ) );
-  BloomDetail &d = this->details[ this->ndetails++ ];
+  BloomDetail &d = this->add_detail( prefix_len );
   d.hash       = hash;
   d.prefix_len = prefix_len;
   d.init_suffix( match );
-  this->detail_mask |= (uint64_t) 1 << prefix_len;
   return this->add_route( prefix_len, hash );
 }
 
@@ -971,62 +1015,54 @@ BloomRef::del_route( uint16_t prefix_len,  uint32_t hash ) noexcept
   this->invalid();
 }
 
+template <class Match>
+void
+BloomRef::del_detail( uint16_t prefix_len,  uint32_t hash,  const Match &match,
+               bool ( BloomDetail::*equals )( const Match &m ) const ) noexcept
+{
+  BloomDetail * d = this->details;
+  uint32_t      i = 0, /* first prefix that matches */
+                j = 0, /* exact match */
+                n = this->ndetails;
+  bool matched = false;
+  for ( ; i < n && prefix_len < d[ i ].prefix_len; i++ )
+    ;
+  if ( i < n ) {
+    for ( j = i; ; ){
+      if ( d[ j ].prefix_len == prefix_len && d[ j ].hash == hash &&
+           ( d[ j ].*equals )( match ) ) {
+        matched = true;
+        break;
+      }
+      if ( ++j == n )
+        break;
+    }
+  }
+  if ( matched ) {
+    if ( i + 1 == n || d[ i + 1 ].prefix_len != prefix_len )
+      this->detail_mask &= ~( (uint64_t) 1 << prefix_len );
+    if ( j < n - 1 )
+      ::memmove( &this->details[ j ], &this->details[ j + 1 ],
+                 sizeof( this->details[ 0 ] ) * ( n - ( j + 1 ) ) );
+    this->ndetails = n - 1;
+    this->del_route( prefix_len, hash );
+  }
+}
+
 void
 BloomRef::del_shard_route( uint16_t prefix_len,  uint32_t hash,
                            const ShardMatch &match ) noexcept
 {
-  if ( prefix_len != SUB_RTE ) {
-    uint64_t new_mask = 0;
-    uint32_t n = this->ndetails,
-             j = n;
-    for ( uint32_t i = 0; i < n; i++ ) {
-      if ( prefix_len == this->details[ i ].prefix_len &&
-           hash       == this->details[ i ].hash &&
-           this->details[ i ].shard_equals( match ) ) {
-        j = i;
-      }
-      else {
-        new_mask |= (uint64_t) 1 << this->details[ i ].prefix_len;
-      }
-    }
-    if ( j < n ) {
-      if ( j < n - 1 )
-        ::memmove( &this->details[ j ], &this->details[ j + 1 ],
-                   sizeof( this->details[ 0 ] ) * ( n - ( j + 1 ) ) );
-      this->ndetails    = n - 1;
-      this->detail_mask = new_mask;
-      this->del_route( prefix_len, hash );
-    }
-  }
+  this->del_detail<ShardMatch>( prefix_len, hash, match,
+                                &BloomDetail::shard_equals );
 }
 
 void
 BloomRef::del_suffix_route( uint16_t prefix_len,  uint32_t hash,
                             const SuffixMatch &match ) noexcept
 {
-  if ( prefix_len != SUB_RTE ) {
-    uint64_t new_mask = 0;
-    uint32_t n = this->ndetails,
-             j = n;
-    for ( uint32_t i = 0; i < n; i++ ) {
-      if ( prefix_len == this->details[ i ].prefix_len &&
-           hash       == this->details[ i ].hash &&
-           this->details[ i ].suffix_equals( match ) ) {
-        j = i;
-      }
-      else {
-        new_mask |= (uint64_t) 1 << this->details[ i ].prefix_len;
-      }
-    }
-    if ( j < n ) {
-      if ( j < n - 1 )
-        ::memmove( &this->details[ j ], &this->details[ j + 1 ],
-                   sizeof( this->details[ 0 ] ) * ( n - ( j + 1 ) ) );
-      this->ndetails    = n - 1;
-      this->detail_mask = new_mask;
-      this->del_route( prefix_len, hash );
-    }
-  }
+  this->del_detail<SuffixMatch>( prefix_len, hash, match,
+                                 &BloomDetail::suffix_equals );
 }
 
 void

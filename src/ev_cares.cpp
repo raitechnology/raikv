@@ -228,6 +228,11 @@ int
 CaresAddrInfo::get_address( const char *ip,  int port,  int opts ) noexcept
 {
   if ( this->channel == NULL ) {
+#ifdef ARES_LIB_INIT_ALL
+    this->status = ares_library_init( ARES_LIB_INIT_ALL );
+    if ( this->status != 0 )
+      return this->status;
+#endif
     ares_options opt;
     ::memset( &opt, 0, sizeof( opt ) );
     opt.timeout = this->timeout_ms;
@@ -235,7 +240,7 @@ CaresAddrInfo::get_address( const char *ip,  int port,  int opts ) noexcept
     this->status =
       ares_init_options( &this->channel, &opt,
                          ARES_OPT_TIMEOUTMS | ARES_OPT_TRIES );
-    if ( status != 0 ) {
+    if ( this->status != 0 ) {
       this->done = true;
       this->host_count = 0;
       if ( this->notify_cb != NULL )
@@ -368,7 +373,14 @@ CaresAddrInfo::do_poll( void ) noexcept
     if ( ARES_GETSOCK_READABLE( bitmap, k ) ) {
       for ( i = 0; i < this->set.count; i++ ) {
         if ( (c = this->set.ptr[ i ]) != NULL ) {
-          if ( (ares_socket_t) c->fd == socks[ k ] ) {
+#if ! defined( _MSC_VER ) && ! defined( __MINGW32__ )
+          if ( (ares_socket_t) c->fd == socks[ k ] )
+#else
+          SOCKET s;
+          if ( wp_get_socket( c->fd, &s ) == 0 &&
+               (ares_socket_t) s == socks[ k ] )
+#endif
+          {
             c->poll_count = this->poll_count;
             break;
           }
@@ -378,8 +390,14 @@ CaresAddrInfo::do_poll( void ) noexcept
         c = this->poll.get_free_list<EvCaresAsync, CaresAddrInfo &>(
               this->sock_type, *this );
         this->set[ i ] = c;
+#if ! defined( _MSC_VER ) && ! defined( __MINGW32__ )
         c->PeerData::init_peer( this->poll.get_next_id(), socks[ k ], -1,
                                 NULL, "c-ares" );
+#else
+        int fd = wp_register_fd( socks[ k ] );
+        c->PeerData::init_peer( this->poll.get_next_id(), fd, -1,
+                                NULL, "c-ares" );
+#endif
         c->poll_count = this->poll_count;
         this->poll.add_sock( c );
       }
@@ -493,7 +511,13 @@ EvCaresAsync::write( void ) noexcept
 void
 EvCaresAsync::read( void ) noexcept
 {
+#if ! defined( _MSC_VER ) && ! defined( __MINGW32__ )
   ares_process_fd( this->info.channel, this->fd, ARES_SOCKET_BAD );
+#else
+  SOCKET s;
+  if ( wp_get_socket( this->fd, &s ) == 0 )
+    ares_process_fd( this->info.channel, s, ARES_SOCKET_BAD );
+#endif
   this->pop3( EV_READ, EV_READ_LO, EV_READ_HI );
   this->info.do_poll();
 }
@@ -506,4 +530,7 @@ EvCaresAsync::process( void ) noexcept
 void
 EvCaresAsync::release( void ) noexcept
 {
+#if defined( _MSC_VER ) || defined( __MINGW32__ )
+  wp_unregister_fd( this->fd );
+#endif
 }

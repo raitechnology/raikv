@@ -408,6 +408,15 @@ struct BloomDetail {
     SuffixMatch suffix; /* match wildcard suffix */
     ShardMatch  shard;  /* match shard hash */
   } u;
+  void copy( const BloomDetail &det ) {
+    this->hash        = det.hash;
+    this->prefix_len  = det.prefix_len;
+    this->detail_type = det.detail_type;
+    if ( det.detail_type == SUFFIX_MATCH )
+      this->u.suffix = det.u.suffix;
+    else if ( det.detail_type == SHARD_MATCH )
+      this->u.shard = det.u.shard;
+  }
   void init_suffix( const SuffixMatch &match ) {
     this->detail_type = SUFFIX_MATCH;
     this->u.suffix    = match;
@@ -477,11 +486,15 @@ struct BloomRef {
   void deref_pref_count( uint16_t prefix_len ) noexcept;
   void invalid( void ) noexcept;
   bool add_route( uint16_t prefix_len,  uint32_t hash ) noexcept;
+  BloomDetail & add_detail( uint16_t prefix_len ) noexcept;
   bool add_shard_route( uint16_t prefix_len,  uint32_t hash,
                         const ShardMatch &match ) noexcept;
   bool add_suffix_route( uint16_t prefix_len,  uint32_t hash,
                          const SuffixMatch &match ) noexcept;
   void del_route( uint16_t prefix_len,  uint32_t hash ) noexcept;
+  template <class Match>
+  void del_detail( uint16_t prefix_len,  uint32_t hash,  const Match &match,
+               bool ( BloomDetail::*equals )( const Match &m ) const ) noexcept;
   void del_shard_route( uint16_t prefix_len,  uint32_t hash,
                         const ShardMatch &match ) noexcept;
   void del_suffix_route( uint16_t prefix_len,  uint32_t hash,
@@ -516,24 +529,7 @@ struct BloomRef {
   }
   bool detail_matches( uint16_t prefix_len,  uint64_t mask, uint32_t hash,
                        const char *sub,  uint16_t sublen,
-                       uint32_t subj_hash,  bool &has_detail ) const {
-    if ( ( this->detail_mask & mask ) == 0 ) /* no detail */
-      return true;
-    uint32_t detail_not_matched = 0;
-    for ( uint32_t j = 0; j < this->ndetails; j++ ) {
-      if ( this->details[ j ].prefix_len == prefix_len &&
-           this->details[ j ].hash == hash ) {
-        has_detail = true;
-        if ( this->details[ j ].match( sub, sublen, subj_hash ) )
-          return true;
-        detail_not_matched++; /* match filtered */
-      }
-    }
-    /* no more details left, is a match */
-    if ( detail_not_matched > 0 )
-      return false;
-    return true;
-  }
+                       uint32_t subj_hash,  bool &has_detail ) const noexcept;
 };
 
 struct BloomMatchArgs {

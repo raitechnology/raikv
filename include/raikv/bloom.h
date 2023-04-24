@@ -362,6 +362,26 @@ struct BloomBits {
     this->clear( c, slice );
     this->count--;
   }
+  uint32_t get_ht_refs( uint32_t c[ 4 ],  uint8_t slice ) {
+    uint32_t min_ref = 0;
+    for ( uint32_t i = 0; i < 4; i++ ) {
+      if ( ( slice & ( 1 << i ) ) != 0 ) {
+        size_t   pos;
+        uint32_t val;
+        if ( ! this->ht[ i ]->find( c[ i ], pos, val ) )
+          return 0;
+        if ( min_ref == 0 || val < min_ref )
+          min_ref = val;
+      }
+    }
+    return min_ref;
+  }
+  uint32_t ht_refs( uint32_t hash ) {
+    uint32_t c[ 4 ];
+    uint64_t h = this->to_hash64( hash );
+    uint8_t slice = this->split( h, c );
+    return this->get_ht_refs( c, slice );
+  }
 };
 
 /* serialize BloomBits,

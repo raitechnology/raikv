@@ -461,23 +461,8 @@ struct EvPoll {
                         DEFAULT_NS_CONNECT_TIMEOUT =  1000 * 1000 * 1000;
   static const uint32_t DEFAULT_RCV_BUFSIZE = 16 * 1024;
 
-  EvPoll()
-    : sock( 0 ), ev( 0 ), prefetch_queue( 0 ), prio_tick( 0 ),
-      wr_timeout_ns( DEFAULT_NS_TIMEOUT ),
-      conn_timeout_ns( DEFAULT_NS_CONNECT_TIMEOUT ),
-      so_keepalive_ns( DEFAULT_NS_TIMEOUT ),
-      next_id( 0 ), now_ns( 0 ), init_ns( 0 ), mono_ns( 0 ),
-      coarse_ns( 0 ), coarse_mono( 0 ),
-      fdcnt( 0 ), wr_count( 0 ), maxfd( 0 ), nfds( 0 ),
-      send_highwater( StreamBuf::SND_BUFSIZE - 256 ),
-      recv_highwater( DEFAULT_RCV_BUFSIZE - 256 ),
-      efd( -1 ), null_fd( -1 ), quit( 0 ),
-      prefetch_pending( 0 ), sub_route( *this ), sock_mem( 0 ),
-      sock_mem_left( 0 ), free_buf( 0 ) {
-    ::memset( this->sock_type_str, 0, sizeof( this->sock_type_str ) );
-    ::memset( this->state_ns, 0, sizeof( this->state_ns ) );
-    ::memset( this->state_cnt, 0, sizeof( this->state_cnt ) );
-  }
+  EvPoll() noexcept;
+
   /* alloc ALLOC_INCR(64) elems of the above list elems at a time, aligned 64 */
   template<class T, class... Ts>
   T *get_free_list( const uint8_t sock_type,  Ts... args ) {
@@ -513,7 +498,7 @@ struct EvPoll {
   void add_write_poll( EvSocket *s ) noexcept;
   void remove_write_poll( EvSocket *s ) noexcept;
   int wait( int ms ) noexcept;            /* call epoll() with ms timeout */
-
+  bool check_write_poll_timeout( EvSocket *s,  uint64_t ns ) noexcept;
   void idle_close( EvSocket *s,  uint64_t ns ) noexcept;
 
   enum { /* dispatch return bits */

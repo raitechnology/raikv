@@ -29,6 +29,28 @@ using namespace rai;
 using namespace kv;
 uint32_t rai::kv::kv_pub_debug;
 
+EvPoll::EvPoll() noexcept
+  : sock( 0 ), ev( 0 ), prefetch_queue( 0 ), prio_tick( 0 ),
+    wr_timeout_ns( DEFAULT_NS_TIMEOUT ),
+    conn_timeout_ns( DEFAULT_NS_CONNECT_TIMEOUT ),
+    so_keepalive_ns( DEFAULT_NS_TIMEOUT ),
+    next_id( 0 ), now_ns( 0 ), init_ns( 0 ), mono_ns( 0 ),
+    coarse_ns( 0 ), coarse_mono( 0 ),
+    fdcnt( 0 ), wr_count( 0 ), maxfd( 0 ), nfds( 0 ),
+    send_highwater( StreamBuf::SND_BUFSIZE - 256 ),
+    recv_highwater( DEFAULT_RCV_BUFSIZE - 256 ),
+    efd( -1 ), null_fd( -1 ), quit( 0 ),
+    prefetch_pending( 0 ), sub_route( *this ), sock_mem( 0 ),
+    sock_mem_left( 0 ), free_buf( 0 )
+{
+  ::memset( this->sock_type_str, 0, sizeof( this->sock_type_str ) );
+  ::memset( this->state_ns, 0, sizeof( this->state_ns ) );
+  ::memset( this->state_cnt, 0, sizeof( this->state_cnt ) );
+#if defined( _MSC_VER ) || defined( __MINGW32__ )
+  ws_global_init();
+#endif
+}
+
 bool rai::kv::ev_would_block( int err ) noexcept {
   return ( err == EINTR || err == EAGAIN || err == EWOULDBLOCK ||
            err == EINPROGRESS );
@@ -213,8 +235,10 @@ EvPoll::wait( int ms ) noexcept
 
     if ( s->test( EV_WRITE_POLL ) ) {
       if ( ( this->ev[ i ].events & EPOLLOUT ) != 0 ) {
-        this->remove_write_poll( s ); /* move back to read poll and try write */
-        continue;
+        if ( ( this->ev[ i ].events & ( EPOLLERR | EPOLLHUP ) ) == 0 ) {
+          this->remove_write_poll( s ); /* move back to read poll, try write */
+          continue;
+        }
       }
       this->remove_write_queue( s ); /* a EPOLLERR, can't write, close it */
       do_event = EV_CLOSE;
@@ -253,26 +277,39 @@ EvPoll::wait( int ms ) noexcept
     uint64_t ns = this->current_coarse_ns();
     for (;;) {
       s = this->ev_write.heap[ 0 ];
-      if ( ns <= s->PeerData::active_ns ) /* XXX should use monotonic time */
+      if ( ! this->check_write_poll_timeout( s, ns ) )
         break;
-      uint64_t delta = ns - s->PeerData::active_ns;
-      /* XXX this may hold the connect timeouts longer than they should */
-      if ( delta > this->wr_timeout_ns ||
-           ( delta > this->conn_timeout_ns &&
-             s->bytes_sent + s->bytes_recv == 0 ) ) {
-        this->remove_write_poll( s );
-        this->idle_close( s, delta );
-        m++;
-        if ( this->ev_write.is_empty() )
-          break;
-      }
-      else {
+      m++;
+      if ( this->ev_write.is_empty() )
         break;
-      }
     }
   }
   return n + m; /* returns the number of new events */
 }
+
+bool
+EvPoll::check_write_poll_timeout( EvSocket *s,  uint64_t ns ) noexcept
+{
+  uint64_t delta = ns - s->PeerData::active_ns;
+  /* XXX this may hold the connect timeouts longer than they should */
+  if ( ns <= s->PeerData::active_ns ) { /* XXX should use monotonic time */
+    if ( ns < s->PeerData::active_ns ) {
+      this->remove_write_queue( s );
+      s->PeerData::active_ns = ns;
+      this->push_write_queue( s );
+    }
+    return false;
+  }
+  if ( delta > this->wr_timeout_ns ||
+       ( delta > this->conn_timeout_ns &&
+         s->bytes_sent + s->bytes_recv == 0 ) ) {
+    this->remove_write_poll( s );
+    this->idle_close( s, delta );
+    return true;
+  }
+  return false;
+}
+
 /* allocate an fd for a null sockets which are used for event based objects
  * that wait on timers and/or subscriptions */
 int
