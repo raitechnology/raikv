@@ -20,7 +20,7 @@ namespace kv {
  *              bits[ tab_mask ]
  * }
  */
-#if __GNUC__ >= 12
+#if __GNUC__ >= 11
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Warray-bounds"
 #endif
@@ -568,7 +568,7 @@ struct IntHashTabU : public IntHashUsage
     return IntHashTabU::alloc_size( this->tab_size() );
   }
 };
-#if __GNUC__ >= 12
+#if __GNUC__ >= 11
 #pragma GCC diagnostic pop
 #endif
 }

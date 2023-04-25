@@ -241,7 +241,7 @@ struct RouteHT {
     }
     return HT_SIZE;
   }
-#if __GNUC__ >= 12
+#if __GNUC__ >= 11
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Waddress"
 #endif
@@ -250,7 +250,7 @@ struct RouteHT {
       return data_equals( data, s, l );
     return l == data.len && ::memcmp( s, data.value, l ) == 0;
   }
-#if __GNUC__ >= 12
+#if __GNUC__ >= 11
 #pragma GCC diagnostic pop
 #endif
   /* find data and position by key */
@@ -738,7 +738,7 @@ struct RouteVec {
   virtual void free_vec_data( uint32_t,  void *p,  size_t ) noexcept {
     delete (VecData *) p;
   }
-#if __GNUC__ >= 12
+#if __GNUC__ >= 11
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Warray-bounds"
 #endif
@@ -783,7 +783,7 @@ struct RouteVec {
       this->link_id( i - 1 );
     return true;
   }
-#if __GNUC__ >= 12
+#if __GNUC__ >= 11
 #pragma GCC diagnostic pop
 #endif
   /* try to merge vec[ i ] into vec[ i - 1 ] */
