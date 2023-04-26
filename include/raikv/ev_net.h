@@ -517,7 +517,8 @@ struct EvPoll {
   int get_null_fd( void ) noexcept;         /* return dup /dev/null fd */
   int add_sock( EvSocket *s ) noexcept;     /* add to poll set */
   uint64_t get_next_id( void ) noexcept;
-  void remove_sock( EvSocket *s ) noexcept; /* remove from poll set */
+  void remove_poll( EvSocket *s ) noexcept; /* remove from poll set */
+  void remove_sock( EvSocket *s ) noexcept; /* release from poll set */
   bool timer_expire( EvTimerEvent &ev ) noexcept; /* process timer event fired */
   void process_quit( void ) noexcept;       /* quit state close socks */
   uint32_t zero_copy_ref( uint32_t src_route,  const void *msg,

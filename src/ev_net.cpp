@@ -177,8 +177,10 @@ EvPoll::add_write_poll( EvSocket *s ) noexcept
   event.events  = EPOLLOUT | EPOLLRDHUP/* | EPOLLET*/;
   if ( ::epoll_ctl( this->efd, EPOLL_CTL_MOD, s->fd, &event ) < 0 ) {
     s->set_sock_err( EV_ERR_WRITE_POLL, errno );
-    s->set_poll( IN_EPOLL_READ );
     s->popall();
+    s->set_poll( IN_NO_LIST );
+    event.events = 0;
+    ::epoll_ctl( this->efd, EPOLL_CTL_DEL, s->fd, &event );
     s->idle_push( EV_CLOSE );
     return;
   }
@@ -204,6 +206,9 @@ EvPoll::remove_write_poll( EvSocket *s ) noexcept
   if ( ::epoll_ctl( this->efd, EPOLL_CTL_MOD, s->fd, &event ) < 0 ) {
     s->set_sock_err( EV_ERR_READ_POLL, errno );
     s->popall();
+    s->set_poll( IN_NO_LIST );
+    event.events = 0;
+    ::epoll_ctl( this->efd, EPOLL_CTL_DEL, s->fd, &event );
     s->idle_push( EV_CLOSE );
   }
 }
@@ -233,14 +238,16 @@ EvPoll::wait( int ms ) noexcept
   for ( int i = 0; i < n; i++ ) {
     s = this->sock[ this->ev[ i ].data.fd ];
 
-    if ( s->test( EV_WRITE_POLL ) ) {
+    if ( s->in_poll( IN_EPOLL_WRITE ) ) {
       if ( ( this->ev[ i ].events & EPOLLOUT ) != 0 ) {
         if ( ( this->ev[ i ].events & ( EPOLLERR | EPOLLHUP ) ) == 0 ) {
           this->remove_write_poll( s ); /* move back to read poll, try write */
           continue;
         }
       }
-      this->remove_write_queue( s ); /* a EPOLLERR, can't write, close it */
+      this->remove_poll( s ); /* a EPOLLERR, can't write, close it */
+      this->remove_event_queue( s );
+      this->remove_write_queue( s );
       do_event = EV_CLOSE;
     }
     else {
@@ -384,9 +391,25 @@ EvPoll::get_next_id( void ) noexcept
 }
 
 void
+EvPoll::remove_poll( EvSocket *s ) noexcept
+{
+  if ( ! s->test_opts( OPT_NO_POLL ) ) { /* if is a epoll sock */
+    if ( ! s->in_poll( IN_NO_LIST ) ) {
+      if ( s->in_poll( IN_EPOLL_WRITE ) )
+        this->wr_count--;
+      s->set_poll( IN_NO_LIST );
+      struct epoll_event event;
+      ::memset( &event, 0, sizeof( struct epoll_event ) );
+      event.data.fd = s->fd;
+      event.events  = 0;
+      ::epoll_ctl( this->efd, EPOLL_CTL_DEL, s->fd, &event );
+    }
+  }
+}
+
+void
 EvPoll::remove_sock( EvSocket *s ) noexcept
 {
-  struct epoll_event event;
   if ( s->fd < 0 )
     return;
   if ( s->in_list( IN_FREE_LIST ) ) {
@@ -395,16 +418,7 @@ EvPoll::remove_sock( EvSocket *s ) noexcept
   }
   /* remove poll set */
   if ( (uint32_t) s->fd <= this->maxfd && this->sock[ s->fd ] == s ) {
-    if ( ! s->test_opts( OPT_NO_POLL ) ) { /* if is a epoll sock */
-      if ( s->in_poll( IN_EPOLL_WRITE ) )
-        this->wr_count--;
-      s->set_poll( IN_NO_LIST );
-      ::memset( &event, 0, sizeof( struct epoll_event ) );
-      event.data.fd = s->fd;
-      event.events  = 0;
-      if ( ::epoll_ctl( this->efd, EPOLL_CTL_DEL, s->fd, &event ) < 0 )
-        s->set_sock_err( EV_ERR_READ_POLL, errno );
-    }
+    this->remove_poll( s );
     this->sock[ s->fd ] = NULL;
     this->fdcnt--;
   }
@@ -437,8 +451,10 @@ EvPoll::remove_sock( EvSocket *s ) noexcept
 void
 EvPoll::idle_close( EvSocket *s,  uint64_t ns ) noexcept
 {
-  s->set_sock_err( EV_ERR_WRITE_TIMEOUT, (uint16_t) ( ns / 1000000000ULL ) );
-  /* log closed fd */
+  if ( ns != 0 )
+    s->set_sock_err( EV_ERR_WRITE_TIMEOUT, (uint16_t) ( ns / 1000000000ULL ) );
+  this->remove_poll( s );
+  this->remove_event_queue( s );
   this->remove_write_queue( s );
   s->popall();
   s->idle_push( EV_CLOSE );
@@ -1984,11 +2000,7 @@ EvSocket::client_kill( void ) noexcept
 {
   /* if already shutdown, close up immediately */
   if ( this->test( EV_SHUTDOWN ) != 0 ) {
-    this->poll.remove_event_queue( this );
-    this->poll.remove_write_queue( this );
-    if ( this->sock_state != 0 )
-      this->popall();
-    this->idle_push( EV_CLOSE );
+    this->poll.idle_close( this, 0 );
   }
   else { /* close after writing pending data */
     this->idle_push( EV_SHUTDOWN );
@@ -2667,8 +2679,7 @@ void
 EvSocket::close_error( uint16_t serr,  uint16_t err ) noexcept
 {
   this->set_sock_err( serr, err );
-  this->popall();
-  this->idle_push( EV_CLOSE );
+  this->poll.idle_close( this, 0 );
 }
 
 int
