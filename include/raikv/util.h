@@ -152,37 +152,45 @@ template <class Int> static inline Int min_int( Int i,  Int j ) { return i<j?i:j
 template <class Int> static inline Int unaligned( const void *p ) {
   Int i; ::memcpy( &i, p, sizeof( Int ) ); return i;
 }
+static inline uint32_t bit_floor( uint32_t i ) {
+  if ( i <= 2 ) return i;
+  return (uint32_t) 1 << ( 31 - kv_clzw( i ) );
+}
+static inline uint64_t bit_floor( uint64_t i ) {
+  if ( i <= 2 ) return i;
+  return (uint64_t) 1 << ( 63 - kv_clzl( i ) );
+}
+template <class Int> static inline Int bit_ceil( Int i ) {
+  if ( i == 0 ) return 1;
+  Int f = bit_floor( i );
+  if ( f == i ) return f;
+  return f << 1;
+}
+/* https://probablydance.com/2023/04/27/beautiful-branchless-binary-search/ */
+template <class T, class E, class L> static inline L
+lower_bound( const T *array, const E value, L length, int ( *compare )( const T &, const E & ) ) {
+  if ( length == 0 )
+    return 0;
+  L step = bit_floor( length ), begin = 0, end = length;
+  if ( step != length && compare( array[ step ], value ) < 0 ) {
+    length -= step + 1;
+    if ( length == 0 )
+      return end;
+    step  = bit_ceil( length );
+    begin = end - step;
+  }
+  for ( step /= 2; step != 0; step /= 2 ) {
+    if ( compare( array[ begin + step ], value ) < 0 )
+      begin += step;
+  }
+  if ( compare( array[ begin + step ], value ) >= 0 )
+    return begin + step;
+  return begin + step + 1;
+}
 
 static const size_t KV_CACHE_ALIGN = 64;
-static inline void *aligned_malloc( size_t sz,
-                                    size_t alignment = KV_CACHE_ALIGN ) {
-#ifndef USE_MEMALIGN
-  void * p   = ::malloc( sz + alignment );
-  size_t off = alignment - ( (uintptr_t) p & ( alignment - 1 ) );
-  *((void **) &((char *) p)[ off - sizeof( void * ) ]) = p;
-  return &((char *) p)[ off ];
-#else
-  sz = align<size_t>( sz, alignment );
-#if defined( _MSC_VER )
-  return ::_aligned_malloc( sz, alignment );
-#elif defined( _ISOC11_SOURCE )
-  return ::aligned_alloc( alignment, sz ); /* >= RH7 */
-#else
-  return ::memalign( alignment, sz ); /* RH5, RH6.. */
-#endif
-#endif
-}
-static inline void aligned_free( void *p ) {
-#ifndef USE_MEMALIGN
-  ::free( *(void **) &((char *) p)[ -sizeof( void * ) ] );
-#else
-#if defined( _MSC_VER )
-  ::_aligned_free( p );
-#else
-  ::free( p ); /* libc allows this */
-#endif
-#endif
-}
+void *aligned_malloc( size_t sz, size_t alignment = KV_CACHE_ALIGN ) noexcept;
+void aligned_free( void *p ) noexcept;
 
 namespace rand {
 /* Derived from xoroshiro128star, 2016 by David Blackman and Sebastiano Vigna */

@@ -308,37 +308,23 @@ struct EvSocket : public PeerData /* fd and address of peer */EV_DBG_INHERIT {
   static_assert( sizeof( EvSocket ) % 256 == 0, "socket size" );
 #endif
 
-struct FDSet : public BitSpaceT<uint64_t> {
+struct FDSet : public ArraySpace<uint64_t, 16> {
   void * operator new( size_t, void *ptr ) { return ptr; }
   void operator delete( void *ptr ) { ::free( ptr ); }
-  ArraySpace<uint32_t, 256> fd_space;
   FDSet() {}
 };
 
 struct FDSetStack : public ArraySpace<FDSet *, 4> {
   size_t tos;
   FDSetStack() : tos( 0 ) {}
-  FDSet & push( void ) {
-    if ( this->tos >= this->size )
-      this->make( this->tos + 1, true );
-    if ( this->ptr[ this->tos ] == NULL )
-      this->ptr[ this->tos ] = new ( ::malloc( sizeof( FDSet ) ) ) FDSet();
-    return *this->ptr[ this->tos++ ];
-  }
-  void pop( void ) {
-    this->tos--;
-  }
+  FDSet & push( void ) noexcept;
+  void pop( void ) { this->tos--; }
 };
 
 struct FDFrame {
   FDSetStack & stk;
   FDSet      & fdset;
-  FDFrame( FDSetStack & stack ) : stk( stack ), fdset( stack.push() ) {
-    this->fdset.zero();
-  }
-  uint32_t *fd_array( uint32_t n ) {
-    return this->fdset.fd_space.make( n );
-  }
+  FDFrame( FDSetStack & stack ) : stk( stack ), fdset( stack.push() ) {}
   ~FDFrame() { this->stk.pop(); }
 };
 
@@ -624,28 +610,22 @@ struct EvConnection : public EvSocket, public StreamBuf {
     this->StreamBuf::reset();
   }
   void adjust_recv( void ) {     /* data is read at this->recv[ this->len ] */
-    if ( this->off > 0 ) {
-      if ( this->zref_index == 0 ) {
-        this->len -= this->off;
-        if ( this->len > 0 )
-          ::memmove( this->recv, &this->recv[ this->off ], this->len );
-        else if ( this->recv != this->recv_buf ) {
-          this->poll.poll_free( this->recv, this->recv_size );
-          this->recv = this->recv_buf;
-          this->recv_size = sizeof( this->recv_buf );
-        }
-        this->off = 0;
-      }
-      else {
-        this->resize_recv_buf( sizeof( this->recv_buf ) );
-      }
+    uint32_t new_len = this->len - this->off;
+    if ( this->recv == this->recv_buf ) {
+      if ( new_len > 0 )
+        ::memmove( this->recv, &this->recv[ this->off ], new_len );
+      this->off = 0;
+      this->len = new_len;
+    }
+    else {
+      this->resize_recv_buf( new_len );
     }
   }
   void recv_need( uint32_t need_bytes ) {
     if ( this->recv_size < need_bytes )
       this->resize_recv_buf( need_bytes );
   }
-  bool resize_recv_buf( uint32_t need_bytes = 0 ) noexcept;
+  bool resize_recv_buf( size_t need_bytes ) noexcept;
 
   /* read/write to socket */
   virtual void read( void ) noexcept;      /* fill recv buf */

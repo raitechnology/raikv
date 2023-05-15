@@ -1103,8 +1103,8 @@ KvPubSub::on_sub( NotifySub &sub ) noexcept
 {
   if ( sub.src_type == 'K' )
     return;
-  if ( sub.ref != NULL ) {
-    RouteRef & rte = *sub.ref;
+  if ( sub.refp != NULL ) {
+    RouteRef & rte = *sub.refp;
     if ( rte.rcnt > 1 ) { /* check if subscribed already */
       for ( uint32_t i = 0; i < rte.rcnt; i++ ) {
         uint32_t r = rte.routes[ i ];
@@ -1131,8 +1131,8 @@ KvPubSub::on_unsub( NotifySub &sub ) noexcept
 {
   if ( sub.src_type == 'K' )
     return;
-  if ( sub.ref != NULL ) {
-    RouteRef & rte = *sub.ref;
+  if ( sub.refp != NULL ) {
+    RouteRef & rte = *sub.refp;
     if ( rte.rcnt > 0 ) { /* check all unsubs */
       for ( uint32_t i = 0; i < rte.rcnt; i++ ) {
         uint32_t r = rte.routes[ i ];
@@ -1183,9 +1183,9 @@ KvPubSub::on_psub( NotifyPattern &pat ) noexcept
 {
   if ( pat.src_type == 'K' ) /* came from somewhere else */
     return;
-  if ( pat.ref != NULL ) {
+  if ( pat.refp != NULL ) {
     uint32_t h;
-    RouteRef & rte = *pat.ref;
+    RouteRef & rte = *pat.refp;
     if ( rte.rcnt > 1 ) { /* check if psubscribed already */
       for ( uint32_t i = 0; i < rte.rcnt; i++ ) {
         uint32_t r = rte.routes[ i ];
@@ -1213,9 +1213,9 @@ KvPubSub::on_punsub( NotifyPattern &pat ) noexcept
 {
   if ( pat.src_type == 'K' ) /* came from somewhere else */
     return;
-  if ( pat.ref != NULL ) {
+  if ( pat.refp != NULL ) {
     uint32_t h;
-    RouteRef & rte = *pat.ref;
+    RouteRef & rte = *pat.refp;
     if ( rte.rcnt > 0 ) { /* check all unsubs */
       for ( uint32_t i = 0; i < rte.rcnt; i++ ) {
         uint32_t r = rte.routes[ i ];

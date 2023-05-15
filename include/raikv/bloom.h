@@ -276,6 +276,7 @@ struct BloomBits {
     c[ 0 ]  = bit_slice( this->MASK1(), s, h );
     i += this->SIZE1(); s += this->SHFT1;
     c[ 1 ] = bit_slice( this->MASK2(), s, h );
+    c[ 2 ] = c[ 3 ] = 0;
     if ( this->SHFT3 > 0 ) {
       i += this->SIZE2(); s += this->SHFT2;
       c[ 2 ] = bit_slice( this->MASK3(), s, h );

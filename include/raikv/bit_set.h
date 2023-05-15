@@ -127,20 +127,15 @@ struct BitSpaceT : public ArraySpace<T, 2> {
   }
   bool scan( uint32_t &b ) const {
     uint32_t off = b / WORD_BITS;
-    for (;;) {
-      uint64_t x = this->ptr[ off ] >> ( b % WORD_BITS );
-      if ( x == 0 ) {
-        b = ++off * WORD_BITS;
-        if ( (size_t) off >= this->size )
-          return false;
-      }
-      else {
-        if ( ( x & 1 ) != 0 )
-          return true;
-        b += kv_ffsl( x ) - 1;
-        return true;
-      }
+    T x = this->ptr[ off ] >> ( b % WORD_BITS );
+    while ( x == 0 ) {
+      b = ++off * WORD_BITS;
+      if ( (size_t) off >= this->size )
+        return false;
+      x = this->ptr[ off ];
     }
+    b += kv_ffsl( x ) - 1;
+    return true;
   }
   bool intersects( const BitSpaceT &x ) const {
     size_t min_sz = min_int<size_t>( x.size, this->size ), i;
@@ -252,37 +247,27 @@ struct BitSetT {
   }
   bool scan( uint32_t &b,  uint32_t max_bit ) const {
     uint32_t off = b / WORD_BITS;
-    for (;;) {
-      T x = this->ptr[ off ] >> ( b % WORD_BITS );
-      if ( x == 0 ) {
-        b = ++off * WORD_BITS;
-        if ( b >= max_bit )
-          return false;
-      }
-      else {
-        if ( ( x & 1 ) != 0 )
-          return true;
-        b += kv_ffsl( x ) - 1;
-        return true;
-      }
+    T x = this->ptr[ off ] >> ( b % WORD_BITS );
+    while ( x == 0 ) {
+      b = ++off * WORD_BITS;
+      if ( b >= max_bit )
+        return false;
+      x = this->ptr[ off ];
     }
+    b += kv_ffsl( x ) - 1;
+    return true;
   }
   bool set_first( uint32_t &b,  uint32_t max_bit ) {
     uint32_t off = 0;
     b = 0;
-    for (;;) {
-      T x = ~this->ptr[ off ];
-      if ( x == 0 ) {
-        b = ++off * WORD_BITS;
-        if ( b >= max_bit )
-          return false;
-      }
-      else {
-        if ( ( x & 1 ) == 0 )
-          b += kv_ffsl( x ) - 1;
-        break;
-      }
+    T x = ~this->ptr[ off ];
+    while ( x == 0 ) {
+      b = ++off * WORD_BITS;
+      if ( b >= max_bit )
+        return false;
+      x = ~this->ptr[ off ];
     }
+    b += kv_ffsl( x ) - 1;
     this->ptr[ off ] |= (T) 1 << ( b % WORD_BITS );
     return true;
   }
@@ -389,29 +374,26 @@ struct BitSetT {
 
 typedef BitSetT<uint64_t> UIntBitSet;
 
-struct BitIter64 {
-  const uint64_t w;
-  uint8_t i;
+struct BitSet64 {
+  uint64_t w;
+  BitSet64( uint64_t word = 0 ) : w( word ) {}
 
-  BitIter64( uint64_t word ) : w( word ), i( 0 ) {}
-
-  bool next( void ) {
-    uint64_t x = this->w >> ++this->i;
-    if ( ( x & 1 ) == 0 ) {
-      if ( x == 0 )
-        return false;
-      this->i += kv_ffsl( x ) - 1;
-    }
-    return true;
+  bool is_member( uint32_t i ) const {
+    return ( this->w & ( (uint64_t) 1 << i ) ) != 0;
   }
-
-  bool first( void ) {
-    if ( this->w == 0 )
-      return false;
-    this->i = 0;
-    if ( ( this->w & 1 ) != 0 )
-      return true;
-    return this->next();
+  bool next( uint32_t &i ) const {
+    bool b = ( ++i < 64 );
+    if ( b ) {
+      uint64_t x = this->w >> i;
+      b = ( x != 0 );
+      if ( b ) i += kv_ffsl( x ) - 1;
+    }
+    return b;
+  }
+  bool first( uint32_t &i ) const {
+    bool b = ( this->w != 0 );
+    if ( b ) i = kv_ffsl( this->w ) - 1;
+    return b;
   }
 };
 

@@ -19,32 +19,16 @@ struct sockaddr;
 namespace rai {
 namespace kv {
 
-#define SYS_WILD_PREFIX "_SYS.W"
+struct RouteSpace : ArraySpace<uint32_t, 128> {};
 
-struct SysWildSub { /* wildcard prefix: _SYS.W3.XYZ */
-  size_t len;
-  char   sub[ sizeof( SYS_WILD_PREFIX ) - 1 + 4 + 64 ];
-
-  SysWildSub( const char *s,  uint8_t prefix_len ) {
-    size_t  i = sizeof( SYS_WILD_PREFIX ) - 1;
-    uint8_t j = prefix_len;
-    ::memcpy( this->sub, SYS_WILD_PREFIX, i );
-    if ( prefix_len > 9 ) { /* max 63 */
-      this->sub[ i++ ] = ( j / 10 ) + '0';
-      j %= 10;
-    }
-    this->sub[ i++ ] = j + '0';
-    this->sub[ i++ ] = '.'; 
-    if ( s != NULL ) {
-      ::memcpy( &this->sub[ i ], s, prefix_len );
-      i += prefix_len;
-    }
-    this->sub[ i ] = '\0';
-    this->len = i;
-  }
+struct RouteSpaceRef : public RouteSpace {
+  void * operator new( size_t, void *ptr ) { return ptr; }
+  void operator delete( void *ptr ) { ::free( ptr ); }
+  bool used;
+  RouteSpaceRef() : used( false ) {}
 };
 
-typedef ArraySpace<uint32_t, 128> RouteSpace;
+struct RouteSpaceTemp : public ArraySpace<RouteSpaceRef *, 4> {};
 
 struct CodeRef { /* refs to a route space, which is a list of fds */
   uint32_t hash, /* hash of the route */
@@ -117,40 +101,6 @@ struct BloomList {
   }
 };
 
-struct RouteDB;
-struct RouteRef {
-  RouteDB    & rdb;       /* zipped routes */
-  RouteSpace & route_spc; /* space to unzip and modify route arrays */
-  CodeRefPtr   ptr;       /* if route is updated, no longer need old route */
-  uint32_t   * routes,    /* the set of routes allocated from route_spc */
-               rcnt;      /* num elems in routes[] */
-
-  RouteRef( RouteDB &db,  RouteSpace &spc )
-    : rdb( db ), route_spc( spc ), routes( 0 ), rcnt( 0 ) {}
-
-  void copy_cached( uint32_t *cached,  uint32_t cache_rcnt,  uint32_t add ) {
-    this->routes = this->route_spc.make( cache_rcnt + add );
-    this->rcnt   = cache_rcnt;
-    ::memcpy( this->routes, cached, sizeof( cached[ 0 ] ) * cache_rcnt );
-  }
-  /* val is the route id, decompress with add space for inserting */
-  uint32_t decompress( uint32_t val,  uint32_t add ) {
-    if ( DeltaCoder::is_not_encoded( val ) ) /* if is a multi value code */
-      return this->decode( val, add );
-    /* single value code, could contain up to 15 routes */
-    this->routes = this->route_spc.make( MAX_DELTA_CODE_LENGTH + add );
-    this->rcnt   = DeltaCoder::decode( val, this->routes, 0 );
-    return this->rcnt;
-  }
-  /* convert val to coderef, if need to deref it */
-  void find_coderef( uint32_t val ) noexcept;
-  uint32_t decode( uint32_t val,  uint32_t add ) noexcept; /* stream of codes */
-  uint32_t insert( uint32_t r ) noexcept; /* insert r into routes[] */
-  uint32_t remove( uint32_t r ) noexcept; /* remove r from routes[] */
-  uint32_t compress( void ) noexcept;     /* compress routes and merge zipped */
-  void deref( void ) noexcept;            /* deref code ref, could gc */
-};
-
 /* find r in routes[] */
 uint32_t bsearch_route( uint32_t r, const uint32_t *routes, uint32_t size ) noexcept;
 /* insert r in routes[] if not already there */
@@ -160,6 +110,8 @@ uint32_t delete_route( uint32_t r, uint32_t *routes, uint32_t rcnt ) noexcept;
 /* merge arrays */
 uint32_t merge_route( uint32_t *routes,  uint32_t count,
                       const uint32_t *merge,  uint32_t mcount ) noexcept;
+uint32_t merge_route2( uint32_t *dest,  const uint32_t *routes,  uint32_t count,
+                       const uint32_t *merge,  uint32_t mcount ) noexcept;
 
 /* ptr to route[] array */
 struct RteCacheVal {
@@ -187,19 +139,45 @@ struct RouteCache {
   bool reset( void ) noexcept;
 };
 
-static const uint16_t MAX_PRE = 64, /* wildcard prefix routes */
-                      SUB_RTE = 64, /* non-wildcard routes */
-                      MAX_RTE = 65; /* subject + wildcard */
+static const uint16_t MAX_PRE      = 64, /* wildcard prefix routes 0 -> 63 */
+                      SUB_RTE      = 64, /* non-wildcard routes 64 */
+                      MAX_RTE      = 65,
+                      NO_RTSPC_REF = 0xffffU;
 /* Use DeltaCoder to compress routes, manage hash -> route list */
 struct RouteZip {
   UIntHashTab  * zht;             /* code ref hash -> code_buf.ptr[] offset */
   size_t         code_end,        /* end of code_buf.ptr[] list */
                  code_free;       /* amount free between 0 -> code_end */
   RouteSpace     code_buf,        /* space for code ref db */
-                 zroute_spc,      /* space for compressing */
-                 route_spc[ MAX_RTE ], /* for each wildcard */
-                 bloom_spc[ MAX_RTE ];
+                 zroute_spc;      /* space for compressing */
+  uint64_t       route_free;      /* bits indicating route_spc[] free */
+  RouteSpace     route_temp[ 64 ];/* working space for merging routes */
+  RouteSpaceTemp extra_temp;      /* if run out of route_temp[] space */
+
   RouteZip() noexcept;
+  RouteSpace & ref_route_spc( uint16_t prefix_len,  uint16_t &ref ) {
+    for ( ; ; prefix_len++ ) {
+      ref = prefix_len % 64;
+      uint64_t mask = (uint64_t) 1 << ref;
+      if ( ( this->route_free & mask ) == 0 ) {
+        this->route_free |= mask;
+        return this->route_temp[ ref ];
+      }
+      if ( prefix_len >= 128 )
+        return this->create_extra_spc( ref );
+    }
+  }
+  RouteSpace & route_spc( uint16_t prefix_len ) {
+    return this->route_temp[ prefix_len % 64 ];
+  }
+  void release_route_spc( uint16_t ref ) {
+    if ( ref < 64 )
+      this->route_free &= ~( (uint64_t) 1 << ref );
+    else if ( ref != NO_RTSPC_REF )
+      this->release_extra_spc( ref );
+  }
+  RouteSpace &create_extra_spc( uint16_t &ref ) noexcept;
+  void release_extra_spc( uint16_t ref ) noexcept;
   void init( void ) noexcept;
   void reset( void ) noexcept;
 
@@ -210,53 +188,133 @@ struct RouteZip {
   uint32_t decompress_one( uint32_t val ) noexcept;
 };
 
+struct RouteRef {
+  RouteZip   & zip;       /* zipped routes */
+  RouteSpace & route_spc; /* space to unzip and modify route arrays */
+  CodeRefPtr   ptr;       /* if route is updated, no longer need old route */
+  uint32_t   * routes,    /* the set of routes allocated from route_spc */
+               rcnt;      /* num elems in routes[] */
+  uint16_t     spc_ref;
+
+  RouteRef( RouteZip &z,  uint16_t prefix_len )
+    : zip( z ), route_spc( z.ref_route_spc( prefix_len, this->spc_ref ) ),
+      routes( 0 ), rcnt( 0 ) {}
+  ~RouteRef() {
+    this->zip.release_route_spc( this->spc_ref );
+  }
+
+  void copy( const uint32_t *a,  uint32_t acnt ) {
+    this->routes = this->route_spc.make( acnt );
+    this->rcnt   = acnt;
+    for ( uint32_t i = 0; i < acnt; i++ )
+      this->routes[ i ] = a[ i ];
+  }
+  void merge( const uint32_t *b, uint32_t bcnt ) {
+    this->routes = this->route_spc.make( this->rcnt + bcnt );
+    this->rcnt   = merge_route( this->routes, this->rcnt, b, bcnt );
+  }
+  void merge2( const uint32_t *a,  uint32_t acnt,  const uint32_t *b,
+               uint32_t bcnt ) {
+    this->routes = this->route_spc.make( acnt + bcnt );
+    this->rcnt   = merge_route2( this->routes, a, acnt, b, bcnt );
+  }
+  /* val is the route id, decompress with add space for inserting */
+  uint32_t decompress( uint32_t val,  uint32_t add ) {
+    if ( DeltaCoder::is_not_encoded( val ) ) /* if is a multi value code */
+      return this->decode( val, add );
+    /* single value code, could contain up to 15 routes */
+    this->routes = this->route_spc.make( MAX_DELTA_CODE_LENGTH + add );
+    this->rcnt   = DeltaCoder::decode( val, this->routes, 0 );
+    return this->rcnt;
+  }
+  /* convert val to coderef, if need to deref it */
+  void find_coderef( uint32_t val ) noexcept;
+  uint32_t decode( uint32_t val,  uint32_t add ) noexcept; /* stream of codes */
+  uint32_t insert( uint32_t r ) noexcept; /* insert r into routes[] */
+  uint32_t remove( uint32_t r ) noexcept; /* remove r from routes[] */
+  uint32_t compress( void ) noexcept;     /* compress routes and merge zipped */
+  void deref_coderef( void ) noexcept;    /* deref code ref, could gc */
+};
+
 /* Map a subscription hash to a route list using RouteZip */
 struct BloomDB : public ArrayCount<BloomRef *, 128> {
   BallocList<8, 16*1024> bloom_mem;
 };
 
-struct RouteDB {
-  RouteCache    cache;               /* the route arrays indexed by ht */
-  BloomList     bloom_list;
-  uint32_t      bloom_pref_count[ MAX_RTE ];
-  BloomDB     & g_bloom_db;
-  size_t        entry_count;         /* counter of route/hashes indexed */
-  RouteZip      zip;
-  UIntHashTab * rt_hash[ MAX_RTE ];  /* route hash -> code | ref hash */
-  uint32_t      pre_seed[ MAX_PRE ]; /* hash seeds for each prefix */
-  uint64_t      pat_mask,            /* mask of subject prefixes, up to 64 */
-                rt_mask,
-                bloom_mask;
-  uint8_t       prefix_len[ MAX_PRE ]; /* current set of prefix lengths */
-  uint8_t       pat_bit_count;      /* how many bits in pat_mask are set */
+struct RouteDB;
+struct RouteRefCount {
+  uint64_t ref_mask;
+  uint32_t cache_ref,
+           extra_cnt;
+  uint64_t ref_extra[ 8 ];
+  RouteRefCount() : ref_mask( 0 ), cache_ref( 0 ), extra_cnt( 0 ) {}
 
-  RouteDB( BloomDB &g_db ) noexcept;
+  void add_ref( RouteRef &ref ) {
+    if ( ref.spc_ref < 64 )
+      this->ref_mask |= (uint64_t) 1 << ref.spc_ref;
+    else
+      this->set_ref_extra( ref.spc_ref );
+    ref.spc_ref = NO_RTSPC_REF;
+  }
+  void add_refs( RouteRefCount &refs ) {
+    this->ref_mask |= refs.ref_mask;
+    this->cache_ref += refs.cache_ref;
+    if ( refs.extra_cnt != 0 )
+      this->merge_ref_extra( refs );
+  }
+  void set_ref_extra( uint16_t spc_ref ) noexcept;
+  void merge_ref_extra( RouteRefCount &refs ) noexcept;
+  void deref( RouteDB &rdb ) noexcept;
+};
 
+struct RouteLookup {
+  const char  * sub;        /* find routes for subject */
+  uint16_t      sublen;     /* length of sub */
+  uint32_t    * routes;     /* routes found for a prefix */
+  uint64_t      mask;       /* current get_route prefix mask */
+  uint32_t      rcount,     /* count of routes */
+                subj_hash,  /* hash of sub */
+                shard,      /* which shard the route lookup is using */
+                prefix_cnt; /* how many prefixes are matched */
+  size_t        keylen[ MAX_PRE ]; /* length of prefix */
+  uint32_t      hash[ MAX_PRE ];   /* hash of prefix */
+  uint64_t      prefix_mask;/* all prefix mask bits */
+  RouteRefCount rte_ref;    /* route, rcount ref counters */
+
+  RouteLookup( const char *s,  uint16_t slen,  uint32_t h,  uint32_t sh )
+    : sub( s ), sublen( slen ), routes( 0 ),  mask( 0 ), rcount( 0 ),
+      subj_hash( h ), shard( sh ), prefix_cnt( 0 ), prefix_mask( 0 ) {}
+
+  void add_ref( RouteRef &ref ) { this->rte_ref.add_ref( ref ); }
+  void deref( RouteDB &rdb )  { this->rte_ref.deref( rdb ); }
+  void setup_prefix_hash( uint64_t pat_mask ) noexcept;
+};
+
+static inline bool test_prefix_mask( uint64_t mask,  uint16_t prefix_len ) {
+  return ( mask & ( (uint64_t) 1 << prefix_len ) ) != 0;
+}
+
+struct RouteGroup {
+  static uint32_t pre_seed[ MAX_PRE ]; /* hash seeds for each prefix */
+  RouteCache  & cache;                 /* the route arrays indexed by ht */
+  RouteZip    & zip;                   /* route ids compressed */
+  UIntHashTab * rt_hash[ MAX_RTE ];    /* ht for each prefix */
+  uint32_t      group_num,             /* which route group number */
+                entry_count;           /* count of rt_hash subjects */
+  uint64_t      pat_mask,              /* mask of subject prefixes */
+                rt_mask,               /* subjects subscribed mask */
+                bloom_mask;            /* bloom filter subject prefixes */
+  BloomList   * bloom_list_ptr;        /* list of bloom filters*/
+  uint32_t      bloom_pref_count[ MAX_RTE ]; /* count of prefix subjects */
+
+  void * operator new( size_t, void *ptr ) { return ptr; }
+  void operator delete( void * ) {}
+  RouteGroup( RouteCache &c,  RouteZip &z,  BloomList *bl,  uint32_t gn ) noexcept;
   /* modify the bits of the prefixes used */
   void add_prefix_len( uint16_t prefix_len,  bool is_rt_hash ) noexcept;
   void del_prefix_len( uint16_t prefix_len,  bool is_rt_hash ) noexcept;
-  void update_prefix_len( void ) noexcept;
+  /*void update_prefix_len( void ) noexcept;*/
 
-  /* scatter prefix lengths to keylen[] and prefix seeds to hash[] */
-  uint8_t setup_prefix_hash( const char *s,  size_t s_len,
-                             const char *key[ MAX_PRE ],
-                             size_t keylen[ MAX_PRE ],
-                             uint32_t hash[ MAX_PRE ] ) {
-    for ( uint8_t i = 0; i < this->pat_bit_count; i++ ) {
-      uint8_t len = this->prefix_len[ i ];
-      if ( len > s_len )
-        return i;
-      key[ i ]    = s;
-      keylen[ i ] = len;
-      hash[ i ]   = this->pre_seed[ len ];
-    }
-    return this->pat_bit_count;
-  }
-  uint32_t prefix_seed( size_t prefix_len ) const {
-    if ( prefix_len < MAX_PRE )
-      return this->pre_seed[ prefix_len ];
-    return this->pre_seed[ MAX_PRE - 1 ];
-  }
   uint32_t add_route( uint16_t prefix_len,  uint32_t hash,
                       uint32_t r ) noexcept;
   uint32_t del_route( uint16_t prefix_len,  uint32_t hash,
@@ -293,78 +351,68 @@ struct RouteDB {
     return this->del_route( SUB_RTE, hash, r );
   }
   /* get_[sub_]route() functions are usually the hot path */
-  uint32_t get_route( const char *sub,  uint16_t sublen,
-                      uint16_t prefix_len,  uint32_t hash,
-                      uint32_t *&routes,  uint32_t &ref,
-                      uint32_t subj_hash,  uint32_t shard ) {
-    uint32_t rcnt, val;
+  void get_route( uint16_t prefix_len,  uint32_t hash,
+                  RouteLookup &look ) {
+    uint32_t val;
     size_t   pos;
-    if ( this->cache_find( prefix_len, hash, routes, rcnt, shard, pos ) ) {
+    look.rcount = 0;
+    look.routes = NULL;
+    look.mask   = (uint64_t) 1 << prefix_len;
+    if ( this->cache_find( prefix_len, hash, look.routes, look.rcount,
+                           look.shard, pos ) ) {
       this->cache.busy++;
-      ref++;
-      return rcnt;
+      look.rte_ref.cache_ref++;
+      return;
     }
-    uint64_t mask = (uint64_t) 1 << prefix_len;
-    if ( shard == 0 && ( this->rt_mask & mask ) != 0 ) {
+    if ( look.shard == 0 && ( this->rt_mask & look.mask ) != 0 ) {
       if ( this->rt_hash[ prefix_len ]->find( hash, pos, val ) )
-        return this->get_route_slow2( sub, sublen, prefix_len, mask, hash, val,
-                                      routes, subj_hash, 0 );
+        return this->get_route_slow2( look, prefix_len, hash, val );
     }
-    return this->get_bloom_route2( sub, sublen, prefix_len, mask, hash, routes,
-                                   0, subj_hash, shard );
+    return this->get_bloom_route2( look, prefix_len, hash );
   }
-  uint32_t get_sub_route( uint32_t hash,  uint32_t *&routes,  uint32_t &ref,
-                          uint32_t shard ) {
-    uint32_t rcnt, val;
+  void get_sub_route( RouteLookup &look ) {
     size_t   pos;
-    if ( this->cache_find( SUB_RTE, hash, routes, rcnt, shard, pos ) ) {
+    uint32_t val;
+    look.rcount = 0;
+    look.routes = NULL;
+    look.mask   = 0;
+    if ( this->cache_find( SUB_RTE, look.subj_hash, look.routes, look.rcount,
+                           look.shard, pos ) ) {
       this->cache.busy++;
-      ref++;
-      return rcnt;
+      look.rte_ref.cache_ref++;
+      return;
     }
-    if ( shard == 0 && this->rt_hash[ SUB_RTE ]->find( hash, pos, val ) )
-      return this->get_route_slow( hash, val, routes, 0 );
-    return this->get_bloom_route( hash, routes, 0, shard );
+    if ( look.shard == 0 ) {
+      if ( this->rt_hash[ SUB_RTE ]->find( look.subj_hash, pos, val ) )
+        return this->get_route_slow( look, val );
+    }
+    return this->get_bloom_route( look );
   }
-  uint32_t get_route_slow( uint32_t hash, uint32_t val,
-                           uint32_t *&routes,  uint32_t shard ) noexcept;
-  uint32_t get_bloom_route( uint32_t hash,  uint32_t *&routes,
-                            uint32_t merge_cnt,  uint32_t shard ) noexcept;
-  uint32_t get_route_slow2( const char *sub,  uint16_t sublen,
-                            uint16_t prefix_len,  uint64_t mask,  uint32_t hash,
-                            uint32_t val,  uint32_t *&routes,
-                            uint32_t subj_hash,  uint32_t shard ) noexcept;
-  uint32_t get_bloom_route2( const char *sub,  uint16_t sublen,
-                             uint16_t prefix_len,  uint64_t mask, uint32_t hash,
-                             uint32_t *&routes,  uint32_t merge_cnt,
-                             uint32_t subj_hash,  uint32_t shard ) noexcept;
+  void get_route_slow( RouteLookup &look,  uint32_t val ) noexcept;
+  void get_bloom_route( RouteLookup &look ) noexcept;
+  void get_route_slow2( RouteLookup &look,  uint16_t prefix_len,  uint32_t hash,
+                        uint32_t val ) noexcept;
+  void get_bloom_route2( RouteLookup &look,  uint16_t prefix_len,
+                         uint32_t hash ) noexcept;
   uint32_t get_route_count( uint16_t prefix_len,  uint32_t hash ) noexcept;
 
   uint32_t get_sub_route_count( uint32_t hash ) {
     return this->get_route_count( SUB_RTE, hash );
   }
-  BloomRoute * create_bloom_route( uint32_t r,  BloomRef *ref,
-                                   uint32_t shard ) noexcept;
-  void remove_bloom_route( BloomRoute *b ) noexcept;
-
-  BloomRef * create_bloom_ref( uint32_t *pref_count,  BloomBits *bits,
-                               const char *nm,  BloomDB &db ) noexcept;
-  BloomRef * create_bloom_ref( uint32_t seed,  const char *nm,
-                               BloomDB &db ) noexcept;
-  BloomRef * update_bloom_ref( const void *data,  size_t datalen,
-                               uint32_t ref_num,  const char *nm,
-                               BloomDB &db ) noexcept;
-  void remove_bloom_ref( BloomRef *ref ) noexcept;
-  uint32_t get_bloom_count( uint16_t prefix_len,  uint32_t hash,
-                            uint32_t shard ) noexcept;
+  uint32_t prefix_seed( size_t prefix_len ) const {
+    if ( prefix_len < MAX_PRE )
+      return this->pre_seed[ prefix_len ];
+    return this->pre_seed[ MAX_PRE - 1 ];
+  }
   bool cache_find( uint16_t prefix_len,  uint32_t hash,
                    uint32_t *&routes,  uint32_t &rcnt,
                    uint32_t shard,  size_t &pos ) {
     if ( ! this->cache.is_invalid ) {
       if ( ! this->cache.busy && this->cache.need )
         this->cache_need();
-      uint64_t    h = ( (uint64_t) shard << 48 ) |
-                      ( (uint64_t) prefix_len << 32 ) | (uint64_t) hash;
+      uint64_t h = ( (uint64_t) this->group_num << 48 ) |
+                   ( (uint64_t) shard << 40 ) |
+                   ( (uint64_t) prefix_len << 32 ) | (uint64_t) hash;
       RteCacheVal val;
 
       if ( this->cache.ht->find( h, pos, val ) ) {
@@ -380,10 +428,53 @@ struct RouteDB {
   void cache_save( uint16_t prefix_len,  uint32_t hash,
                    uint32_t *routes,  uint32_t rcnt,  uint32_t shard ) noexcept;
   void cache_purge( size_t pos ) noexcept;
-#if 0
-  void cache_purge( uint16_t prefix_len,  uint32_t hash ) noexcept;
-#endif
+
   void cache_need( void ) noexcept;
+};
+
+struct QueueDB {
+  RouteGroup * route_group;
+  char       * queue;
+  uint32_t     queue_len, queue_hash, next_route;
+
+  bool equal( const char *q,  uint32_t qlen,  uint32_t qhash ) const {
+    if ( qhash == this->queue_hash ) {
+      if ( qlen == 0 || ( qlen  == this->queue_len &&
+                          ::memcmp( this->queue, q, qlen ) == 0 ) )
+        return true;
+    }
+    return false;
+  }
+  void init( RouteCache &c,  RouteZip &z,  const char *q,  uint32_t qlen,
+             uint32_t qhash,  uint32_t gn ) noexcept;
+};
+
+struct RouteDB : public RouteGroup {
+  RouteCache    cache;
+  BloomList     bloom_list;
+  BloomDB     & g_bloom_db;
+  RouteZip      zip;
+  QueueDB     * queue_db;
+  size_t        queue_db_size;
+
+  RouteDB( BloomDB &g_db ) noexcept;
+
+  BloomRoute * create_bloom_route( uint32_t r,  BloomRef *ref,
+                                   uint32_t shard ) noexcept;
+  void remove_bloom_route( BloomRoute *b ) noexcept;
+
+  BloomRef * create_bloom_ref( uint32_t *pref_count,  BloomBits *bits,
+                               const char *nm,  BloomDB &db ) noexcept;
+  BloomRef * create_bloom_ref( uint32_t seed,  const char *nm,
+                               BloomDB &db ) noexcept;
+  BloomRef * update_bloom_ref( const void *data,  size_t datalen,
+                               uint32_t ref_num,  const char *nm,
+                               BloomDB &db ) noexcept;
+  void remove_bloom_ref( BloomRef *ref ) noexcept;
+  uint32_t get_bloom_count( uint16_t prefix_len,  uint32_t hash,
+                            uint32_t shard ) noexcept;
+  RouteGroup &get_queue_group( const char *queue,  uint32_t queue_len,
+                               uint32_t queue_hash ) noexcept;
 };
 
 struct SuffixMatch {
@@ -457,6 +548,7 @@ struct BloomDetail {
   bool from_pattern( const PatternCvt &cvt ) noexcept;
 };
 
+struct BloomMatchArgs;
 struct BloomRef {
   BloomBits   * bits;
   BloomRoute ** links;
@@ -527,9 +619,9 @@ struct BloomRef {
                         (uint32_t) ( detail_size / sizeof( BloomDetail ) ) );
     return true;
   }
-  bool detail_matches( uint16_t prefix_len,  uint64_t mask, uint32_t hash,
-                       const char *sub,  uint16_t sublen,
-                       uint32_t subj_hash,  bool &has_detail ) const noexcept;
+  template <class Match>
+  bool detail_matches( Match &look,  uint16_t prefix_len,
+                       uint32_t hash,  bool &has_detail ) const noexcept;
 };
 
 struct BloomMatchArgs {
@@ -543,7 +635,6 @@ struct BloomMatchArgs {
     if ( h == 0 )
       this->subj_hash = kv_crc_c( this->sub, this->sublen, 0 );
   }
-  uint32_t hash( void ) { return this->subj_hash; }
 };
 
 struct BloomMatch {
@@ -563,31 +654,11 @@ struct BloomMatch {
     }
   }
   uint16_t test_prefix( BloomMatchArgs &args,  const BloomRef &bloom,
-                        uint16_t prefix_len ) {
-    if ( prefix_len == SUB_RTE ) {
-      if ( bloom.pref_count[ SUB_RTE ] != 0 &&
-           bloom.bits->is_member( args.hash() ) )
-        return SUB_RTE;
-      return MAX_RTE;
-    }
-    if ( prefix_len < this->max_pref ) {
-      uint64_t mask = (uint64_t) 1 << prefix_len;
-      if ( ( bloom.pref_mask & mask ) != 0 ) {
-        uint32_t prefix_hash = this->get_prefix_hash( args, prefix_len, mask );
-        bool     has_det;
-        if ( bloom.bits->is_member( prefix_hash ) &&
-             ( ( bloom.detail_mask & mask ) == 0 ||
-               bloom.detail_matches( prefix_len, mask, prefix_hash, args.sub,
-                                     args.sublen, args.hash(), has_det ) ) )
-          return prefix_len;
-      }
-    }
-    return MAX_RTE;
-  }
-  uint32_t get_prefix_hash( BloomMatchArgs &args, uint16_t prefix_len,
-                            uint64_t mask ) {
-    if ( ( this->pref_mask & mask ) == 0 ) {
-      this->pref_mask |= mask;
+                        uint16_t prefix_len ) noexcept;
+
+  uint32_t get_prefix_hash( BloomMatchArgs &args,  uint16_t prefix_len ) {
+    if ( ! test_prefix_mask( this->pref_mask, prefix_len ) ) {
+      this->pref_mask |= (uint64_t) 1 << prefix_len;
       this->pref_hash[ prefix_len ] = kv_crc_c( args.sub, prefix_len,
                                                 args.seed[ prefix_len ] );
     }
@@ -635,40 +706,65 @@ struct BloomRoute {
 };
 
 struct EvPublish;
-struct RoutePublishData {   /* structure for publish queue heap */
-  uint32_t prefix : 7,  /* prefix size (how much of subject matches) */
-           rcount : 25, /* count of routes (32 million max (fd)) */
-           hash,        /* hash of prefix (is subject hash if prefix=64) */
-         * routes;      /* routes for this hash */
+struct RoutePublishData {
+  uint16_t prefix; /* prefix size (how much of subject matches) */
+  uint32_t rcount, /* count of routes (fd)) */
+           hash,   /* hash of prefix (is subject hash if prefix=64) */
+         * routes; /* routes for this hash */
 
-  void set( uint8_t pref,  uint32_t rcnt,  uint32_t h,  uint32_t *r ) {
+  void set( uint16_t pref,  uint32_t rcnt,  uint32_t h,  uint32_t *r ) {
     this->prefix = pref;
     this->rcount = rcnt;
     this->hash   = h;
     this->routes = r;
   }
-  /* 64 is used for subject route, make that 0, prefixes[0..63] += 1 */
-  static inline uint32_t prefix_cmp( uint32_t p ) {
-    return ( ( ( p & 63 ) << 1 ) + 1 ) | ( p >> 6 );
+  bool is_member( uint32_t r ) const {
+    uint32_t j = bsearch_route( r, this->routes, this->rcount );
+    return j < this->rcount && this->routes[ j ] == r;
   }
-#if 0
-  static bool is_greater( RoutePublishData *r1,  RoutePublishData *r2 ) {
-    if ( r1->routes[ 0 ] > r2->routes[ 0 ] ) /* order by fd */
-      return true;
-    if ( r1->routes[ 0 ] < r2->routes[ 0 ] )
-      return false;
-    return prefix_cmp( r1->prefix ) > prefix_cmp( r2->prefix );
-  }
-#endif
 };
 
 struct EvPoll;
-struct RoutePublishCache;
 enum { /* BPData::flags */
   BP_FORWARD = 1,
   BP_NOTIFY  = 2,
   BP_IN_LIST = 4
 };
+
+struct PubFanout64 {
+  BitSet64 bi;
+  uint32_t start_fd;
+  uint8_t  fdidx[ 64 ],
+           fdcnt[ 64 ];
+  PubFanout64( RoutePublishData *rpd,  uint32_t n,  uint32_t min_fd ) noexcept;
+  bool first( uint32_t &k ) { return this->bi.first( k ); }
+  bool next( uint32_t &k )  { return this->bi.next( k ); }
+};
+
+struct PubFanout512 {
+  uint64_t   bits[ 512 / 64 ];
+  UIntBitSet fdset;
+  uint32_t   start_fd;
+  uint16_t   fdidx[ 512 ];
+  uint8_t    fdcnt[ 512 ];
+  PubFanout512( RoutePublishData *rpd,  uint32_t n,  uint32_t min_fd ) noexcept;
+  bool first( uint32_t &k ) { return this->fdset.first( k, 512 ); }
+  bool next( uint32_t &k )  { return this->fdset.next( k, 512 ); }
+};
+struct FDSet;
+struct PubFanoutN {
+  void     * bits;
+  UIntBitSet fdset;
+  uint32_t   start_fd, nfds;
+  uint32_t * fdidx;
+  uint8_t  * fdcnt;
+
+  PubFanoutN( RoutePublishData *rpd,  uint32_t n,  uint32_t min_fd,  uint32_t range,
+              FDSet &spc ) noexcept;
+  bool first( uint32_t &k ) { return this->fdset.first( k, this->nfds ); }
+  bool next( uint32_t &k )  { return this->fdset.next( k, this->nfds ); }
+};
+
 struct BPData {
   uint16_t bp_state,
            bp_flags;
@@ -682,71 +778,29 @@ struct BPData {
   bool bp_notify( void ) const { return ( this->bp_flags & BP_NOTIFY ) != 0; }
   bool has_back_pressure( EvPoll &poll,  uint32_t fd ) noexcept;
   bool test_back_pressure_one( EvPoll &poll,  RoutePublishData &rpd ) noexcept;
-  bool test_back_pressure_64( EvPoll &poll,  RoutePublishData *rpd,
-                              uint32_t n ) noexcept;
-  bool test_back_pressure_n( EvPoll &poll,  RoutePublishData *rpd,
-                             uint32_t n ) noexcept;
-  bool test_back_pressure( EvPoll &poll,  RoutePublishCache &cache ) noexcept;
-
+  template <class Fanout>
+  bool test_back_pressure_multi( EvPoll &poll,  Fanout &m ) noexcept;
 };
 
-struct RoutePublishCache {
+struct RoutePublishContext : public RouteLookup {
   RouteDB        & rdb;
+  uint32_t         n, min_fd, max_fd;
+  uint64_t         rpd_mask;
   RoutePublishData rpd[ MAX_RTE ];
-  uint32_t         n,
-                   ref;
 
-  RoutePublishCache( RouteDB &db,  const char *subject,
-                     size_t subject_len,  uint32_t subj_hash,  uint32_t shard )
-      : rdb( db ), n( 0 ), ref( 0 ) {
-    uint32_t * routes;
-    uint32_t   rcount = db.get_sub_route( subj_hash, routes, this->ref, shard );
-
-    if ( rcount > 0 )
-      this->rpd[ this->n++ ].set( SUB_RTE, rcount, subj_hash, routes );
-
-    const char * key[ MAX_PRE ];
-    size_t       keylen[ MAX_PRE ];
-    uint32_t     hash[ MAX_PRE ];
-    uint32_t     k = 0,
-                 x = db.setup_prefix_hash( subject, subject_len, key, keylen,
-                                           hash );
-    /* prefix len 0 matches all */
-    if ( x > 0 && keylen[ 0 ] == 0 ) {
-      rcount = db.get_route( subject, (uint16_t) subject_len, 0, hash[ 0 ],
-                             routes, this->ref, subj_hash, shard );
-      if ( rcount > 0 )
-        this->rpd[ this->n++ ].set( 0, rcount, hash[ 0 ], routes );
-      k = 1;
-    }
-    /* the rest of the prefixes are hashed */
-    if ( k < x ) {
-      kv_crc_c_array( (const void **) &key[ k ], &keylen[ k ], &hash[ k ], x-k);
-      do {
-        rcount = db.get_route( subject, (uint16_t) subject_len,
-                               (uint16_t) keylen[ k ], hash[ k ], routes,
-                               this->ref, subj_hash, shard );
-        if ( rcount > 0 )
-          this->rpd[ this->n++ ].set( (uint8_t) keylen[ k ], rcount, hash[ k ],
-                                      routes );
-      } while ( ++k < x );
-    }
+  RoutePublishContext( RouteDB &db,  const char *subject,
+                       size_t subject_len,  uint32_t subj_hash,
+                       uint32_t shard ) noexcept;
+  ~RoutePublishContext() {
+    this->RouteLookup::deref( this->rdb );
   }
-
-  ~RoutePublishCache() {
-    this->rdb.cache.busy -= this->ref;
-  }
+  void get_routes( RouteGroup &db ) noexcept;
+  void add( uint16_t pref,  uint32_t rcnt,  uint32_t h,  uint32_t *r,  uint64_t mask ) noexcept;
+  void merge( RoutePublishData &data,  uint16_t pref,  uint32_t rcnt,  uint32_t *r ) noexcept;
+  void add_queues( void ) noexcept;
+  void prune_queue( QueueDB &q ) noexcept;
 };
-#if 0
-/* queue for publishes, to merge multiple sub matches into one pub, for example:
- *   SUB* -> 1, 7
- *   SUBJECT* -> 1, 3, 7
- *   SUBJECT_MATCH -> 1, 3, 8
- * The publish to SUBJECT_MATCH has 3 matches for 1 and 2 matches for 7 and 3
- * The heap sorts by route id (fd) to merge the publishes to 1, 3, 7, 8 */
-typedef struct kv::PrioQueue<RoutePublishData *, RoutePublishData::is_greater>
- RoutePublishQueue;
-#endif
+
 struct PeerData;
 struct PeerMatchArgs {
   int64_t      id;       /* each peer is assigned a unique id */
@@ -784,16 +838,7 @@ struct PeerStats {
     this->read_ns    = 0;
   }
 };
-#if 0
-struct PeerOps { /* interface for the peers */
-  PeerOps() {}   /* list prints the peer, kill shuts the connection down */
-  virtual int client_list( PeerData &,  char *,  size_t ) { return 0; }
-  virtual bool client_kill( PeerData & )                  { return false; }
-  virtual bool match( PeerData &,  PeerMatchArgs & )      { return true; }
-  virtual void client_stats( PeerData &,  PeerStats & )   { return; }
-  virtual void retired_stats( PeerData &,  PeerStats & )  { return; }
-};
-#endif
+
 struct EvSocket;
 struct PeerMatchIter {
   EvSocket      & me,  /* the client using this connection is this */
@@ -816,26 +861,17 @@ struct PeerMatchIter {
 static inline void
 set_strlen64( char buf[ 64 ],  const char *s,  size_t len )
 {
-  if ( len == 0 ) {
-    buf[ 0 ] = '\0';
-  }
-  else if ( len < 63 ) {
-    ::memcpy( buf, s, len );
-    ::memset( &buf[ len ], 0, 63 - len );
-  }
-  else {
-    ::memcpy( buf, s, 63 );
-    len = 0;
-  }
-  buf[ 63 ] = (char) len;
+  size_t len63 = ( len < 63 ? len : 63 );
+  ::memcpy( buf, s, len63 );
+  ::memset( &buf[ len63 ], 0, 63 - len63 );
+  buf[ 63 ] = (char) (uint8_t) ( len63 < 63 ? len63 : 0 );
 }
 
-static inline size_t get_strlen64( const char *buf )
+static inline size_t
+get_strlen64( const char *buf )
 {
-  if ( buf[ 0 ] == '\0' )
-    return 0;
-  if ( buf[ 63 ] == '\0' )
-    return 63;
+  if ( buf[ 0 ] == '\0' ) return 0;
+  if ( buf[ 63 ] == '\0' ) return 63;
   return (size_t) (uint8_t) buf[ 63 ];
 }
 
@@ -943,7 +979,7 @@ enum {
   NOTIFY_ADD_SUB = 0,
   NOTIFY_REM_SUB = 1,
   NOTIFY_ADD_REF = 2,
-  NOTIFY_SUB_REF = 3
+  NOTIFY_REM_REF = 3
 };
 struct NotifySub {
   const char   * subject,
@@ -953,7 +989,7 @@ struct NotifySub {
   uint32_t       subj_hash,
                  sub_count;
   const PeerId & src;
-  RouteRef     * ref;
+  RouteRef     * refp;
   BloomRef     * bref;
   uint8_t        hash_collision;
   char           src_type;  /* C:console, M:session, V:rv, 'R:redis, K:kv */
@@ -963,14 +999,26 @@ struct NotifySub {
              uint32_t shash,  bool coll,  char t,  const PeerId &source ) :
     subject( s ), reply( r ), subject_len( (uint16_t) slen ),
     reply_len( (uint16_t) rlen ), subj_hash( shash ),
-    sub_count( 0 ), src( source ), ref( 0 ), bref( 0 ), hash_collision( coll ),
+    sub_count( 0 ), src( source ), refp( 0 ), bref( 0 ), hash_collision( coll ),
     src_type( t ), notify_type( 0 ) {}
 
   NotifySub( const char *s,  size_t slen, uint32_t shash,  bool coll,
              char t,  const PeerId &source ) :
     subject( s ), reply( 0 ), subject_len( (uint16_t) slen ), reply_len( 0 ),
-    subj_hash( shash ), sub_count( 0 ), src( source ), ref( 0 ),
+    subj_hash( shash ), sub_count( 0 ), src( source ), refp( 0 ),
     bref( 0 ), hash_collision( coll ), src_type( t ), notify_type( 0 ) {}
+};
+
+struct NotifyQueue : public NotifySub {
+  const char * queue;
+  uint16_t     queue_len;
+  uint32_t     queue_hash;
+
+  NotifyQueue( const char *s,  size_t slen, const char *r,  size_t rlen,
+               uint32_t shash,  bool coll,  char t,  const PeerId &source,
+               const char *q,  size_t qlen,  uint32_t qhash ) :
+    NotifySub( s, slen, r, rlen, shash, coll, t, source ),
+    queue( q ), queue_len( qlen ), queue_hash( qhash ) {}
 };
 
 struct NotifyPattern {
@@ -982,7 +1030,7 @@ struct NotifyPattern {
   uint32_t           prefix_hash,
                      sub_count;
   const PeerId     & src;
-  RouteRef         * ref;
+  RouteRef         * refp;
   BloomRef         * bref;
   uint8_t            hash_collision;
   char               src_type;  /* C:console, M:session, V:rv, 'R:redis, K:kv */
@@ -993,15 +1041,28 @@ struct NotifyPattern {
                  uint32_t phash,  bool coll,  char t,  const PeerId &source ) :
     cvt( c ), pattern( s ), reply( r ), pattern_len( (uint16_t) slen ),
     reply_len( (uint16_t) rlen ), prefix_hash( phash ),
-    sub_count( 0 ), src( source ), ref( 0 ), bref( 0 ), hash_collision( coll ),
+    sub_count( 0 ), src( source ), refp( 0 ), bref( 0 ), hash_collision( coll ),
     src_type( t ), notify_type( 0 ) {}
 
   NotifyPattern( const PatternCvt &c,  const char *s,  size_t slen,
                  uint32_t phash,  bool coll,  char t,  const PeerId &source ) :
     cvt( c ), pattern( s ), reply( 0 ), pattern_len( (uint16_t) slen ),
     reply_len( 0 ), prefix_hash( phash ), sub_count( 0 ),
-    src( source ), ref( 0 ), bref( 0 ), hash_collision( coll ),
+    src( source ), refp( 0 ), bref( 0 ), hash_collision( coll ),
     src_type( t ), notify_type( 0 ) {}
+};
+
+struct NotifyPatternQueue : public NotifyPattern {
+  const char * queue;
+  uint16_t     queue_len;
+  uint32_t     queue_hash;
+
+  NotifyPatternQueue( const PatternCvt &c,  const char *s,  size_t slen,
+                      uint32_t phash,  bool coll,  char t,
+                      const PeerId &source,
+                      const char *q,  size_t qlen,  uint32_t qhash ) :
+    NotifyPattern( c, s, slen, phash, coll, t, source ),
+    queue( q ), queue_len( qlen ), queue_hash( qhash ) {}
 };
 
 struct RoutePublish;
@@ -1017,9 +1078,19 @@ struct RouteNotify {
   virtual void on_sub( NotifySub &sub ) noexcept;
   virtual void on_resub( NotifySub &sub ) noexcept;
   virtual void on_unsub( NotifySub &sub ) noexcept;
+
   virtual void on_psub( NotifyPattern &pat ) noexcept;
   virtual void on_repsub( NotifyPattern &pat ) noexcept;
   virtual void on_punsub( NotifyPattern &pat ) noexcept;
+
+  virtual void on_sub_q( NotifyQueue &sub ) noexcept;
+  virtual void on_resub_q( NotifyQueue &sub ) noexcept;
+  virtual void on_unsub_q( NotifyQueue &sub ) noexcept;
+
+  virtual void on_psub_q( NotifyPatternQueue &pat ) noexcept;
+  virtual void on_repsub_q( NotifyPatternQueue &pat ) noexcept;
+  virtual void on_punsub_q( NotifyPatternQueue &pat ) noexcept;
+
   virtual void on_reassert( uint32_t fd,  SubRouteDB &sub_db,
                             SubRouteDB &pat_db ) noexcept;
   virtual void on_bloom_ref( BloomRef &ref ) noexcept;
@@ -1077,47 +1148,7 @@ struct RoutePublish : public RouteDB {
   PeerStats    peer_stats; /* retired sockets, updated in process_close() */
 
   int init_shm( EvShm &shm ) noexcept;
-
-  void do_notify_sub( NotifySub &sub ) {
-    sub.notify_type = NOTIFY_ADD_SUB;
-    for ( RouteNotify *p = this->notify_list.hd; p != NULL; p = p->next )
-      p->on_sub( sub );
-  }
-  void do_notify_unsub( NotifySub &sub ) {
-    sub.notify_type = NOTIFY_REM_SUB;
-    for ( RouteNotify *p = this->notify_list.hd; p != NULL; p = p->next )
-      p->on_unsub( sub );
-  }
-  void do_notify_resub( NotifySub &sub ) {
-    sub.notify_type = NOTIFY_ADD_REF;
-    for ( RouteNotify *p = this->notify_list.hd; p != NULL; p = p->next )
-      p->on_resub( sub );
-  }
-  void do_notify_reunsub( NotifySub &sub ) {
-    sub.notify_type = NOTIFY_SUB_REF;
-    for ( RouteNotify *p = this->notify_list.hd; p != NULL; p = p->next )
-      p->on_resub( sub );
-  }
-  void do_notify_psub( NotifyPattern &pat ) {
-    pat.notify_type = NOTIFY_ADD_SUB;
-    for ( RouteNotify *p = this->notify_list.hd; p != NULL; p = p->next )
-      p->on_psub( pat );
-  }
-  void do_notify_punsub( NotifyPattern &pat ) {
-    pat.notify_type = NOTIFY_REM_SUB;
-    for ( RouteNotify *p = this->notify_list.hd; p != NULL; p = p->next )
-      p->on_punsub( pat );
-  }
-  void do_notify_repsub( NotifyPattern &pat ) {
-    pat.notify_type = NOTIFY_ADD_REF;
-    for ( RouteNotify *p = this->notify_list.hd; p != NULL; p = p->next )
-      p->on_repsub( pat );
-  }
-  void do_notify_repunsub( NotifyPattern &pat ) {
-    pat.notify_type = NOTIFY_SUB_REF;
-    for ( RouteNotify *p = this->notify_list.hd; p != NULL; p = p->next )
-      p->on_repsub( pat );
-  }
+  /* BloomRef */
   void do_notify_bloom_ref( BloomRef &ref ) {
     for ( RouteNotify *p = this->notify_list.hd; p != NULL; p = p->next )
       p->on_bloom_ref( ref );
@@ -1126,88 +1157,135 @@ struct RoutePublish : public RouteDB {
     for ( RouteNotify *p = this->notify_list.hd; p != NULL; p = p->next )
       p->on_bloom_deref( ref );
   }
-#if 0
-  void resolve_collisions( NotifySub &sub,  RouteRef &rte ) noexcept;
-  void resolve_pcollisions( NotifyPattern &pat,  RouteRef &rte ) noexcept;
-#endif
+  typedef uint32_t (RouteGroup::*mod_route_t)( uint16_t, uint32_t, uint32_t,
+                                               RouteRef & );
+  template <class Notify>
+  void do_notify( RouteGroup &grp,  uint16_t prefix_len, uint32_t prefix_hash,
+                  Notify &sub,  int type,  mod_route_t mod_route,
+                  void (RouteNotify::*cb)( Notify & ) ) {
+    RouteRef rte( grp.zip, prefix_len );
+    if ( mod_route != NULL && sub.hash_collision == 0 )
+      sub.sub_count = (grp.*mod_route)( prefix_len, prefix_hash,
+                                        sub.src.fd, rte );
+    if ( ! this->notify_list.is_empty() ) {
+      if ( mod_route != NULL && sub.hash_collision != 0 )
+        sub.sub_count = grp.ref_route( prefix_len, prefix_hash, rte );
+      sub.refp = &rte;
+      sub.notify_type = type;
+      for ( RouteNotify *p = this->notify_list.hd; p != NULL; p = p->next )
+        (p->*cb)( sub );
+      sub.refp = NULL;
+    }
+  }
+  /* NotifySub */
+  void do_snotify( NotifySub &sub,  int type,  mod_route_t mod_route,
+                   void (RouteNotify::*cb)( NotifySub & ) ) {
+    this->do_notify( *this, SUB_RTE, sub.subj_hash, sub, type, mod_route, cb );
+  }
   void add_sub( NotifySub &sub ) {
-    RouteRef rte( *this, this->zip.route_spc[ SUB_RTE ] );
-    if ( sub.hash_collision == 0 )
-      sub.sub_count = this->add_route( SUB_RTE, sub.subj_hash, sub.src.fd, rte );
-    else if ( ! this->notify_list.is_empty() )
-      sub.sub_count = this->ref_route( SUB_RTE, sub.subj_hash, rte );
-    else
-      sub.sub_count = 1;
-    /*if ( sub.sub_count > 1 )
-      this->resolve_collisions( sub, rte );*/
-    sub.ref = &rte;
-    this->do_notify_sub( sub );
-    sub.ref = NULL;
+    sub.sub_count = 1;
+    this->do_snotify( sub, NOTIFY_ADD_SUB, &RouteGroup::add_route,
+                      &RouteNotify::on_sub );
   }
-
   void del_sub( NotifySub &sub ) {
-    RouteRef rte( *this, this->zip.route_spc[ SUB_RTE ] );
-    if ( sub.hash_collision == 0 )
-      sub.sub_count = this->del_route( SUB_RTE, sub.subj_hash, sub.src.fd, rte );
-    else if ( ! this->notify_list.is_empty() )
-      sub.sub_count = this->ref_route( SUB_RTE, sub.subj_hash, rte );
-    else
-      sub.sub_count = 0;
-    /*if ( sub.sub_count > 0 )
-      this->resolve_collisions( sub, rte );*/
-    sub.ref = &rte;
-    this->do_notify_unsub( sub );
-    sub.ref = NULL;
+    sub.sub_count = 0;
+    this->do_snotify( sub, NOTIFY_REM_SUB, &RouteGroup::del_route,
+                      &RouteNotify::on_unsub );
   }
-
+  void do_notify_sub( NotifySub &sub ) {
+    sub.sub_count = 1;
+    this->do_snotify( sub, NOTIFY_ADD_SUB, NULL, &RouteNotify::on_sub );
+  }
+  void do_notify_unsub( NotifySub &sub ) {
+    sub.sub_count = 0;
+    this->do_snotify( sub, NOTIFY_REM_SUB, NULL, &RouteNotify::on_unsub );
+  }
   void notify_sub( NotifySub &sub ) {
-    this->do_notify_resub( sub );
+    this->do_snotify( sub, NOTIFY_ADD_REF, NULL, &RouteNotify::on_resub );
   }
   void notify_unsub( NotifySub &sub ) {
-    this->do_notify_reunsub( sub );
+    this->do_snotify( sub, NOTIFY_REM_REF, NULL, &RouteNotify::on_resub );
   }
-
+  /* NotifyPattern */
+  void do_pnotify( NotifyPattern &pat,  int type,  mod_route_t mod_route,
+                   void (RouteNotify::*cb)( NotifyPattern & ) ) {
+    uint16_t prefix_len = (uint16_t) pat.cvt.prefixlen;
+    this->do_notify( *this, prefix_len, pat.prefix_hash, pat, type,
+                     mod_route, cb );
+  }
   void add_pat( NotifyPattern &pat ) {
-    uint16_t prefix_len = (uint16_t) pat.cvt.prefixlen;
-    RouteRef rte( *this, this->zip.route_spc[ prefix_len ] );
-    if ( pat.hash_collision == 0 )
-      pat.sub_count = this->add_route( prefix_len, pat.prefix_hash, pat.src.fd,
-                                       rte );
-    else if ( ! this->notify_list.is_empty() )
-      pat.sub_count = this->ref_route( prefix_len, pat.prefix_hash, rte );
-    else
-      pat.sub_count = 1;
-    /*if ( pat.sub_count > 1 )
-      this->resolve_pcollisions( pat, rte );*/
-    pat.ref = &rte;
-    this->do_notify_psub( pat );
-    pat.ref = NULL;
+    pat.sub_count = 1;
+    this->do_pnotify( pat, NOTIFY_ADD_SUB, &RouteGroup::add_route,
+                      &RouteNotify::on_psub );
   }
-
   void del_pat( NotifyPattern &pat ) {
-    uint16_t prefix_len = (uint16_t) pat.cvt.prefixlen;
-    RouteRef rte( *this, this->zip.route_spc[ prefix_len ] );
-    if ( pat.hash_collision == 0 )
-      pat.sub_count = this->del_route( prefix_len, pat.prefix_hash, pat.src.fd,
-                                       rte );
-    else if ( ! this->notify_list.is_empty() )
-      pat.sub_count = this->ref_route( prefix_len, pat.prefix_hash, rte ) - 1;
-    else
-      pat.sub_count = 0;
-    /*if ( pat.sub_count > 0 )
-      this->resolve_pcollisions( pat, rte );*/
-    pat.ref = &rte;
-    this->do_notify_punsub( pat );
-    pat.ref = NULL;
+    pat.sub_count = 0;
+    this->do_pnotify( pat, NOTIFY_REM_SUB, &RouteGroup::del_route,
+                      &RouteNotify::on_punsub );
   }
-
+  void do_notify_psub( NotifyPattern &pat ) {
+    pat.sub_count = 1;
+    this->do_pnotify( pat, NOTIFY_ADD_SUB, NULL, &RouteNotify::on_psub );
+  }
+  void do_notify_punsub( NotifyPattern &pat ) {
+    pat.sub_count = 0;
+    this->do_pnotify( pat, NOTIFY_REM_SUB, NULL, &RouteNotify::on_punsub );
+  }
   void notify_pat( NotifyPattern &pat ) {
-    this->do_notify_repsub( pat );
+    this->do_pnotify( pat, NOTIFY_ADD_REF, NULL, &RouteNotify::on_repsub );
   }
   void notify_unpat( NotifyPattern &pat ) {
-    this->do_notify_repunsub( pat );
+    this->do_pnotify( pat, NOTIFY_REM_REF, NULL, &RouteNotify::on_repsub );
   }
-
+  /* NotifyQueue */
+  void do_qnotify( NotifyQueue &sub,  int type,  mod_route_t mod_route,
+                   void (RouteNotify::*cb)( NotifyQueue & ) ) {
+    RouteGroup & grp = this->get_queue_group( sub.queue, sub.queue_len,
+                                              sub.queue_hash );
+    this->do_notify( grp, SUB_RTE, sub.subj_hash, sub, type, mod_route, cb );
+  }
+  void add_sub_queue( NotifyQueue &sub ) {
+    sub.sub_count = 1;
+    this->do_qnotify( sub, NOTIFY_ADD_SUB, &RouteGroup::add_route,
+                      &RouteNotify::on_sub_q );
+  }
+  void del_sub_queue( NotifyQueue &sub ) {
+    sub.sub_count = 0;
+    this->do_qnotify( sub, NOTIFY_REM_SUB, &RouteGroup::del_route,
+                      &RouteNotify::on_unsub_q );
+  }
+  void notify_sub_queue( NotifyQueue &sub ) {
+    this->do_qnotify( sub, NOTIFY_ADD_REF, NULL, &RouteNotify::on_resub_q );
+  }
+  void notify_unsub_queue( NotifyQueue &sub ) {
+    this->do_qnotify( sub, NOTIFY_REM_REF, NULL, &RouteNotify::on_resub_q );
+  }
+  /* NotifyPatternQueue */
+  void do_pqnotify( NotifyPatternQueue &pat,  int type,  mod_route_t mod_route,
+                   void (RouteNotify::*cb)( NotifyPatternQueue & ) ) {
+    RouteGroup & grp = this->get_queue_group( pat.queue, pat.queue_len,
+                                              pat.queue_hash );
+    uint16_t prefix_len = (uint16_t) pat.cvt.prefixlen;
+    this->do_notify( grp, prefix_len, pat.prefix_hash, pat, type, mod_route,
+                     cb );
+  }
+  void add_pat_queue( NotifyPatternQueue &pat ) {
+    pat.sub_count = 1;
+    this->do_pqnotify( pat, NOTIFY_ADD_SUB, &RouteGroup::add_route,
+                       &RouteNotify::on_psub_q );
+  }
+  void del_pat_queue( NotifyPatternQueue &pat ) {
+    pat.sub_count = 0;
+    this->do_pqnotify( pat, NOTIFY_REM_SUB, &RouteGroup::del_route,
+                       &RouteNotify::on_punsub_q );
+  }
+  void notify_pat_queue( NotifyPatternQueue &pat ) {
+    this->do_pqnotify( pat, NOTIFY_ADD_REF, NULL, &RouteNotify::on_repsub_q );
+  }
+  void notify_unpat_queue( NotifyPatternQueue &pat ) {
+    this->do_pqnotify( pat, NOTIFY_REM_REF, NULL, &RouteNotify::on_repsub_q );
+  }
+  /* publishing methods */
   bool forward_msg( EvPublish &pub,  BPData *data = NULL ) noexcept;
   bool forward_with_cnt( EvPublish &pub,  uint32_t &rcnt,
                          BPData *data = NULL ) noexcept;
@@ -1233,6 +1311,7 @@ struct RoutePublish : public RouteDB {
   bool forward_set_no_route_not_fd( EvPublish &pub,  const BitSpace &fdset,
                                     uint32_t not_fd ) noexcept;
   bool forward_to( EvPublish &pub,  uint32_t fd, BPData *data = NULL ) noexcept;
+  /* convert a hash to a subject */
   bool hash_to_sub( uint32_t r,  uint32_t h,  char *key,
                     size_t &keylen ) noexcept;
   void notify_reassert( uint32_t fd,  SubRouteDB &sub_db,

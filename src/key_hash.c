@@ -147,6 +147,67 @@ kv_crc_c_array( const void **p,   size_t *psz,   uint32_t *seed,
   }
 }
 
+static int
+do_crc_c_key( uint32_t *r,  const uint8_t *x,  size_t *sz )
+{
+  if ( *sz >= 8 ) {
+    *r   = _mm_crc32_u64( *r , *(uint64_t *) x );
+    *sz -= 8;
+    return *sz > 0;
+  }
+  *r  = trail_crc_c( (uint32_t) *r, x, *sz );
+  *sz = 0;
+  return 0;
+}
+
+static void
+kv_crc_c_2_key_sz( const void *p,  size_t sz,   uint32_t *seed,
+                                   size_t sz2,  uint32_t *seed2 )
+{
+  for ( const uint8_t * x = (uint8_t *) p; ; x = &x[ 8 ] ) {
+    int b = 0;
+    if ( sz  > 0 ) b |= do_crc_c_key( seed , x, &sz );
+    if ( sz2 > 0 ) b |= do_crc_c_key( seed2, x, &sz2 );
+    if ( ! b ) return;
+  }
+}
+
+static void
+kv_crc_c_4_key_sz( const void *p,  size_t sz,   uint32_t *seed,
+                                   size_t sz2,  uint32_t *seed2,
+                                   size_t sz3,  uint32_t *seed3,
+                                   size_t sz4,  uint32_t *seed4 )
+{
+  for ( const uint8_t * x = (uint8_t *) p; ; x = &x[ 8 ] ) {
+    int b = 0;
+    if ( sz  > 0 ) b |= do_crc_c_key( seed , x, &sz );
+    if ( sz2 > 0 ) b |= do_crc_c_key( seed2, x, &sz2 );
+    if ( sz3 > 0 ) b |= do_crc_c_key( seed3, x, &sz3 );
+    if ( sz4 > 0 ) b |= do_crc_c_key( seed4, x, &sz4 );
+    if ( ! b ) return;
+  }
+}
+
+void
+kv_crc_c_key_array( const void *p,   size_t *psz,   uint32_t *seed,  size_t count )
+{
+  while ( count >= 4 ) {
+    kv_crc_c_4_key_sz( p, psz[ 0 ], &seed[ 0 ],
+                          psz[ 1 ], &seed[ 1 ],
+                          psz[ 2 ], &seed[ 2 ],
+                          psz[ 3 ], &seed[ 3 ] );
+    psz += 4; seed += 4; count -= 4;
+  }
+  if ( ( count & 2 ) != 0 ) {
+    kv_crc_c_2_key_sz( p, psz[ 0 ], &seed[ 0 ],
+                          psz[ 1 ], &seed[ 1 ] );
+    psz += 2; seed += 2;
+  }
+  if ( ( count & 1 ) != 0 ) {
+    seed[ 0 ] = kv_crc_c( p, psz[ 0 ], seed[ 0 ] );
+  }
+}
+
 #ifdef USE_KV_MURMUR_HASH
 static inline uint64_t
 MurmurHash64A ( const void * key, size_t len, uint64_t seed )

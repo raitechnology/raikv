@@ -747,12 +747,14 @@ struct RouteVec {
     size_t sz = ( sizeof( uint32_t ) + sizeof( VecData * ) ) *
                 ( this->vec_size + 1 );
     void * p  = ::realloc( this->vec, sz );
-    void * d  = this->new_vec_data( this->id, sizeof( VecData ) );
-    if ( p == NULL || d == NULL )
+    if ( p == NULL )
       return false;
-
+    VecData ** v = (VecData **) p;
+    void     * d = this->new_vec_data( this->id, sizeof( VecData ) );
+    this->vec = v;
+    if ( d == NULL )
+      return false;
     this->vec_size++;
-    VecData ** v   = (VecData **) p;
     uint32_t * nhv = (uint32_t *) (void *) &v[ this->vec_size ];
 
     if ( this->vec_size > 1 ) {
@@ -774,7 +776,6 @@ struct RouteVec {
     if ( i + 1 < this->vec_size )
       v[ i + 1 ]->split( *v[ i ] );
     nhv[ i ] = v[ i ]->max_hash_val;
-    this->vec          = v;
     this->max_hash_val = nhv;
     this->link_id( i );
     if ( i + 1 < this->vec_size )

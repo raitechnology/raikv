@@ -20,7 +20,7 @@ void print_routedb( RouteDB &rte )
       printf( "rt[%" PRIu64 "] %" PRIu64 "/%" PRIu64 " :\n", k, xht->elem_count, xht->tab_size() );
       if ( xht->first( i ) ) {
         do {
-          RouteRef ref( rte, rte.zip.route_spc[ 0 ] );
+          RouteRef ref( rte.zip, 0 );
           uint32_t h = xht->tab[ i ].hash,
                    v = xht->tab[ i ].val,
                    cnt;
@@ -68,10 +68,10 @@ void print_routedb( RouteDB &rte )
   printf( "code_end %" PRIu64 ", code_size %" PRIu64 ", code_free %" PRIu64 "\n",
           rte.zip.code_end, rte.zip.code_buf.size, rte.zip.code_free );
   printf( "code_spc_size %" PRIu64 ", route_ref_size %" PRIu64 "\n",
-          rte.zip.zroute_spc.size, rte.zip.route_spc[ 64 ].size );
+          rte.zip.zroute_spc.size, rte.zip.route_spc( SUB_RTE ).size );
   printf( "zht %" PRIu64 "/%" PRIu64 "\n", rte.zip.zht->elem_count, rte.zip.zht->tab_size() );
   printf( "cache_elems %" PRIu64 " cache_free %" PRIu64 "\n", rte.cache.end, rte.cache.free );
-  printf( "entry_count %" PRIu64 " cache_count %" PRIu64 "\n", rte.entry_count, rte.cache.count);
+  printf( "entry_count %u cache_count %" PRIu64 "\n", rte.entry_count, rte.cache.count );
 }
 
 int
@@ -179,18 +179,17 @@ interactive_update( RouteDB &rte ) noexcept
       }
       else if ( n == 2 ) {
         if ( arg_equal( args[ 0 ], arglen[ 0 ], "get" ) ) {
-          uint32_t *routes;
-          uint32_t cnt = 0;
-          n = rte.get_sub_route( hash, routes, cnt, 0 );
-          if ( n == 0 )
+          RouteLookup look( args[ 1 ], arglen[ 1 ], hash, 0 );
+          rte.get_sub_route( look );
+          if ( look.rcount == 0 )
             printf( "not found\n" );
           else {
-            printf( "%u [", n );
-            for ( int i = 0; i < n; i++ )
-              printf( "%u ", routes[ i ] );
+            printf( "%u [", look.rcount );
+            for ( uint32_t i = 0; i < look.rcount; i++ )
+              printf( "%u ", look.routes[ i ] );
             printf( "]\n" );
           }
-          rte.cache.busy -= cnt;
+          look.deref( rte );
         }
         else {
           printf( "what?\n" );
@@ -344,17 +343,17 @@ TestDB::add_bloom_routes( void ) noexcept
 void
 TestDB::verify_routes( void ) noexcept
 {
-  uint32_t *routes, false_pos = 0, total = 0, cnt = 0;
+  uint32_t false_pos = 0, total = 0;
   /* verify the rte are the same as rdb */
   for ( uint32_t i = 0; i < SUB; i++ ) {
-    uint32_t k = this->rte.get_sub_route( hash_int( i + 1 ), routes, cnt, 0 );
-    if ( k != this->cnt[ i ] ) {
-      printf( "failed %u k %u cnt %u\n", i, k, this->cnt[ i ] );
-      false_pos += k - this->cnt[ i ];
+    RouteLookup look( NULL, 0, hash_int( i + 1 ), 0 );
+    this->rte.get_sub_route( look );
+    if ( look.rcount != this->cnt[ i ] ) {
+      printf( "failed %u k %u cnt %u\n", i, look.rcount, this->cnt[ i ] );
+      false_pos += look.rcount - this->cnt[ i ];
     }
     total += this->cnt[ i ];
-    this->rte.cache.busy -= cnt;
-    cnt = 0;
+    look.deref( this->rte );
   }
   printf( "false positive rate %.2f%%\n",
            (double) false_pos * 100.0 / (double) total );

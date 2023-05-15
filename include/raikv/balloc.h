@@ -46,7 +46,10 @@ struct Balloc {
       shift += free_bits;
       if ( shift + bits >= 64 )
         return NULL;
-      fsz >>= free_bits;
+      if ( free_bits < 64 )
+        fsz >>= free_bits;
+      else
+        fsz = 0;
       used_bits = kv_ffsl( ~fsz ) - 1;
       shift += used_bits;
       fsz >>= used_bits;

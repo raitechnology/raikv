@@ -33,19 +33,68 @@ RoutePDB::get_service( const char *svc,  uint32_t svc_num,
   return *rt->sub_route;
 }
 
-RouteDB::RouteDB( BloomDB &g_db ) noexcept
-       : g_bloom_db( g_db ), entry_count( 0 ), pat_mask( 0 ), rt_mask( 0 ),
-         pat_bit_count( 0 )
+uint32_t RouteGroup::pre_seed[ MAX_PRE ];
+
+RouteGroup::RouteGroup( RouteCache &c,  RouteZip &z,  BloomList *bl,
+                        uint32_t gn ) noexcept
+          : cache( c ), zip( z ), group_num( gn ), entry_count( 0 ),
+            pat_mask( 0 ), rt_mask( 0 ), bloom_mask( 0 ), bloom_list_ptr( bl )
 {
   for ( size_t i = 0; i < sizeof( this->rt_hash ) /
                           sizeof( this->rt_hash[ 0 ] ); i++ ) {
     this->rt_hash[ i ] = UIntHashTab::resize( NULL );
+  }
+  /* wildcard prefix: _SYS.W3. */
+  if ( pre_seed[ MAX_PRE - 1 ] == 0 ) {
+    for ( uint16_t j = 0; j < MAX_PRE; j++ ) {
+      char   sub[ 16 ];
+      CatPtr p( sub );
+      p.s( "_SYS.W" ).u( j ).s( "." );
+      pre_seed[ j ] = kv_crc_c( sub, p.len(), 0 );
+    }
+  }
+  for ( size_t i = 0; i < MAX_RTE; i++ ) {
     this->bloom_pref_count[ i ] = 0;
   }
-  for ( uint8_t j = 0; j < 64; j++ ) {
-    SysWildSub w( NULL, j );
-    this->pre_seed[ j ] = kv_crc_c( w.sub, w.len, 0 );
+}
+
+RouteDB::RouteDB( BloomDB &g_db ) noexcept
+       : RouteGroup( this->cache, this->zip, &this->bloom_list, 0 ),
+         g_bloom_db( g_db ), queue_db( 0 ), queue_db_size( 0 )
+{
+}
+
+void
+QueueDB::init( RouteCache &c,  RouteZip &z,  const char *q,  uint32_t qlen,
+               uint32_t qhash,  uint32_t gn ) noexcept
+{
+  this->queue = (char *) ::malloc( queue_len + 1 );
+  this->queue_len = qlen;
+  ::memcpy( this->queue, q, qlen );
+  this->queue[ qlen ] = '\0';
+  this->queue_hash = qhash;
+  void * m = ::malloc( sizeof( RouteGroup ) );
+  this->route_group = new ( m ) RouteGroup( c, z, NULL, gn );
+  this->next_route = qhash;
+}
+
+RouteGroup &
+RouteDB::get_queue_group( const char *queue,  uint32_t queue_len,
+                          uint32_t queue_hash ) noexcept
+{
+  size_t sz = this->queue_db_size;
+  for ( size_t i = 0; i < sz; i++ ) {
+    if ( this->queue_db[ i ].equal( queue, queue_len, queue_hash ) )
+      return *this->queue_db[ i ].route_group;
   }
+  if ( sz < 0xffffU ) { /* no more than 64k queues */
+    this->queue_db = (QueueDB *) ::realloc( (void *) this->queue_db,
+                                    sizeof( this->queue_db[ 0 ] ) * ( sz + 1 ) );
+    this->queue_db[ sz ].init( this->cache, this->zip, queue, queue_len,
+                               queue_hash, sz + 1 );
+    this->queue_db_size = ++sz;
+  }
+  return *this->queue_db[ sz - 1 ].route_group;
 }
 
 RouteCache::RouteCache() noexcept
@@ -89,25 +138,87 @@ RouteZip::RouteZip() noexcept
 void
 RouteZip::init( void ) noexcept
 {
-  this->zht         = UIntHashTab::resize( NULL );
-  this->code_end    = 0;
-  this->code_free   = 0;
+  this->zht        = UIntHashTab::resize( NULL );
+  this->code_end   = 0;
+  this->code_free  = 0;
+  this->route_free = 0;
 }
 
 void
 RouteZip::reset( void ) noexcept
 {
-  size_t i;
   delete this->zht;
   this->code_buf.reset();
   this->zroute_spc.reset();
-  for ( i = 0; i < sizeof( this->route_spc ) /
-                   sizeof( this->route_spc[ 0 ] ); i++ )
-    this->route_spc[ i ].reset();
-  for ( i = 0; i < sizeof( this->bloom_spc ) /
-                   sizeof( this->bloom_spc[ 0 ] ); i++ )
-    this->bloom_spc[ i ].reset();
+  for ( int i = 0; i < 64; i++ )
+    this->route_temp[ i ].reset();
   this->init();
+}
+
+RouteSpace &
+RouteZip::create_extra_spc( uint16_t &ref ) noexcept
+{
+  size_t i = 0;
+  for ( ; i < this->extra_temp.size; i++ ) {
+    if ( this->extra_temp.ptr[ i ] == NULL ||
+         ! this->extra_temp.ptr[ i ]->used )
+      break;
+  }
+  if ( i == this->extra_temp.size )
+    this->extra_temp.make( i + 1, true );
+  if ( this->extra_temp.ptr[ i ] == NULL ) {
+    this->extra_temp.ptr[ i ] =
+      new ( ::malloc( sizeof( RouteSpaceRef ) ) ) RouteSpaceRef();
+  }
+  this->extra_temp.ptr[ i ]->used = true;
+  ref = 64 + (uint16_t) i;
+  return *this->extra_temp.ptr[ i ];
+}
+
+void
+RouteZip::release_extra_spc( uint16_t ref ) noexcept
+{
+  this->extra_temp.ptr[ ref - 64 ]->used = false;
+}
+
+void
+RouteRefCount::deref( RouteDB &rdb ) noexcept
+{
+  rdb.zip.route_free &= ~this->ref_mask;
+  rdb.cache.busy     -= this->cache_ref;
+  if ( this->extra_cnt > 0 ) {
+    uint32_t i, max_bit = 64 * this->extra_cnt;
+    UIntBitSet set( this->ref_extra );
+    for ( bool b = set.first( i, max_bit ); b; b = set.next( i, max_bit ) )
+      rdb.zip.release_extra_spc( 64 + i );
+  }
+}
+
+void
+RouteRefCount::set_ref_extra( uint16_t spc_ref ) noexcept
+{
+  if ( this->extra_cnt == 0 ) {
+    ::memset( this->ref_extra, 0, sizeof( this->ref_extra ) );
+    this->extra_cnt =
+      sizeof( this->ref_extra ) / sizeof( this->ref_extra[ 0 ] );
+  }
+  uint32_t max_bit = 64 * this->extra_cnt;
+  if ( spc_ref >= 64 && spc_ref < 64 + max_bit )
+    this->ref_extra[ spc_ref / 64 - 1 ] |= (uint64_t) 1 << ( spc_ref % 64 );
+}
+
+void
+RouteRefCount::merge_ref_extra( RouteRefCount &refs ) noexcept
+{
+  if ( refs.extra_cnt != 0 ) {
+    if ( this->extra_cnt == 0 ) {
+      ::memset( this->ref_extra, 0, sizeof( this->ref_extra ) );
+      this->extra_cnt =
+        sizeof( this->ref_extra ) / sizeof( this->ref_extra[ 0 ] );
+    }
+    for ( uint32_t i = 0; i < this->extra_cnt; i++ )
+      this->ref_extra[ i ] |= refs.ref_extra[ i ];
+  }
 }
 
 uint32_t *
@@ -172,24 +283,22 @@ RouteZip::gc_code_ref_space( void ) noexcept
   this->code_free = 0;
 }
 
+static int cmp_uint( const uint32_t &x,  const uint32_t &y ) {
+  return (int) x - (int) y;
+}
+
 uint32_t
-rai::kv::bsearch_route( uint32_t r,  const uint32_t *routes, uint32_t size ) noexcept
+rai::kv::bsearch_route( uint32_t r,  const uint32_t *routes,
+                        uint32_t size ) noexcept
 {
-  uint32_t k = 0, piv;
-  for (;;) {
-    if ( size < 4 ) {
-      for ( ; size > 0 && r > routes[ k ]; size-- )
-        k++;
-      return k;
+  if ( size < 24 ) {
+    for ( ; size > 0; size-- ) {
+      if ( routes[ size - 1 ] < r )
+        return size;
     }
-    piv = size / 2;
-    if ( r <= routes[ k + piv ] )
-      size = piv;
-    else {
-      size -= piv + 1;
-      k    += piv + 1;
-    }
+    return 0;
   }
+  return lower_bound( routes, r, size, cmp_uint );
 }
 
 uint32_t
@@ -219,33 +328,60 @@ uint32_t
 rai::kv::merge_route( uint32_t *routes,  uint32_t count,
                       const uint32_t *merge,  uint32_t mcount ) noexcept
 {
-  uint32_t i = 0;
-  for ( uint32_t j = 0; ; j++ ) {
-    if ( j == mcount )
-      return count;
-    i += bsearch_route( merge[ j ], &routes[ i ], count - i );
-
-    if ( i == count ) {
-      do {
-        routes[ count++ ] = merge[ j++ ];
-      } while ( j < mcount );
-      return count;
+  uint32_t i = 0, j = 0, k;
+  while ( i < count && j < mcount ) {
+    if ( routes[ i ] <= merge[ j ] ) {
+      if ( routes[ i ] == merge[ j ] )
+        j++;
+      i++;
     }
-
-    if ( merge[ j ] != routes[ i ] ) {
-      for ( uint32_t k = count++; k > i; k-- )
-        routes[ k ] = routes[ k - 1 ];
-      routes[ i++ ] = merge[ j ];
+    else {
+      k = j + 1;
+      while ( k < mcount && routes[ i ] > merge[ k ] )
+        k++;
+      uint32_t len = k - j, dest = count + len, src = count;
+      while ( src > i )
+        routes[ --dest ] = routes[ --src ];
+      count += len;
+      do {
+        routes[ i++ ] = merge[ j++ ];
+      } while ( j < k );
     }
   }
+  while ( j < mcount )
+    routes[ count++ ] = merge[ j++ ];
+  return count;
+}
+
+uint32_t
+rai::kv::merge_route2( uint32_t *dest,  const uint32_t *routes,  uint32_t count,
+                       const uint32_t *merge,  uint32_t mcount ) noexcept
+{
+  uint32_t i = 0, j = 0, k = 0;
+  while ( i < count && j < mcount ) {
+    if ( routes[ i ] <= merge[ j ] ) {
+      dest[ k ] = routes[ i++ ];
+      if ( dest[ k ] == merge[ j ] )
+        j++;
+      k++;
+    }
+    else {
+      dest[ k++ ] = merge[ j++ ];
+    }
+  }
+  while ( i < count )
+    dest[ k++ ] = routes[ i++ ];
+  while ( j < mcount )
+    dest[ k++ ] = merge[ j++ ];
+  return k;
 }
 
 uint32_t
 RouteRef::decode( uint32_t val,  uint32_t add ) noexcept
 {
   size_t pos;
-  if ( this->rdb.zip.zht->find( val, pos, this->ptr.off ) ) {
-    this->ptr.code_buf = &this->rdb.zip.code_buf;
+  if ( this->zip.zht->find( val, pos, this->ptr.off ) ) {
+    this->ptr.code_buf = &this->zip.code_buf;
     CodeRef *p = this->ptr.get();
     this->routes = this->route_spc.make( p->rcnt + add );
     this->rcnt   = DeltaCoder::decode_stream( p->ecnt, &p->code, 0,
@@ -261,8 +397,8 @@ void
 RouteRef::find_coderef( uint32_t val ) noexcept
 {
   size_t pos;
-  if ( this->rdb.zip.zht->find( val, pos, this->ptr.off ) )
-    this->ptr.code_buf = &this->rdb.zip.code_buf;
+  if ( this->zip.zht->find( val, pos, this->ptr.off ) )
+    this->ptr.code_buf = &this->zip.code_buf;
   else
     this->ptr.code_buf = NULL;
 }
@@ -301,23 +437,23 @@ RouteRef::compress( void ) noexcept
     if ( val != 0 )
       return val;
   }
-  uint32_t * code = this->rdb.zip.zroute_spc.make( this->rcnt );
+  uint32_t * code = this->zip.zroute_spc.make( this->rcnt );
   uint32_t   ecnt = DeltaCoder::encode_stream( this->rcnt, this->routes, 0,
                                                code );
   if ( ecnt == 1 ) /* single value code */
     return code[ 0 ];
-  return this->rdb.zip.make_code_ref( code, ecnt, this->rcnt );
+  return this->zip.make_code_ref( code, ecnt, this->rcnt );
 }
 
 void
-RouteRef::deref( void ) noexcept
+RouteRef::deref_coderef( void ) noexcept
 {
   CodeRef *p = this->ptr.get();
   if ( p != NULL && --p->ref == 0 ) {
     ptr.code_buf = NULL;
-    this->rdb.zip.code_free += p->word_size();
-    if ( this->rdb.zip.code_free * 2 > this->rdb.zip.code_end )
-      this->rdb.zip.gc_code_ref_space();
+    this->zip.code_free += p->word_size();
+    if ( this->zip.code_free * 2 > this->zip.code_end )
+      this->zip.gc_code_ref_space();
   }
 }
 /* just find the first route of many, used to find a subject string from
@@ -337,63 +473,48 @@ RouteZip::decompress_one( uint32_t val ) noexcept
 }
 /* how many routes exists for a hash, excluding bloom */
 uint32_t
-RouteDB::get_route_count( uint16_t prefix_len,  uint32_t hash ) noexcept
+RouteGroup::get_route_count( uint16_t prefix_len,  uint32_t hash ) noexcept
 {
-  uint32_t rcnt = 0/*, *routes*/;
-  /*if ( ! this->cache_find( prefix_len, hash, routes, rcnt ) ) {*/
-    UIntHashTab * xht  = this->rt_hash[ prefix_len ];
-    size_t        pos;
-    uint32_t      val, off;
-    if ( xht->find( hash, pos, val ) ) {
-      if ( DeltaCoder::is_not_encoded( val ) ) {
-        if ( this->zip.zht->find( val, pos, off ) ) {
-          CodeRef *p = (CodeRef *) (void *) &this->zip.code_buf.ptr[ off ];
-          rcnt = p->rcnt;
-        }
-      }
-      else {
-        rcnt = DeltaCoder::decode_length( val );
+  uint32_t rcnt = 0;
+  UIntHashTab * xht  = this->rt_hash[ prefix_len ];
+  size_t        pos;
+  uint32_t      val, off;
+  if ( xht->find( hash, pos, val ) ) {
+    if ( DeltaCoder::is_not_encoded( val ) ) {
+      if ( this->zip.zht->find( val, pos, off ) ) {
+        CodeRef *p = (CodeRef *) (void *) &this->zip.code_buf.ptr[ off ];
+        rcnt = p->rcnt;
       }
     }
-    /*if ( ! this->bloom_list.is_empty() )
-      rcnt += this->get_bloom_count( prefix_len, hash );*/
-  /*}*/
+    else {
+      rcnt = DeltaCoder::decode_length( val );
+    }
+  }
   return rcnt;
 }
 /* insert route for a subject hash */
 uint32_t
-RouteDB::add_route( uint16_t prefix_len,  uint32_t hash,  uint32_t r ) noexcept
+RouteGroup::add_route( uint16_t prefix_len,  uint32_t hash,
+                       uint32_t r ) noexcept
 {
-  RouteRef rte( *this, this->zip.route_spc[ prefix_len ] );
+  RouteRef rte( this->zip, prefix_len );
   return this->add_route( prefix_len, hash, r, rte );
 }
 
 uint32_t
-RouteDB::add_route( uint16_t prefix_len,  uint32_t hash,  uint32_t r,
-                    RouteRef &rte ) noexcept
+RouteGroup::add_route( uint16_t prefix_len,  uint32_t hash,  uint32_t r,
+                       RouteRef &rte ) noexcept
 {
   UIntHashTab * xht = this->rt_hash[ prefix_len ];
   size_t        pos, cpos = 0;
   uint32_t    * routes;
   uint32_t      val = 0, rcnt = 0, xcnt;
-  bool          decompress_route = true,
-                exists;
+  bool          exists;
 
   exists = xht->find( hash, pos, val );
-  if ( this->cache_find( prefix_len, hash, routes, rcnt, 0, cpos ) ) {
-    /* if bloom routes exist, don't use cached route */
-    if ( this->bloom_list.is_empty() ) {
-      rte.copy_cached( routes, rcnt, 1 );
-      decompress_route = false;
-      if ( exists && DeltaCoder::is_not_encoded( val ) )
-        rte.find_coderef( val );
-    }
-    else {
-      rcnt = 0;
-    }
+  if ( this->cache_find( prefix_len, hash, routes, rcnt, 0, cpos ) )
     this->cache_purge( cpos );
-  }
-  if ( exists && decompress_route )
+  if ( exists )
     rcnt = rte.decompress( val, 1 );
   xcnt = rte.insert( r ); /* add r to rte.routes[] */
 
@@ -408,45 +529,33 @@ RouteDB::add_route( uint16_t prefix_len,  uint32_t hash,  uint32_t r,
     xht->set( hash, pos, val ); /* update val in xht */
     if ( UIntHashTab::check_resize( xht ) )
       this->rt_hash[ prefix_len ] = xht;
-    rte.deref(); /* free the old code, it is no longer referenced */
+    rte.deref_coderef(); /* free the old code, it is no longer referenced */
   }
   return xcnt; /* count of routes after inserting r */
 }
 /* delete a route for a subject hash */
 uint32_t
-RouteDB::del_route( uint16_t prefix_len,  uint32_t hash,  uint32_t r ) noexcept
+RouteGroup::del_route( uint16_t prefix_len,  uint32_t hash,
+                       uint32_t r ) noexcept
 {
-  RouteRef rte( *this, this->zip.route_spc[ prefix_len ] );
+  RouteRef rte( this->zip, prefix_len );
   return this->del_route( prefix_len, hash, r, rte );
 }
 
 uint32_t
-RouteDB::del_route( uint16_t prefix_len,  uint32_t hash,  uint32_t r,
-                    RouteRef &rte ) noexcept
+RouteGroup::del_route( uint16_t prefix_len,  uint32_t hash,  uint32_t r,
+                       RouteRef &rte ) noexcept
 {
   UIntHashTab * xht = this->rt_hash[ prefix_len ];
   size_t        pos, cpos = 0;
   uint32_t    * routes;
   uint32_t      val, rcnt = 0, xcnt;
-  bool          decompress_route = true;
 
   if ( ! xht->find( hash, pos, val ) )
     return 0;
-  if ( this->cache_find( prefix_len, hash, routes, rcnt, 0, cpos ) ) {
-    /* if bloom routes exist, don't use cached route */
-    if ( this->bloom_list.is_empty() ) {
-      rte.copy_cached( routes, rcnt, 0 );
-      decompress_route = false;
-      if ( DeltaCoder::is_not_encoded( val ) )
-        rte.find_coderef( val );
-    }
-    else {
-      rcnt = 0;
-    }
+  if ( this->cache_find( prefix_len, hash, routes, rcnt, 0, cpos ) )
     this->cache_purge( cpos );
-  }
-  if ( decompress_route )
-    rcnt = rte.decompress( val, 0 );
+  rcnt = rte.decompress( val, 0 );
   xcnt = rte.remove( r ); /* remove r from rte.routes[] */
   /* if route was deleted */
   if ( xcnt != rcnt ) {
@@ -455,6 +564,9 @@ RouteDB::del_route( uint16_t prefix_len,  uint32_t hash,  uint32_t r,
       if ( xht->is_empty() )
         this->del_prefix_len( prefix_len, true );
       this->entry_count--;
+      /*if ( this->entry_count == 0 ) {
+        printf( "rg %u empty\n", this->group_num );
+      }*/
     }
     else { /* recompress and update hash */
       val = rte.compress();
@@ -462,182 +574,200 @@ RouteDB::del_route( uint16_t prefix_len,  uint32_t hash,  uint32_t r,
       if ( UIntHashTab::check_resize( xht ) )
         this->rt_hash[ prefix_len ] = xht;
     }
-    rte.deref(); /* free old code buf */
+    rte.deref_coderef(); /* free old code buf */
   }
   return xcnt; /* count of routes after removing r */
 }
 
 uint32_t
-RouteDB::ref_route( uint16_t prefix_len,  uint32_t hash,
-                    RouteRef &rte ) noexcept
+RouteGroup::ref_route( uint16_t prefix_len,  uint32_t hash,
+                       RouteRef &rte ) noexcept
 {
   UIntHashTab * xht = this->rt_hash[ prefix_len ];
   size_t        pos;
-  uint32_t    * routes;
-  uint32_t      val, rcnt = 0;
+  uint32_t      val;
 
   if ( ! xht->find( hash, pos, val ) )
     return 0;
-  /* if bloom routes exist, don't use cached route */
-  if ( this->bloom_list.is_empty() ) {
-    if ( this->cache_find( prefix_len, hash, routes, rcnt, 0, pos ) ) {
-      rte.copy_cached( routes, rcnt, 0 );
-      return rcnt;
-    }
-  }
   return rte.decompress( val, 0 );
 }
 
-uint32_t
-RouteDB::get_route_slow( uint32_t hash,  uint32_t val,
-                         uint32_t *&routes,  uint32_t shard ) noexcept
+void
+RouteGroup::get_route_slow( RouteLookup &look,  uint32_t val ) noexcept
 {
-  RouteRef rte( *this, this->zip.route_spc[ SUB_RTE ] );
-  uint32_t rcnt = rte.decompress( val, 0 );
-  routes = rte.routes;
-  return this->get_bloom_route( hash, routes, rcnt, shard );
+  RouteRef rte( this->zip, SUB_RTE );
+  look.rcount = rte.decompress( val, 0 );
+  look.routes = rte.routes;
+  look.add_ref( rte );
+  return this->get_bloom_route( look );
 }
 
-uint32_t
-RouteDB::get_bloom_route( uint32_t hash,  uint32_t *&routes,
-                          uint32_t merge_cnt,  uint32_t shard ) noexcept
+void
+RouteGroup::get_bloom_route( RouteLookup &look ) noexcept
 {
-  RouteSpace & spc   = this->zip.bloom_spc[ SUB_RTE ];
+  RouteRef     rte( this->zip, SUB_RTE + 16 );
+  RouteSpace & spc = rte.route_spc;
   uint32_t     count = 0;
 
-  for ( BloomRoute *b = this->bloom_list.hd( shard ); b != NULL; b = b->next ) {
-    if ( b->in_list != shard + 1 )
-      continue;
-    for ( uint32_t i = 0; i < b->nblooms; i++ ) {
-      BloomRef * r = b->bloom[ i ];
-      if ( r->pref_count[ SUB_RTE ] != 0 && r->bits->is_member( hash ) ) {
-        uint32_t * p = spc.make( count + 1 );
-        p[ count++ ] = b->r;
-        break;
-      }
-    }
-  }
-  if ( count == 0 ) {
-    this->cache_save( SUB_RTE, hash, routes, merge_cnt, shard );
-    return merge_cnt;
-  }
-  if ( merge_cnt > 0 ) {
-    spc.make( count + merge_cnt );
-    count = merge_route( spc.ptr, count, routes, merge_cnt );
-  }
-  this->cache_save( SUB_RTE, hash, spc.ptr, count, shard );
-  routes = spc.ptr;
-  return count;
-}
-
-uint32_t
-RouteDB::get_route_slow2( const char *sub,  uint16_t sublen,
-                          uint16_t prefix_len,  uint64_t mask,  uint32_t hash,
-                          uint32_t val,  uint32_t *&routes,
-                          uint32_t subj_hash,  uint32_t shard ) noexcept
-{
-  RouteRef rte( *this, this->zip.route_spc[ prefix_len ] );
-  uint32_t rcnt = rte.decompress( val, 0 );
-  routes = rte.routes;
-  return this->get_bloom_route2( sub, sublen, prefix_len, mask, hash, routes,
-                                 rcnt, subj_hash, shard );
-}
-
-uint32_t
-RouteDB::get_bloom_route2( const char *sub,  uint16_t sublen,
-                           uint16_t prefix_len,  uint64_t mask,  uint32_t hash,
-                           uint32_t *&routes,  uint32_t merge_cnt,
-                           uint32_t subj_hash,  uint32_t shard ) noexcept
-{
-  RouteSpace & spc        = this->zip.bloom_spc[ prefix_len ];
-  uint32_t     count      = 0;
-  bool         has_detail = false;
-
-  if ( ( mask & this->bloom_mask ) != 0 ) {
-    BloomRoute *b = this->bloom_list.hd( shard );
-    for ( ; b != NULL; b = b->next ){
-      if ( b->in_list != shard + 1 )
+  if ( this->bloom_list_ptr != NULL ) {
+    for ( BloomRoute *b = this->bloom_list_ptr->hd( look.shard ); b != NULL;
+          b = b->next ) {
+      if ( b->in_list != look.shard + 1 )
         continue;
-
-      if ( b->is_invalid )
-        b->update_masks();
-
-      if ( ( b->pref_mask & mask ) == 0 ) /* no prefix here */
-        goto no_match;
-
-      if ( ( b->detail_mask & mask ) == 0 ) { /* if no details match */
-        for ( uint32_t i = 0; i < b->nblooms; i++ ) {
-          BloomRef * r = b->bloom[ i ];
-          if ( ( r->pref_mask & mask ) != 0 && r->bits->is_member( hash ) )
-            goto match;
-        }
-        goto no_match;
-      }
-      /*printf( "-- %.*s %u:mask 0x%x pref 0x%x detail 0x%x, r %u\n",
-               (int) sublen, sub, prefix_len,
-               (uint32_t) mask, (uint32_t) b->pref_mask,
-               (uint32_t) b->detail_mask , b->r );*/
       for ( uint32_t i = 0; i < b->nblooms; i++ ) {
         BloomRef * r = b->bloom[ i ];
-        if ( ( r->pref_mask & mask ) != 0 &&
-               r->bits->is_member( hash ) &&
-               r->detail_matches( prefix_len, mask, hash, sub, sublen,
-                                  subj_hash, has_detail ) )
-          goto match;
+        if ( r->pref_count[ SUB_RTE ] != 0 &&
+             r->bits->is_member( look.subj_hash ) ) {
+          uint32_t * p = spc.make( count + 1 );
+          p[ count++ ] = b->r;
+          break;
+        }
       }
-      if ( 0 ) {
-    match:;
-        uint32_t * p = spc.make( count + 1 );
-        p[ count++ ] = b->r; /* route matches */
-      }
-    no_match:; /* next bloom route */
     }
   }
-  if ( count == 0 ) {
-    if ( ! has_detail )
-      this->cache_save( prefix_len, hash, routes, merge_cnt, shard );
-    return merge_cnt;
+  if ( count > 0 ) {
+    if ( look.rcount > 0 ) {
+      spc.make( count + look.rcount );
+      count = merge_route( spc.ptr, count, look.routes, look.rcount );
+    }
+    look.rcount = count;
+    look.routes = spc.ptr;
+    look.add_ref( rte );
   }
-  if ( merge_cnt > 0 ) {
-    spc.make( count + merge_cnt );
-    count = merge_route( spc.ptr, count, routes, merge_cnt );
-  }
-  if ( ! has_detail )
-    this->cache_save( prefix_len, hash, spc.ptr, count, shard );
-  routes = spc.ptr;
-  return count;
+  this->cache_save( SUB_RTE, look.subj_hash, look.routes, look.rcount,
+                    look.shard );
 }
 
-bool
-BloomRef::detail_matches( uint16_t prefix_len,  uint64_t mask, uint32_t hash,
-                          const char *sub,  uint16_t sublen,
-                          uint32_t subj_hash,  bool &has_detail ) const noexcept
+void
+RouteGroup::get_route_slow2( RouteLookup &look,  uint16_t prefix_len,
+                             uint32_t hash,  uint32_t val ) noexcept
 {
-  if ( ( this->detail_mask & mask ) == 0 ) /* no detail */
-    return true;
+  RouteRef rte( this->zip, prefix_len );
+  look.rcount = rte.decompress( val, 0 );
+  look.routes = rte.routes;
+  look.add_ref( rte );
+  return this->get_bloom_route2( look, prefix_len, hash );
+}
+
+static int cmp_prefix( const BloomDetail &el,  const uint16_t &v ) {
+  return (int) (uint32_t) el.prefix_len - (int) (uint32_t) v;
+}
+
+template <class Match>
+bool
+BloomRef::detail_matches( Match &args,  uint16_t prefix_len,
+                          uint32_t hash,  bool &has_detail ) const noexcept
+{
   uint32_t j = 0, n = this->ndetails, detail_not_matched = 0;
   BloomDetail * d = this->details;
 
-  for ( ; j < n; j++ ) {
-    if ( d[ j ].prefix_len >= prefix_len )
-      break;
-  }
+  j = lower_bound( d, prefix_len, n, cmp_prefix );
   for ( ; j < n && d[ j ].prefix_len == prefix_len; j++ ) {
     if ( this->details[ j ].hash != hash )
       continue;
     has_detail = true;
-    if ( this->details[ j ].match( sub, sublen, subj_hash ) )
+    if ( this->details[ j ].match( args.sub, args.sublen, args.subj_hash ) )
       return true;
     detail_not_matched++; /* hash match, but match filtered */
   }
   /* no more details left, is a match */
   if ( detail_not_matched > 0 ) {
     /* if has a regular prefix match */
-    if ( this->bits->ht_refs( hash ) >= detail_not_matched )
+    if ( this->bits->ht_refs( args.subj_hash ) >= detail_not_matched ) {
+      has_detail = false; /* override since prefix matches */
       return true;
+    }
     return false;
   }
   return true;
+}
+
+void
+RouteGroup::get_bloom_route2( RouteLookup &look,  uint16_t prefix_len,
+                              uint32_t hash ) noexcept
+{
+  RouteRef     rte( this->zip, prefix_len + 16 );
+  RouteSpace & spc        = rte.route_spc;
+  uint64_t     mask       = look.mask;
+  uint32_t     count      = 0;
+  bool         has_detail = false;
+
+  if ( this->bloom_list_ptr != NULL ) {
+    if ( ( this->bloom_mask & mask ) != 0 ) {
+      BloomRoute *b = this->bloom_list_ptr->hd( look.shard );
+      for ( ; b != NULL; b = b->next ){
+        if ( b->in_list != look.shard + 1 )
+          continue;
+
+        if ( b->is_invalid )
+          b->update_masks();
+
+        if ( ( b->pref_mask & mask ) == 0 )
+          goto no_match;
+
+        if ( ( b->detail_mask & mask ) == 0 ) {
+          for ( uint32_t i = 0; i < b->nblooms; i++ ) {
+            BloomRef * r = b->bloom[ i ];
+            if ( ( r->pref_mask & mask ) != 0 &&
+                 r->bits->is_member( hash ) )
+              goto match;
+          }
+          goto no_match;
+        }
+        /*printf( "-- %.*s %u:mask 0x%x pref 0x%x detail 0x%x, r %u\n",
+                 (int) sublen, sub, prefix_len,
+                 (uint32_t) mask, (uint32_t) b->pref_mask,
+                 (uint32_t) b->detail_mask , b->r );*/
+        for ( uint32_t i = 0; i < b->nblooms; i++ ) {
+          BloomRef * r = b->bloom[ i ];
+          if ( ( r->pref_mask & mask ) != 0 && r->bits->is_member( hash ) &&
+               ( ( r->detail_mask & mask ) == 0 ||
+                 r->detail_matches( look, prefix_len, hash, has_detail ) ) )
+            goto match;
+        }
+        if ( 0 ) {
+      match:;
+          uint32_t * p = spc.make( count + 1 );
+          p[ count++ ] = b->r; /* route matches */
+        }
+      no_match:; /* next bloom route */
+      }
+    }
+  }
+  if ( count > 0 ) {
+    if ( look.rcount > 0 ) {
+      spc.make( count + look.rcount );
+      count = merge_route( spc.ptr, count, look.routes, look.rcount );
+    }
+    look.rcount = count;
+    look.routes = spc.ptr;
+    look.add_ref( rte );
+  }
+  if ( ! has_detail )
+    this->cache_save( prefix_len, hash, look.routes, look.rcount, look.shard );
+}
+
+uint16_t
+BloomMatch::test_prefix( BloomMatchArgs &args,  const BloomRef &bloom,
+                         uint16_t prefix_len ) noexcept
+{
+  if ( prefix_len == SUB_RTE ) {
+    if ( bloom.pref_count[ SUB_RTE ] != 0 &&
+         bloom.bits->is_member( args.subj_hash ) )
+      return SUB_RTE;
+    return MAX_RTE;
+  }
+  if ( prefix_len < this->max_pref ) {
+    if ( test_prefix_mask( bloom.pref_mask, prefix_len ) ) {
+      uint32_t prefix_hash = this->get_prefix_hash( args, prefix_len );
+      bool     has_det;
+      if ( bloom.bits->is_member( prefix_hash ) &&
+           ( ! test_prefix_mask( bloom.detail_mask, prefix_len ) ||
+            bloom.detail_matches( args, prefix_len, prefix_hash, has_det ) ) )
+        return prefix_len;
+    }
+  }
+  return MAX_RTE;
 }
 
 void
@@ -744,7 +874,7 @@ RouteDB::update_bloom_ref( const void *data,  size_t datalen,
                            uint32_t ref_num,  const char *nm,
                            BloomDB &db ) noexcept
 {
-  BloomRef * ref;
+  BloomRef   * ref;
   uint32_t     pref[ MAX_RTE ];
   BloomCodec   code;
   BloomBits  * bits;
@@ -1021,21 +1151,16 @@ BloomRef::del_detail( uint16_t prefix_len,  uint32_t hash,  const Match &match,
                bool ( BloomDetail::*equals )( const Match &m ) const ) noexcept
 {
   BloomDetail * d = this->details;
-  uint32_t      i = 0, /* first prefix that matches */
+  uint32_t      i,     /* first prefix that matches */
                 j = 0, /* exact match */
                 n = this->ndetails;
   bool matched = false;
-  for ( ; i < n && prefix_len < d[ i ].prefix_len; i++ )
-    ;
-  if ( i < n ) {
-    for ( j = i; ; ){
-      if ( d[ j ].prefix_len == prefix_len && d[ j ].hash == hash &&
-           ( d[ j ].*equals )( match ) ) {
-        matched = true;
-        break;
-      }
-      if ( ++j == n )
-        break;
+
+  i = lower_bound( d, prefix_len, n, cmp_prefix );
+  for ( j = i; j < n && d[ j ].prefix_len == prefix_len; j++ ) {
+    if ( d[ j ].hash == hash && ( d[ j ].*equals )( match ) ) {
+      matched = true;
+      break;
     }
   }
   if ( matched ) {
@@ -1201,16 +1326,15 @@ BloomDetail::from_pattern( const PatternCvt &cvt ) noexcept
 }
 
 void
-RouteDB::cache_save( uint16_t prefix_len,  uint32_t hash,
-                     uint32_t *routes,  uint32_t rcnt,
-                     uint32_t shard ) noexcept
+RouteGroup::cache_save( uint16_t prefix_len,  uint32_t hash,
+                        uint32_t *routes,  uint32_t rcnt,
+                        uint32_t shard ) noexcept
 {
   if ( this->cache.is_invalid ) {
 do_reset:;
     if ( ! this->cache.reset() )
       return;
   }
-  uint64_t    h;
   uint32_t  * ptr;
   RteCacheVal val;
   size_t      n = this->cache.end + rcnt;
@@ -1234,8 +1358,9 @@ do_reset:;
   this->cache.end += rcnt;
   ::memcpy( &ptr[ val.off ], routes, sizeof( routes[ 0 ] ) * rcnt );
 
-  h = ( (uint64_t) shard << 48 ) | ( (uint64_t) prefix_len << 32 ) |
-        (uint64_t) hash;
+  uint64_t h = ( (uint64_t) this->group_num << 48 ) |
+               ( (uint64_t) shard << 40 ) |
+               ( (uint64_t) prefix_len << 32 ) | (uint64_t) hash;
   this->cache.ht->upsert( h, val ); /* save rcnt, off at hash */
   this->cache.count++;
 
@@ -1251,14 +1376,14 @@ do_reset:;
 }
 
 void
-RouteDB::cache_need( void ) noexcept
+RouteGroup::cache_need( void ) noexcept
 {
   this->cache.spc.make( this->cache.end + this->cache.need );
   this->cache.need = 0;
 }
 
 void
-RouteDB::cache_purge( size_t pos ) noexcept
+RouteGroup::cache_purge( size_t pos ) noexcept
 {
   uint64_t    h;
   RteCacheVal val;
@@ -1269,7 +1394,7 @@ RouteDB::cache_purge( size_t pos ) noexcept
 }
 
 void
-RouteDB::add_prefix_len( uint16_t prefix_len,  bool is_rt_hash ) noexcept
+RouteGroup::add_prefix_len( uint16_t prefix_len,  bool is_rt_hash ) noexcept
 {
   if ( prefix_len < SUB_RTE ) {
     uint64_t mask = (uint64_t) 1 << prefix_len;
@@ -1279,13 +1404,12 @@ RouteDB::add_prefix_len( uint16_t prefix_len,  bool is_rt_hash ) noexcept
       this->bloom_mask |= mask;
     if ( ( mask & this->pat_mask ) == 0 ) {
       this->pat_mask |= mask;
-      this->update_prefix_len();
     }
   }
 }
 
 void
-RouteDB::del_prefix_len( uint16_t prefix_len,  bool is_rt_hash ) noexcept
+RouteGroup::del_prefix_len( uint16_t prefix_len,  bool is_rt_hash ) noexcept
 {
   if ( prefix_len < SUB_RTE ) {
     if ( this->bloom_pref_count[ prefix_len ] == 0 ) {
@@ -1297,59 +1421,45 @@ RouteDB::del_prefix_len( uint16_t prefix_len,  bool is_rt_hash ) noexcept
       if ( ( mask & this->pat_mask ) != 0 ) {
         if ( ( ( this->rt_mask | this->bloom_mask ) & mask ) == 0 ) {
           this->pat_mask &= ~mask;
-          this->update_prefix_len();
         }
       }
     }
   }
 }
 
-void
-RouteDB::update_prefix_len( void ) noexcept
-{
-  uint64_t m   = this->pat_mask;
-  uint8_t  cnt = 0, bit = 0;
-  while ( m != 0 ) {
-    if ( ( m & 1 ) != 0 )
-      this->prefix_len[ cnt++ ] = bit;
-    m = ( m >> 1 );
-    bit++;
-  }
-  this->pat_bit_count = cnt;
-}
-
 uint32_t
-RouteDB::add_pattern_route_str( const char *str,  uint16_t len,
-                                uint32_t r ) noexcept
+RouteGroup::add_pattern_route_str( const char *str,  uint16_t len,
+                                   uint32_t r ) noexcept
 {
   uint32_t seed = this->prefix_seed( len );
   return this->add_pattern_route( kv_crc_c( str, len, seed ), r, len );
 }
 
 uint32_t
-RouteDB::del_pattern_route_str( const char *str,  uint16_t len,
-                                uint32_t r ) noexcept
+RouteGroup::del_pattern_route_str( const char *str,  uint16_t len,
+                                   uint32_t r ) noexcept
 {
   uint32_t seed = this->prefix_seed( len );
   return this->del_pattern_route( kv_crc_c( str, len, seed ), r, len );
 }
 
 uint32_t
-RouteDB::add_sub_route_str( const char *str,  uint16_t len,
-                            uint32_t r ) noexcept
+RouteGroup::add_sub_route_str( const char *str,  uint16_t len,
+                               uint32_t r ) noexcept
 {
   return this->add_sub_route( kv_crc_c( str, len, 0 ), r );
 }
 
 uint32_t
-RouteDB::del_sub_route_str( const char *str,  uint16_t len,
-                            uint32_t r ) noexcept
+RouteGroup::del_sub_route_str( const char *str,  uint16_t len,
+                               uint32_t r ) noexcept
 {
   return this->del_sub_route( kv_crc_c( str, len, 0 ), r );
 }
 /* test if route exists for hash */
 bool
-RouteDB::is_member( uint16_t prefix_len,  uint32_t hash,  uint32_t r ) noexcept
+RouteGroup::is_member( uint16_t prefix_len,  uint32_t hash,
+                       uint32_t r ) noexcept
 {
   UIntHashTab * xht = this->rt_hash[ prefix_len ];
   size_t        pos;

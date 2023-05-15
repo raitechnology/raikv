@@ -26,10 +26,13 @@ libd      := $(build_dir)/lib64
 objd      := $(build_dir)/obj
 dependd   := $(build_dir)/dep
 
+have_rpm  := $(shell if [ -x /bin/rpmquery ] ; then echo true; fi)
+have_dpkg := $(shell if [ -x /bin/dpkg-buildflags ] ; then echo true; fi)
 default_cflags := -ggdb -O3
 # use 'make port_extra=-g' for debug build
 ifeq (-g,$(findstring -g,$(port_extra)))
   default_cflags := -ggdb
+#  xtra_cflags    := -fanalyzer
 endif
 ifeq (-a,$(findstring -a,$(port_extra)))
   default_cflags := -fsanitize=address -ggdb -O3
@@ -40,8 +43,12 @@ ifeq (-mingw,$(findstring -mingw,$(port_extra)))
   mingw := true
 endif
 ifeq (,$(port_extra))
-  build_cflags := $(shell if [ -x /bin/rpm ]; then /bin/rpm --eval '%{optflags}' ; \
-                          elif [ -x /bin/dpkg-buildflags ] ; then /bin/dpkg-buildflags --get CFLAGS ; fi)
+  ifeq (true,$(have_rpm))
+    build_cflags = $(shell /bin/rpm --eval '%{optflags}')
+  endif
+  ifeq (true,$(have_dpkg))
+    build_cflags = $(shell /bin/dpkg-buildflags --get CFLAGS)
+  endif
 endif
 # msys2 using ucrt64
 ifeq (MSYS2,$(lsb_dist))
@@ -693,22 +700,22 @@ install: dist_bins
 	install -m 644 include/raikv/*.h $(install_prefix)/include/raikv
 
 $(objd)/%.o: src/%.cpp
-	$(cpp) $(cflags) $(cppflags) $(includes) $(defines) $($(notdir $*)_includes) $($(notdir $*)_defines) -c $< -o $@
+	$(cpp) $(cflags) $(xtra_cflags) $(cppflags) $(includes) $(defines) $($(notdir $*)_includes) $($(notdir $*)_defines) -c $< -o $@
 
 $(objd)/%.o: src/%.c
-	$(cc) $(cflags) $(includes) $(defines) $($(notdir $*)_includes) $($(notdir $*)_defines) -c $< -o $@
+	$(cc) $(cflags) $(xtra_cflags) $(includes) $(defines) $($(notdir $*)_includes) $($(notdir $*)_defines) -c $< -o $@
 
 $(objd)/%.fpic.o: src/%.cpp
-	$(cpp) $(cflags) $(fpicflags) $(cppflags) $(includes) $(defines) $($(notdir $*)_includes) $($(notdir $*)_defines) -c $< -o $@
+	$(cpp) $(cflags) $(xtra_cflags) $(fpicflags) $(cppflags) $(includes) $(defines) $($(notdir $*)_includes) $($(notdir $*)_defines) -c $< -o $@
 
 $(objd)/%.fpic.o: src/%.c
-	$(cc) $(cflags) $(fpicflags) $(includes) $(defines) $($(notdir $*)_includes) $($(notdir $*)_defines) -c $< -o $@
+	$(cc) $(cflags) $(xtra_cflags) $(fpicflags) $(includes) $(defines) $($(notdir $*)_includes) $($(notdir $*)_defines) -c $< -o $@
 
 $(objd)/%.o: test/%.cpp
-	$(cpp) $(cflags) $(cppflags) $(includes) $(defines) $($(notdir $*)_includes) $($(notdir $*)_defines) -c $< -o $@
+	$(cpp) $(cflags) $(xtra_cflags) $(cppflags) $(includes) $(defines) $($(notdir $*)_includes) $($(notdir $*)_defines) -c $< -o $@
 
 $(objd)/%.o: test/%.c
-	$(cc) $(cflags) $(includes) $(defines) $($(notdir $*)_includes) $($(notdir $*)_defines) -c $< -o $@
+	$(cc) $(cflags) $(xtra_cflags) $(includes) $(defines) $($(notdir $*)_includes) $($(notdir $*)_defines) -c $< -o $@
 
 $(libd)/%.a:
 	ar rc $@ $($(*)_objs)

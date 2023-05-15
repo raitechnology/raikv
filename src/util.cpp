@@ -39,6 +39,43 @@ pidexists( uint32_t pid )
 }
 #endif
 
+void *
+rai::kv::aligned_malloc( size_t sz, size_t alignment ) noexcept
+{
+#ifndef USE_MEMALIGN
+  void * p = ::malloc( sz + alignment );
+  if ( p == NULL )
+    return NULL;
+  size_t off = alignment - ( (uintptr_t) p & ( alignment - 1 ) );
+  *((void **) &((char *) p)[ off - sizeof( void * ) ]) = p;
+  return &((char *) p)[ off ];
+#else
+  sz = align<size_t>( sz, alignment );
+#if defined( _MSC_VER )
+  return ::_aligned_malloc( sz, alignment );
+#elif defined( _ISOC11_SOURCE )
+  return ::aligned_alloc( alignment, sz ); /* >= RH7 */
+#else
+  return ::memalign( alignment, sz ); /* RH5, RH6.. */
+#endif
+#endif
+}
+
+void
+rai::kv::aligned_free( void *p ) noexcept
+{
+#ifndef USE_MEMALIGN
+  if ( p != NULL )
+    ::free( *(void **) &((char *) p)[ -sizeof( void * ) ] );
+#else
+#if defined( _MSC_VER )
+  ::_aligned_free( p );
+#else
+  ::free( p ); /* libc allows this */
+#endif
+#endif
+}
+
 static const uint64_t newhash_magic = _U64( 0x9e3779b9U, 0x7f4a7c13U );
 inline void
 newhash_mix( uint64_t &a,  uint64_t &b,  uint64_t &c ) /* Bob Jenkins */

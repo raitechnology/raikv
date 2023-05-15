@@ -268,7 +268,7 @@ struct Runner {
     this->num_thr = ( r.num_threads <= 1 ? 1 : r.num_threads );
 
     const size_t size = kv::align<size_t>( sizeof( MAIN_LOOP ), 64 );
-    char * buf = (char *) aligned_malloc( size * this->num_thr );
+    char * buf = (char *) ::malloc( size * this->num_thr );
     size_t i, off = 0;
 
     for ( i = 0; i < this->num_thr && i < MAX_THREADS; i++ ) {
@@ -296,6 +296,7 @@ struct Runner {
     }
 #endif
     printf( "\nbye\n" );
+    ::free( buf );
   }
 };
 

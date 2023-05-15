@@ -590,7 +590,7 @@ KeyCtx::release_data( void ) noexcept
           this->msg->get_next( (uint8_t) i, mchain, this->seg_align_shift );
           if ( mchain.size != 0 ) {
             void * p = this->ht.seg_data( mchain.segment, mchain.offset );
-            if ( this->ht.is_valid_region( p, mchain.size ) ) {
+            if ( p != NULL && this->ht.is_valid_region( p, mchain.size ) ) {
               MsgHdr * tmp = (MsgHdr *) p;
               uint16_t tmp_size;
               if ( tmp->check_seal( this->key, this->key2, mchain.serial,
@@ -740,7 +740,8 @@ KeyCtx::update_entry( void *res,  uint64_t size,  HashEntry &el ) noexcept
   el.clear( FL_IMMEDIATE_KEY | FL_DROPPED );
   el.set( FL_PART_KEY | FL_IMMEDIATE_VALUE | FL_UPDATED );
   ctr.size = size;
-  *(void **) res = (void *) hdr_end;
+  if ( res != NULL )
+    *(void **) res = (void *) hdr_end;
   return KEY_OK;
 }
 
@@ -1160,7 +1161,7 @@ KeyCtx::append_vector( uint64_t count,  void *vec,  msg_size_t *size,
       cur_size = this->msg->msg_size;
       msg_off  = align<uint64_t>( cur_size, sizeof( msg_size_t ) );
       msg_size = msg_off + vec_size;
-      new_size = (uint64_t) 1 << ( 64 - kv_clzl( msg_size ) );
+      new_size = bit_ceil( msg_size );
       if ( new_size < next_size )
         new_size = next_size;
       uint64_t hdr_size   = MsgHdr::hdr_size( this->msg->key );
@@ -1189,7 +1190,7 @@ KeyCtx::append_vector( uint64_t count,  void *vec,  msg_size_t *size,
         mctx.set_hash( this->key, this->key2 );
         msg_off  = 0;
         msg_size = vec_size;
-        new_size = (uint64_t) 1 << ( 64 - kv_clzl( msg_size ) );
+        new_size = bit_ceil( msg_size );
         if ( new_size < next_size )
           new_size = next_size;
         if ( (mstatus = mctx.alloc_segment( &res, new_size,
@@ -1500,7 +1501,7 @@ KeyCtx::reorganize_entry( HashEntry &el,  uint32_t new_fl ) noexcept
   uint32_t tl = el.trail_offset( this->hash_entry_size ),
            hd = el.hdr_size2();
   if ( el.test( FL_IMMEDIATE_VALUE ) ) {
-    uint32_t  sz       = el.value_ctr( this->hash_entry_size ).size;
+    uint32_t  sz = el.value_ctr( this->hash_entry_size ).size;
     KeyStatus mstatus;
     /* if immediate fits */
     if ( hd + sz <= tl )
@@ -1510,7 +1511,7 @@ KeyCtx::reorganize_entry( HashEntry &el,  uint32_t new_fl ) noexcept
     uint64_t hdr_size = MsgHdr::hdr_size( *this->kbuf );
     mctx.set_key( *this->kbuf );
     mctx.set_hash( this->key, this->key2 );
-    uint64_t new_size = (uint64_t) 1 << ( 64 - kv_clzl( sz ) );
+    uint64_t new_size = bit_ceil( sz );
     void * tmp;
     if ( (mstatus = mctx.alloc_segment( &tmp, new_size, 0 )) != KEY_OK )
       return mstatus;

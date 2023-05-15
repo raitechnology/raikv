@@ -1015,98 +1015,116 @@ publish_one( EvPublish &pub,  RoutePublishData &rpd,  Forward &fwd ) noexcept
   return flow_good;
 }
 
-template<class Forward>
-static bool
-publish_multi_64( EvPublish &pub,  RoutePublishData *rpd,  uint32_t n,
-                  Forward &fwd ) noexcept
+/* case where max fd < 64, so uint64_t can hold a fdset */
+PubFanout64::PubFanout64( RoutePublishData *rpd,  uint32_t n,
+                                uint32_t min_fd ) noexcept
 {
-  uint64_t bits = 0;
-  uint8_t  rpd_fds[ 64 ],
-           prefix[ MAX_RTE ];
-  uint32_t hash[ MAX_RTE ], /* limit is number of rpd elements */
-           min_route, i, cnt;
-  bool     flow_good = true;
-
-  for ( i = 0; i < n; i++ ) {
-    uint32_t fd  = rpd[ i ].routes[ 0 ];
-    bits        |= (uint64_t) 1 << fd;
-    rpd_fds[ i ] = (uint8_t) fd;
-  }
-  EvPubTmp tmp_hash( pub, hash, prefix );
-  for (;;) {
-    if ( bits == 0 )
-      break;
-
-    min_route = kv_ffsl( bits ) - 1;
-    bits     &= ~( (uint64_t) 1 << min_route );
-    cnt       = 0;
-    for ( i = 0; i < n; i++ ) {
-      /* accumulate hashes going to min_route */
-      if ( min_route == (uint32_t) rpd_fds[ i ] ) {
-        rpd[ i ].routes++;
-        if ( --rpd[ i ].rcount != 0 ) {
-          uint32_t fd  = rpd[ i ].routes[ 0 ];
-          bits        |= (uint64_t) 1 << fd;
-          rpd_fds[ i ] = fd;
-        }
-        else {
-          rpd_fds[ i ] = 64;
-        }
-        hash[ cnt ]   = rpd[ i ].hash;
-        prefix[ cnt ] = rpd[ i ].prefix;
-        cnt++;
+  this->start_fd = min_fd;
+  this->bi.w     = 0;
+  for ( uint32_t i = 0; i < n; i++ ) {
+    for ( uint32_t j = 0; j < rpd[ i ].rcount; j++ ) {
+      uint32_t k = rpd[ i ].routes[ j ] - min_fd;
+      uint64_t mask = (uint64_t) 1 << k;
+      if ( ( this->bi.w & mask ) == 0 ) {
+        this->bi.w |= mask;
+        this->fdcnt[ k ] = 1;
+        this->fdidx[ k ] = i;
+      }
+      else {
+        this->fdcnt[ k ]++;
       }
     }
-    /* send hashes to min_route */
-    pub.prefix_cnt = cnt;
-    flow_good &= fwd.on_msg( min_route, pub );
   }
-  if ( kv_pub_debug )
-    fwd.debug_total( pub );
-  return flow_good; /* if no routes left */
+}
+/* case where max fd < 512, so 64 bytes can hold a fdset */
+PubFanout512::PubFanout512( RoutePublishData *rpd,  uint32_t n,
+                                  uint32_t min_fd ) noexcept
+{
+  this->start_fd  = min_fd;
+  this->fdset.ptr = this->bits;
+  this->fdset.zero( 512 );
+  for ( uint32_t i = 0; i < n; i++ ) {
+    for ( uint32_t j = 0; j < rpd[ i ].rcount; j++ ) {
+      uint32_t k = rpd[ i ].routes[ j ] - min_fd;
+      if ( ! this->fdset.test_set( k ) ) {
+        this->fdcnt[ k ] = 1;
+        this->fdidx[ k ] = i;
+      }
+      else {
+        this->fdcnt[ k ]++;
+      }
+    }
+  }
 }
 
-template<class Forward>
+FDSet &
+FDSetStack::push( void ) noexcept
+{
+  if ( this->tos >= this->size )
+    this->make( this->tos + 1, true );
+  if ( this->ptr[ this->tos ] == NULL )
+    this->ptr[ this->tos ] = new ( ::malloc( sizeof( FDSet ) ) ) FDSet();
+  return *this->ptr[ this->tos++ ];
+}
+
+/* case where max fd >= 512, allocates fdset */
+PubFanoutN::PubFanoutN( RoutePublishData *rpd,  uint32_t n,
+                              uint32_t min_fd,  uint32_t range,
+                              FDSet &spc ) noexcept
+{
+  size_t fdsz   = align<size_t>( range, 64 );
+  size_t nbytes = align<size_t>( fdsz / 64 + fdsz * sizeof( uint32_t ) +
+                                 fdsz * sizeof( uint8_t ), sizeof( uint64_t ) );
+  uint64_t * m  = spc.make( nbytes / sizeof( uint64_t ) );
+
+  this->start_fd  = min_fd;
+  this->bits      = m;
+  this->nfds      = fdsz;
+  this->fdset.ptr = m;
+
+  m = &m[ fdsz / 64 ];
+  this->fdidx = (uint32_t *) (void *) m;
+  this->fdcnt = (uint8_t *) (void *) &this->fdidx[ fdsz ];
+
+  this->fdset.zero( fdsz );
+  for ( uint32_t i = 0; i < n; i++ ) {
+    for ( uint32_t j = 0; j < rpd[ i ].rcount; j++ ) {
+      uint32_t k = rpd[ i ].routes[ j ] - min_fd;
+      if ( ! this->fdset.test_set( k ) ) {
+        this->fdcnt[ k ] = 1;
+        this->fdidx[ k ] = i;
+      }
+      else {
+        this->fdcnt[ k ]++;
+      }
+    }
+  }
+}
+template<class Forward, class Fanout>
 static bool
 publish_multi( EvPublish &pub,  RoutePublishData *rpd,  uint32_t n,
-               Forward &fwd ) noexcept
+               Forward &fwd,  Fanout &m ) noexcept
 {
-  const uint32_t nofd = fwd.sub_route.poll.maxfd + 1;
-  FDFrame    frame( fwd.sub_route.poll.fd_stk );
-  uint32_t * rpd_fds = frame.fd_array( n );
-  uint8_t    prefix[ MAX_RTE ];
-  uint32_t   hash[ MAX_RTE ], /* limit is number of rpd elements */
-             min_route, i, cnt;
-  bool       flow_good = true;
+  uint8_t  prefix[ MAX_RTE ];
+  uint32_t hash[ MAX_RTE ], /* limit is number of rpd elements */
+           min_route, i, k, cnt;
+  bool     flow_good = true;
 
-  for ( i = 0; i < n; i++ ) {
-    uint32_t fd  = rpd[ i ].routes[ 0 ];
-    frame.fdset.add( fd );
-    rpd_fds[ i ] = fd;
-  }
   EvPubTmp tmp_hash( pub, hash, prefix );
-  for (;;) {
-    min_route = 0;
-    if ( ! frame.fdset.scan( min_route ) )
-      break;
+  for ( bool b = m.first( k ); b; b = m.next( k ) ) {
+    min_route = k + m.start_fd;
     cnt = 0;
-    frame.fdset.remove( min_route );
-    for ( i = 0; i < n; i++ ) {
+    for ( i = m.fdidx[ k ]; i < n; i++ ) {
       /* accumulate hashes going to min_route */
-      if ( min_route == rpd_fds[ i ] ) {
+      if ( min_route != rpd[ i ].routes[ 0 ] )
+        continue;
+      if ( --rpd[ i ].rcount != 0 )
         rpd[ i ].routes++;
-        if ( --rpd[ i ].rcount != 0 ) {
-          uint32_t fd  = rpd[ i ].routes[ 0 ];
-          frame.fdset.add( fd );
-          rpd_fds[ i ] = fd;
-        }
-        else {
-          rpd_fds[ i ] = nofd;
-        }
-        hash[ cnt ]   = rpd[ i ].hash;
-        prefix[ cnt ] = rpd[ i ].prefix;
-        cnt++;
-      }
+      hash[ cnt ]   = rpd[ i ].hash;
+      prefix[ cnt ] = rpd[ i ].prefix;
+      cnt++;
+      if ( --m.fdcnt[ k ] == 0 )
+        break;
     }
     /* send hashes to min_route */
     pub.prefix_cnt = cnt;
@@ -1116,101 +1134,7 @@ publish_multi( EvPublish &pub,  RoutePublishData *rpd,  uint32_t n,
     fwd.debug_total( pub );
   return flow_good; /* if no routes left */
 }
-#if 0
-template<uint8_t N, class Forward>
-static bool
-publish_multi( EvPublish &pub,  RoutePublishData *rpd,
-               Forward &fwd ) noexcept
-{
-  uint32_t min_route,
-           hash[ N ]; /* limit is number of rpd elements */
-  uint8_t  prefix[ N ],
-           i, cnt;
-  bool     flow_good = true;
 
-  pub.hash   = hash;
-  pub.prefix = prefix;
-  for (;;) {
-    for ( i = 0; i < N; ) {
-      if ( rpd[ i++ ].rcount > 0 ) {
-        min_route = rpd[ i - 1 ].routes[ 0 ];
-        goto have_one_route;
-      }
-    }
-    return flow_good; /* if no routes left */
-
-  have_one_route:; /* if at least one route, find minimum route number */
-    for ( ; i < N; i++ ) {
-      if ( rpd[ i ].rcount > 0 && rpd[ i ].routes[ 0 ] < min_route )
-        min_route = rpd[ i ].routes[ 0 ];
-    }
-    /* accumulate hashes going to min_route */
-    cnt = 0;
-    for ( i = 0; i < N; i++ ) {
-      if ( rpd[ i ].rcount > 0 && rpd[ i ].routes[ 0 ] == min_route ) {
-        rpd[ i ].routes++;
-        rpd[ i ].rcount--;
-        hash[ cnt ]   = rpd[ i ].hash;
-        prefix[ cnt ] = rpd[ i ].prefix;
-        cnt++;
-      }
-    }
-    /* send hashes to min_route */
-    pub.prefix_cnt = cnt;
-    flow_good &= fwd.on_msg( min_route, pub );
-  }
-  if ( kv_pub_debug )
-    fwd.debug_total( pub );
-}
-
-/* same as above with a prio queue heap instead of linear search */
-template<class Forward>
-static bool
-publish_queue( EvPublish &pub,  RoutePublishQueue &queue,
-               Forward &fwd ) noexcept
-{
-  RoutePublishData * rpd = queue.pop();
-  uint32_t           min_route;
-  uint32_t           hash[ 65 ];
-  bool               flow_good = true;
-  uint8_t            cnt;
-  uint8_t            prefix[ 65 ];
-
-  pub.hash   = hash;
-  pub.prefix = prefix;
-  while ( rpd != NULL ) {
-    min_route = rpd->routes[ 0 ];
-    rpd->routes++;
-    rpd->rcount--;
-    cnt = 1;
-    hash[ 0 ]   = rpd->hash;
-    prefix[ 0 ] = rpd->prefix;
-    if ( rpd->rcount > 0 )
-      queue.push( rpd );
-    for (;;) {
-      if ( queue.is_empty() ) {
-        rpd = NULL;
-        break;
-      }
-      rpd = queue.pop();
-      if ( min_route != rpd->routes[ 0 ] )
-        break;
-      rpd->routes++;
-      rpd->rcount--;
-      hash[ cnt ]   = rpd->hash;
-      prefix[ cnt ] = rpd->prefix;
-      cnt++;
-      if ( rpd->rcount > 0 )
-        queue.push( rpd );
-    }
-    pub.prefix_cnt = cnt;
-    flow_good &= fwd.on_msg( min_route, pub );
-  }
-  if ( kv_pub_debug )
-    fwd.debug_total( pub );
-  return flow_good;
-}
-#endif
 void
 EvSocket::notify_ready( void ) noexcept
 {
@@ -1289,52 +1213,220 @@ BPData::test_back_pressure_one( EvPoll &poll,  RoutePublishData &rpd ) noexcept
   return false;
 }
 
+template <class Fanout>
 bool
-BPData::test_back_pressure_64( EvPoll &poll,  RoutePublishData *rpd,
-                               uint32_t n ) noexcept
+BPData::test_back_pressure_multi( EvPoll &poll,  Fanout &m ) noexcept
 {
-  uint64_t bits = 0;
-  for ( uint32_t i = 0; i < n; i++ ) {
-    for ( uint32_t j = 0; j < rpd[ i ].rcount; j++ ) {
-      uint32_t fd = rpd[ i ].routes[ j ];
-      uint64_t mask = (uint64_t) 1 << fd;
-      if ( ( bits & mask ) == 0 ) {
-        bits |= mask;
-        if ( this->has_back_pressure( poll, fd ) )
-          return true;
-      }
-    }
+  uint32_t k;
+  for ( bool b = m.first( k ); b; b = m.next( k ) ) {
+    if ( this->has_back_pressure( poll, k + m.start_fd ) )
+      return true;
   }
   this->bp_state = 0;
   return false;
 }
 
-bool
-BPData::test_back_pressure_n( EvPoll &poll,  RoutePublishData *rpd,
-                              uint32_t n ) noexcept
+RoutePublishContext::RoutePublishContext( RouteDB &db,  const char *subject,
+                                    size_t subject_len,  uint32_t subj_hash,
+                                    uint32_t shard ) noexcept
+                 : RouteLookup( subject, subject_len, subj_hash, shard ),
+                   rdb( db ), n( 0 ), rpd_mask( 0 )
 {
-  FDFrame frame( poll.fd_stk );
-  for ( uint32_t i = 0; i < n; i++ ) {
-    for ( uint32_t j = 0; j < rpd[ i ].rcount; j++ ) {
-      uint32_t fd = rpd[ i ].routes[ j ];
-      if ( ! frame.fdset.test_set( fd ) ) {
-        if ( this->has_back_pressure( poll, fd ) )
-          return true;
+  this->rpd[ 0 ].rcount = 0;
+  if ( db.queue_db_size != 0 )
+    this->add_queues();
+
+  this->get_routes( db );
+
+  if ( this->rpd_mask != 0 ) {
+    uint32_t k = ( this->rpd[ 0 ].rcount == 0 ? 0 : 1 );
+    BitSet64 bi( this->rpd_mask );
+    uint32_t pref;
+    for ( bool b = bi.first( pref ); b; b = bi.next( pref ) ) {
+      this->rpd[ k++ ] = this->rpd[ pref + 1 ];
+    }
+    this->n = k;
+  }
+}
+
+void
+RouteLookup::setup_prefix_hash( uint64_t pat_mask ) noexcept
+{
+  if ( pat_mask == this->prefix_mask )
+    return;
+  BitSet64 bi( pat_mask );
+  uint32_t len, cnt = 0;
+  for ( bool b = bi.first( len ); b; b = bi.next( len ) ) {
+    if ( len > this->sublen )
+      break;
+    this->keylen[ cnt ] = len;
+    this->hash[ cnt++ ] = RouteGroup::pre_seed[ len ];
+  }
+  this->prefix_cnt = cnt;
+  this->prefix_mask = pat_mask;
+
+  if ( cnt > 0 ) {
+    uint32_t k = ( this->keylen[ 0 ] == 0 ? 1 : 0 );
+    if ( cnt > k )
+      kv_crc_c_key_array( this->sub, &this->keylen[ k ],
+                          &this->hash[ k ], cnt - k );
+  }
+}
+
+void
+RoutePublishContext::get_routes( RouteGroup &db ) noexcept
+{
+  RouteLookup & look = *this;
+  db.get_sub_route( look );
+  if ( look.rcount > 0 )
+    this->add( SUB_RTE, look.rcount, look.subj_hash, look.routes, 0 );
+  look.setup_prefix_hash( db.pat_mask );
+  /* the rest of the prefixes are hashed */
+  for ( uint32_t k = 0; k < look.prefix_cnt; k++ ) {
+    db.get_route( look.keylen[ k ], look.hash[ k ], look );
+    if ( look.rcount > 0 )
+      this->add( look.keylen[ k ], look.rcount, look.hash[ k ], look.routes,
+                 look.mask );
+  }
+}
+
+void
+RoutePublishContext::add( uint16_t pref,  uint32_t rcnt,  uint32_t h,
+                          uint32_t *r,  uint64_t mask ) noexcept
+{
+  RoutePublishData & data = this->rpd[ mask == 0 ? 0 : pref + 1 ];
+  if ( this->n == 0 ) {
+    this->min_fd = this->max_fd = r[ 0 ];
+    this->rpd_mask |= mask;
+    this->n = 1;
+    data.set( pref, rcnt, h, r );
+    return;
+  }
+  this->min_fd = min_int( this->min_fd, r[ 0 ] );
+  this->max_fd = max_int( this->max_fd, r[ rcnt - 1 ] );
+  if ( mask == 0 ) {
+    if ( data.rcount == 0 ) {
+      data.set( SUB_RTE, rcnt, h, r );
+      return;
+    }
+  }
+  else if ( ( this->rpd_mask & mask ) == 0 ) {
+    this->rpd_mask |= mask;
+    data.set( pref, rcnt, h, r );
+    return;
+  }
+  this->merge( data, pref, rcnt, r );
+}
+
+void
+RoutePublishContext::merge( RoutePublishData &data,  uint16_t pref,
+                            uint32_t rcnt,  uint32_t *r ) noexcept
+{
+  RouteRef ref( this->rdb.zip, pref + 48 );
+  ref.merge2( data.routes, data.rcount, r, rcnt );
+  data.routes = ref.routes;
+  data.rcount = ref.rcnt;
+  this->add_ref( ref );
+}
+
+void
+RoutePublishContext::add_queues( void ) noexcept
+{
+  RoutePublishData save_rpd[ MAX_RTE ];
+  uint64_t         save_mask = 0;
+  uint32_t         save_n = 0;
+
+  for ( size_t i = 0; i < this->rdb.queue_db_size; i++ ) {
+    QueueDB    & q  = this->rdb.queue_db[ i ];
+    RouteGroup & db = *q.route_group;
+
+    if ( db.entry_count == 0 &&
+         db.bloom_list_ptr == NULL )
+      continue;
+    if ( this->n != 0 ) {
+      save_n = 1;
+      save_mask = this->rpd_mask;
+      ::memcpy( save_rpd, this->rpd, sizeof( this->rpd ) );
+      this->n = 0;
+      this->rpd_mask = 0;
+      this->rpd[ 0 ].rcount = 0;
+    }
+    this->get_routes( db );
+
+    if ( this->n != 0 ) {
+      this->prune_queue( q );
+
+      if ( save_n != 0 ) {
+        save_n = 0;
+        if ( save_rpd[ 0 ].rcount != 0 )
+          this->add( SUB_RTE, save_rpd[ 0 ].rcount, save_rpd[ 0 ].hash,
+                     save_rpd[ 0 ].routes, 0 );
+        if ( save_mask != 0 ) {
+          BitSet64 bi( save_mask );
+          uint32_t pref;
+          for ( bool b = bi.first( pref ); b; b = bi.next( pref ) ) {
+            uint64_t mask = (uint64_t) 1 << pref;
+            RoutePublishData & data = save_rpd[ pref + 1 ];
+            this->add( pref, data.rcount, data.hash, data.routes, mask );
+          }
+        }
       }
     }
   }
-  this->bp_state = 0;
-  return false;
+  if ( save_n != 0 ) {
+    this->n = 1;
+    this->rpd_mask = save_mask;
+    ::memcpy( this->rpd, save_rpd, sizeof( this->rpd ) );
+  }
 }
 
-bool
-BPData::test_back_pressure( EvPoll &poll,  RoutePublishCache &cache ) noexcept
+void
+RoutePublishContext::prune_queue( QueueDB &q ) noexcept
 {
-  if ( cache.n == 1 )
-    return this->test_back_pressure_one( poll, cache.rpd[ 0 ] );
-  if ( poll.maxfd < 64 )
-    return this->test_back_pressure_64( poll, cache.rpd, cache.n );
-  return this->test_back_pressure_n( poll, cache.rpd, cache.n );
+  RouteGroup & db = *q.route_group;
+  RouteRef ref( db.zip, (uint16_t) ( 55 + db.group_num ) );
+  BitSet64 bi;
+  uint32_t pref;
+  if ( this->rpd[ 0 ].rcount != 0 ) {
+    ref.copy( this->rpd[ 0 ].routes, this->rpd[ 0 ].rcount );
+  }
+  if ( this->rpd_mask != 0 ) {
+    bi.w = this->rpd_mask;
+    for ( bool b = bi.first( pref ); b; b = bi.next( pref ) ) {
+      RoutePublishData &data = this->rpd[ pref + 1 ];
+      ref.merge( data.routes, data.rcount );
+    }
+  }
+  uint32_t i = 0, r;
+  if ( ref.rcnt > 1 )
+    i = q.next_route++ % ref.rcnt;
+  r = ref.routes[ i ];
+  ref.routes[ 0 ] = r;
+  if ( this->rpd[ 0 ].rcount != 0 ) {
+    if ( this->rpd[ 0 ].is_member( r ) ) {
+      this->rpd[ 0 ].routes = ref.routes;
+      this->rpd[ 0 ].rcount = 1;
+    }
+    else {
+      this->rpd[ 0 ].rcount = 0;
+    }
+  }
+  if ( this->rpd_mask != 0 ) {
+    bi.w = this->rpd_mask;
+    for ( bool b = bi.first( pref ); b; b = bi.next( pref ) ) {
+      RoutePublishData &data = this->rpd[ pref + 1 ];
+      if ( data.is_member( r ) ) {
+        data.routes = ref.routes;
+        data.rcount = 1;
+      }
+      else {
+        data.rcount = 0;
+        this->rpd_mask &= ~( (uint64_t) 1 << pref );
+      }
+    }
+  }
+  this->min_fd = this->max_fd = r;
+  this->add_ref( ref );
 }
 
 template<class Forward>
@@ -1342,28 +1434,50 @@ static bool
 forward_message( EvPublish &pub,  RoutePublish &sub_route,
                  Forward &fwd,  BPData *data ) noexcept
 {
-  volatile bool is_invalid = sub_route.cache.is_invalid;
-  (void) is_invalid;
-  RoutePublishCache cache( sub_route, pub.subject, pub.subject_len,
+  RoutePublishContext ctx( sub_route, pub.subject, pub.subject_len,
                            pub.subj_hash, pub.shard );
-  if ( cache.n == 0 )
+  bool b;
+  uint32_t n = ctx.n;
+  if ( n == 0 )
     return true;
-  if ( data != NULL ) {
-    bool b = data->test_back_pressure( sub_route.poll, cache );
-    if ( b && ! data->bp_fwd() )
-      return false;
+  if ( n == 1 ) {
+    if ( data != NULL ) {
+      b = data->test_back_pressure_one( sub_route.poll, ctx.rpd[ 0 ] );
+      if ( b && ! data->bp_fwd() )
+        return false;
+    }
+    return publish_one<Forward>( pub, ctx.rpd[ 0 ], fwd );
   }
-  /* likely cases <= 3 wildcard matches, most likely <= 1 match */
-  if ( cache.n == 1 )
-    return publish_one<Forward>( pub, cache.rpd[ 0 ], fwd );
-  if ( sub_route.poll.maxfd < 64 )
-    return publish_multi_64<Forward>( pub, cache.rpd, cache.n, fwd );
-  return publish_multi<Forward>( pub, cache.rpd, cache.n, fwd );
-#if 0
-  for ( uint8_t i = 0; i < cache.n; i++ )
-    sub_route.poll.pub_queue.push( &cache.rpd[ i ] );
-  return publish_queue<Forward>( pub, sub_route.poll.pub_queue, fwd );
-#endif
+  uint32_t min_fd = ctx.min_fd,
+           range  = ( ctx.max_fd - min_fd ) + 1;
+  if ( range < 64 ) {
+    PubFanout64 m( ctx.rpd, n, min_fd );
+    if ( data != NULL ) {
+      b = data->test_back_pressure_multi( sub_route.poll, m );
+      if ( b && ! data->bp_fwd() )
+        return false;
+    }
+    return publish_multi<Forward, PubFanout64>( pub, ctx.rpd, n, fwd, m );
+  }
+  if ( range < 512 ) {
+    PubFanout512 m( ctx.rpd, n, min_fd );
+    if ( data != NULL ) {
+      b = data->test_back_pressure_multi( sub_route.poll, m );
+      if ( b && ! data->bp_fwd() )
+        return false;
+    }
+    return publish_multi<Forward, PubFanout512>( pub, ctx.rpd, n, fwd, m );
+  }
+  else {
+    FDFrame frame( sub_route.poll.fd_stk );
+    PubFanoutN m( ctx.rpd, n, min_fd, range, frame.fdset );
+    if ( data != NULL ) {
+      b = data->test_back_pressure_multi( sub_route.poll, m );
+      if ( b && ! data->bp_fwd() )
+        return false;
+    }
+    return publish_multi<Forward, PubFanoutN>( pub, ctx.rpd, n, fwd, m );
+  }
 }
 
 /* match subject against route db and forward msg to fds subscribed, route
@@ -1533,40 +1647,24 @@ RoutePublish::forward_set_no_route_not_fd( EvPublish &pub,  const BitSpace &fdse
 bool
 RoutePublish::forward_to( EvPublish &pub,  uint32_t fd,  BPData *data ) noexcept
 {
-  uint8_t  n = 0;
-  uint32_t phash[ MAX_RTE ];
-  uint8_t  prefix[ MAX_RTE ];
+  RouteLookup look( pub.subject, pub.subject_len, pub.subj_hash, 0 );
+  uint32_t    n = 0;
+  uint32_t    phash[ MAX_RTE ];
+  uint8_t     prefix[ MAX_RTE ];
 
   if ( this->is_sub_member( pub.subj_hash, fd ) ) {
     phash[ 0 ]  = pub.subj_hash;
     prefix[ 0 ] = SUB_RTE;
     n++;
   }
-  const char * key[ MAX_PRE ];
-  size_t       keylen[ MAX_PRE ];
-  uint32_t     hash[ MAX_PRE ];
-  uint8_t      k = 0, x;
-
-  x = this->setup_prefix_hash( pub.subject, pub.subject_len, key, keylen, hash);
-  /* prefix len 0 matches all */
-  if ( x > 0 && keylen[ 0 ] == 0 ) {
-    if ( this->is_member( 0, hash[ 0 ], fd ) ) {
-      phash[ n ]  = hash[ 0 ];
-      prefix[ n ] = 0;
+  look.setup_prefix_hash( this->pat_mask );
+  /* the rest of the prefixes are hashed */
+  for ( uint32_t k = 0; k < look.prefix_cnt; k++ ) {
+    if ( this->is_member( look.keylen[ k ], look.hash[ k ], fd ) ) {
+      phash[ n ]  = look.hash[ k ];
+      prefix[ n ] = (uint8_t) look.keylen[ k ];
       n++;
     }
-    k = 1;
-  }
-  /* the rest of the prefixes are hashed */
-  if ( k < x ) {
-    kv_crc_c_array( (const void **) &key[ k ], &keylen[ k ], &hash[ k ], x-k );
-    do {
-      if ( this->is_member( (uint16_t) keylen[ k ], hash[ k ], fd ) ) {
-        phash[ n ]  = hash[ k ];
-        prefix[ n ] = (uint8_t) keylen[ k ];
-        n++;
-      }
-    } while ( ++k < x );
   }
   EvPubTmp tmp_hash( pub, phash, prefix, n );
 
@@ -1792,6 +1890,47 @@ RouteNotify::on_bloom_ref( BloomRef & ) noexcept
 void
 RouteNotify::on_bloom_deref( BloomRef & ) noexcept
 {
+}
+void
+RouteNotify::on_sub_q( NotifyQueue &sub ) noexcept
+{
+  printf( "on_sub_q( sub=%.*s, h=0x%x, que=%.*s, qh=0x%x, fd=%u, cnt=%u, col=%u, %c )\n",
+          sub.subject_len, sub.subject, sub.subj_hash, sub.queue_len, sub.queue,
+          sub.queue_hash, sub.src.fd, sub.sub_count, sub.hash_collision,
+          sub.src_type );
+}
+void
+RouteNotify::on_resub_q( NotifyQueue & ) noexcept
+{
+}
+void
+RouteNotify::on_unsub_q( NotifyQueue &sub ) noexcept
+{
+  printf( "on_unsub_q( sub=%.*s, h=0x%x, qh=0x%x, fd=%u, cnt=%u, col=%u, %c )\n",
+          sub.subject_len, sub.subject, sub.subj_hash,
+          sub.queue_hash, sub.src.fd, sub.sub_count, sub.hash_collision,
+          sub.src_type );
+}
+
+void
+RouteNotify::on_psub_q( NotifyPatternQueue &pat ) noexcept
+{
+  printf( "on_psub_q( sub=%.*s, rep=%.*s, h=0x%x, fd=%u, cnt=%u, col=%u, %c )\n",
+          pat.pattern_len, pat.pattern, pat.reply_len, pat.reply,
+          pat.prefix_hash, pat.src.fd, pat.sub_count, pat.hash_collision,
+          pat.src_type );
+}
+void
+RouteNotify::on_repsub_q( NotifyPatternQueue & ) noexcept
+{
+}
+void
+RouteNotify::on_punsub_q( NotifyPatternQueue &pat ) noexcept
+{
+  printf( "on_punsub_q( sub=%.*s, h=0x%x, fd=%u, cnt=%u, col=%u, %c )\n",
+          pat.pattern_len, pat.pattern,
+          pat.prefix_hash, pat.src.fd, pat.sub_count,
+          pat.hash_collision, pat.src_type );
 }
 
 /* shutdown and close all open socks */
@@ -2138,7 +2277,8 @@ EvPoll::timer_expire( EvTimerEvent &ev ) noexcept
 void
 EvConnection::read( void ) noexcept
 {
-  this->adjust_recv();
+  if ( this->off > 0 )
+    this->adjust_recv();
   for (;;) {
     if ( this->len < this->recv_size ) {
       ssize_t nbytes;
@@ -2193,7 +2333,7 @@ EvConnection::read( void ) noexcept
       return;
     }
     /* process was not able to drain read buf */
-    if ( ! this->resize_recv_buf() ) {
+    if ( ! this->resize_recv_buf( 0 ) ) {
       this->popall();
       this->push( EV_CLOSE );
       return;
@@ -2202,13 +2342,16 @@ EvConnection::read( void ) noexcept
 }
 /* if msg is too large for existing buffers, resize it */
 bool
-EvConnection::resize_recv_buf( uint32_t need_bytes ) noexcept
+EvConnection::resize_recv_buf( size_t new_size ) noexcept
 {
-  size_t new_size;
-  if ( need_bytes == 0 )
+  size_t new_len = this->len - this->off;
+
+  if ( new_size < new_len + 1024 ) {
     new_size = (size_t) this->recv_size * 2;
-  else
-    new_size = align<uint32_t>( need_bytes, 256 );
+    if ( new_size < new_len + this->recv_size )
+      new_size = new_len + this->recv_size;
+  }
+  new_size = align<size_t>( new_size, 256 );
   if ( new_size > (size_t) 0xffffffffU ) {
     this->set_sock_err( EV_ERR_ALLOC, 0 );
     return false;
@@ -2223,10 +2366,10 @@ EvConnection::resize_recv_buf( uint32_t need_bytes ) noexcept
       return false;
     }
   }
-  this->len -= this->off;
-  if ( this->len > 0 )
-    ::memmove( ex_recv_buf, &this->recv[ this->off ], this->len );
-  this->off  = 0;
+  if ( new_len > 0 )
+    ::memmove( ex_recv_buf, &this->recv[ this->off ], new_len );
+  this->off = 0;
+  this->len = (uint32_t) new_len;
   if ( this->recv != this->recv_buf ) {
     if ( this->zref_index != 0 ) {
       this->poll.zero_copy_deref( this->zref_index, true );

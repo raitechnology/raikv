@@ -16,6 +16,8 @@ void kv_crc_c_4_diff( const void *p,   size_t sz,   uint32_t *seed,
                       const void *p4,  size_t sz4,  uint32_t *seed4 );
 void kv_crc_c_array( const void **p,   size_t *psz,   uint32_t *seed,
                      size_t count );
+void kv_crc_c_key_array( const void *p,   size_t *psz,   uint32_t *seed,
+                         size_t count );
 
 static inline uint32_t kv_djb( const char *s,  size_t len ) {
   uint32_t key = 5381;

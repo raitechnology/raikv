@@ -1040,11 +1040,16 @@ cli( void )
             xprintf( "stamps err: %d/%s\n", status,
                      kv_key_status_description( status ) );
           switch ( cmd_char ) {
-            default:
+            case 'u':
+              if ( sz != 0 ) {
+                /* FALLTHRU */
             case 'p': case 's': /* put, set */
-              if ( (status = kctx.resize( &ptr, sz )) == KEY_OK ) {
-                kctx.set_type( 2 );
-                ::memcpy( ptr, data, sz );
+                if ( (status = kctx.resize( &ptr, sz )) == KEY_OK ) {
+                  kctx.set_type( 2 ); /* MD_STRING */
+                  ::memcpy( ptr, data, sz );
+                }
+              }
+              if ( status == KEY_OK ) {
                 status = print_key_data( kctx, "put", sz );
                 if ( do_verbose )
                   dump_key_data( kctx );
@@ -1052,7 +1057,7 @@ cli( void )
               break;
             case 'a': { /* append */
               uint64_t cur_sz = 0, new_sz = 0;
-              kctx.get_msg_size( cur_sz );
+              kctx.get_size( cur_sz );
               new_sz = cur_sz + sz;
               if ( (status = kctx.resize( &ptr, new_sz, true )) == KEY_OK ) {
                 ::memcpy( &((uint8_t *) ptr)[ cur_sz ], data, sz );
@@ -1086,6 +1091,7 @@ cli( void )
                 status = print_key_data( kctx, "trim", 0 );
               break;
             case 'n':
+            default:
               break;
           }
           kctx.release();
@@ -1406,7 +1412,7 @@ cli( void )
 
         if ( (kp->status = kp->kctx.acquire( &kp->wrk )) <= KEY_IS_NEW ) {
           if ( (kp->status = kp->kctx.resize( &ptr, sz )) == KEY_OK ) {
-            kp->kctx.set_type( 2 );
+            kp->kctx.set_type( 2 ); /* MD_STRING */
             ::memcpy( ptr, data, sz );
             kp->status = print_key_data( kp->kctx, "multi-acq", sz );
           }
