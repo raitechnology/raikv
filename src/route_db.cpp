@@ -35,10 +35,10 @@ RoutePDB::get_service( const char *svc,  uint32_t svc_num,
 
 uint32_t RouteGroup::pre_seed[ MAX_PRE ];
 
-RouteGroup::RouteGroup( RouteCache &c,  RouteZip &z,  BloomList *bl,
+RouteGroup::RouteGroup( RouteCache &c,  RouteZip &z,  BloomGroup &b,
                         uint32_t gn ) noexcept
           : cache( c ), zip( z ), group_num( gn ), entry_count( 0 ),
-            pat_mask( 0 ), rt_mask( 0 ), bloom_mask( 0 ), bloom_list_ptr( bl )
+            rt_mask( 0 ), bloom( b )
 {
   for ( size_t i = 0; i < sizeof( this->rt_hash ) /
                           sizeof( this->rt_hash[ 0 ] ); i++ ) {
@@ -53,20 +53,18 @@ RouteGroup::RouteGroup( RouteCache &c,  RouteZip &z,  BloomList *bl,
       pre_seed[ j ] = kv_crc_c( sub, p.len(), 0 );
     }
   }
-  for ( size_t i = 0; i < MAX_RTE; i++ ) {
-    this->bloom_pref_count[ i ] = 0;
-  }
 }
 
 RouteDB::RouteDB( BloomDB &g_db ) noexcept
-       : RouteGroup( this->cache, this->zip, &this->bloom_list, 0 ),
-         g_bloom_db( g_db ), queue_db( 0 ), queue_db_size( 0 )
+       : RouteGroup( this->cache, this->zip, this->bloom_grp, 0 ),
+         bloom_grp( this->zip ), g_bloom_db( g_db ), queue_db( 0 ),
+         queue_db_size( 0 )
 {
 }
 
 void
-QueueDB::init( RouteCache &c,  RouteZip &z,  const char *q,  uint32_t qlen,
-               uint32_t qhash,  uint32_t gn ) noexcept
+QueueDB::init( RouteCache &c,  RouteZip &z,  BloomGroup &b,  const char *q,
+               uint32_t qlen,  uint32_t qhash,  uint32_t gn ) noexcept
 {
   this->queue = (char *) ::malloc( queue_len + 1 );
   this->queue_len = qlen;
@@ -74,7 +72,7 @@ QueueDB::init( RouteCache &c,  RouteZip &z,  const char *q,  uint32_t qlen,
   this->queue[ qlen ] = '\0';
   this->queue_hash = qhash;
   void * m = ::malloc( sizeof( RouteGroup ) );
-  this->route_group = new ( m ) RouteGroup( c, z, NULL, gn );
+  this->route_group = new ( m ) RouteGroup( c, z, b, gn );
   this->next_route = qhash;
 }
 
@@ -90,8 +88,8 @@ RouteDB::get_queue_group( const char *queue,  uint32_t queue_len,
   if ( sz < 0xffffU ) { /* no more than 64k queues */
     this->queue_db = (QueueDB *) ::realloc( (void *) this->queue_db,
                                     sizeof( this->queue_db[ 0 ] ) * ( sz + 1 ) );
-    this->queue_db[ sz ].init( this->cache, this->zip, queue, queue_len,
-                               queue_hash, sz + 1 );
+    this->queue_db[ sz ].init( this->cache, this->zip, this->bloom, queue,
+                               queue_len, queue_hash, sz + 1 );
     this->queue_db_size = ++sz;
   }
   return *this->queue_db[ sz - 1 ].route_group;
@@ -301,6 +299,25 @@ rai::kv::bsearch_route( uint32_t r,  const uint32_t *routes,
   return lower_bound( routes, r, size, cmp_uint );
 }
 
+static int cmp_qref( const QueueRef &x,  const QueueRef &y ) {
+  return (int) x.r - (int) y.r;
+}
+
+uint32_t
+rai::kv::bsearch_route( uint32_t r,  const QueueRef *routes,
+                        uint32_t size ) noexcept
+{
+  if ( size < 24 ) {
+    for ( ; size > 0; size-- ) {
+      if ( routes[ size - 1 ].r < r )
+        return size;
+    }
+    return 0;
+  }
+  QueueRef x = { r, 0 };
+  return lower_bound( routes, x, size, cmp_qref );
+}
+
 uint32_t
 rai::kv::insert_route( uint32_t r,  uint32_t *routes,  uint32_t rcnt ) noexcept
 {
@@ -363,6 +380,29 @@ rai::kv::merge_route2( uint32_t *dest,  const uint32_t *routes,  uint32_t count,
       dest[ k ] = routes[ i++ ];
       if ( dest[ k ] == merge[ j ] )
         j++;
+      k++;
+    }
+    else {
+      dest[ k++ ] = merge[ j++ ];
+    }
+  }
+  while ( i < count )
+    dest[ k++ ] = routes[ i++ ];
+  while ( j < mcount )
+    dest[ k++ ] = merge[ j++ ];
+  return k;
+}
+
+uint32_t
+rai::kv::merge_route2( QueueRef *dest,  const QueueRef *routes,  uint32_t count,
+                       const QueueRef *merge,  uint32_t mcount ) noexcept
+{
+  uint32_t i = 0, j = 0, k = 0;
+  while ( i < count && j < mcount ) {
+    if ( routes[ i ].r <= merge[ j ].r ) {
+      dest[ k ] = routes[ i++ ];
+      if ( dest[ k ].r == merge[ j ].r )
+        dest[ k ].refcnt += merge[ j++ ].refcnt;
       k++;
     }
     else {
@@ -603,42 +643,6 @@ RouteGroup::get_route_slow( RouteLookup &look,  uint32_t val ) noexcept
 }
 
 void
-RouteGroup::get_bloom_route( RouteLookup &look ) noexcept
-{
-  RouteRef     rte( this->zip, SUB_RTE + 16 );
-  RouteSpace & spc = rte.route_spc;
-  uint32_t     count = 0;
-
-  if ( this->bloom_list_ptr != NULL ) {
-    for ( BloomRoute *b = this->bloom_list_ptr->hd( look.shard ); b != NULL;
-          b = b->next ) {
-      if ( b->in_list != look.shard + 1 )
-        continue;
-      for ( uint32_t i = 0; i < b->nblooms; i++ ) {
-        BloomRef * r = b->bloom[ i ];
-        if ( r->pref_count[ SUB_RTE ] != 0 &&
-             r->bits->is_member( look.subj_hash ) ) {
-          uint32_t * p = spc.make( count + 1 );
-          p[ count++ ] = b->r;
-          break;
-        }
-      }
-    }
-  }
-  if ( count > 0 ) {
-    if ( look.rcount > 0 ) {
-      spc.make( count + look.rcount );
-      count = merge_route( spc.ptr, count, look.routes, look.rcount );
-    }
-    look.rcount = count;
-    look.routes = spc.ptr;
-    look.add_ref( rte );
-  }
-  this->cache_save( SUB_RTE, look.subj_hash, look.routes, look.rcount,
-                    look.shard );
-}
-
-void
 RouteGroup::get_route_slow2( RouteLookup &look,  uint16_t prefix_len,
                              uint32_t hash,  uint32_t val ) noexcept
 {
@@ -649,8 +653,10 @@ RouteGroup::get_route_slow2( RouteLookup &look,  uint16_t prefix_len,
   return this->get_bloom_route2( look, prefix_len, hash );
 }
 
-static int cmp_prefix( const BloomDetail &el,  const uint16_t &v ) {
-  return (int) (uint32_t) el.prefix_len - (int) (uint32_t) v;
+static int cmp_prefix( const BloomDetail &el,  const BloomDetailHash &v ) {
+  if ( el.prefix_len == v.prefix_len )
+    return (int) (uint32_t) el.hash - (int) (uint32_t) v.hash;
+  return (int) (uint32_t) el.prefix_len - (int) (uint32_t) v.prefix_len;
 }
 
 template <class Match>
@@ -660,13 +666,14 @@ BloomRef::detail_matches( Match &args,  uint16_t prefix_len,
 {
   uint32_t j = 0, n = this->ndetails, detail_not_matched = 0;
   BloomDetail * d = this->details;
+  BloomDetailHash v = { hash, prefix_len };
 
-  j = lower_bound( d, prefix_len, n, cmp_prefix );
-  for ( ; j < n && d[ j ].prefix_len == prefix_len; j++ ) {
-    if ( this->details[ j ].hash != hash )
-      continue;
+  j = lower_bound( d, v, n, cmp_prefix );
+  for ( ; j < n; j++ ) {
+    if ( d[ j ].hash != hash || d[ j ].prefix_len != prefix_len )
+      break;
     has_detail = true;
-    if ( this->details[ j ].match( args.sub, args.sublen, args.subj_hash ) )
+    if ( d[ j ].match( args.sub, args.sublen, args.subj_hash ) )
       return true;
     detail_not_matched++; /* hash match, but match filtered */
   }
@@ -682,55 +689,74 @@ BloomRef::detail_matches( Match &args,  uint16_t prefix_len,
   return true;
 }
 
+bool
+BloomRef::queue_matches( RouteLookup &look,  uint16_t prefix_len,
+                         uint32_t hash,  uint32_t &refcnt ) const noexcept
+{
+  uint32_t j = 0, n = this->ndetails;
+  BloomDetail * d = this->details;
+  BloomDetailHash v = { hash, prefix_len };
+  QueueMatch q = { look.queue_hash, 0 };
+
+  j = lower_bound( d, v, n, cmp_prefix );
+  refcnt = 0;
+  for ( ; j < n; j++ ) {
+    if ( d[ j ].hash != hash || d[ j ].prefix_len != prefix_len )
+      break;
+    if ( d[ j ].queue_equals( q ) )
+      refcnt += this->details[ j ].u.queue.refcnt;
+  }
+  return refcnt > 0;
+}
+
+void
+RouteGroup::get_bloom_route( RouteLookup &look ) noexcept
+{
+  if ( look.queue_hash != 0 )
+    return this->bloom.get_queue( look );
+  bool has_detail = this->bloom.get_route( look );
+  if ( ! has_detail )
+    this->cache_save( SUB_RTE, look.subj_hash, look.routes, look.rcount,
+                      look.shard );
+}
+
 void
 RouteGroup::get_bloom_route2( RouteLookup &look,  uint16_t prefix_len,
                               uint32_t hash ) noexcept
 {
-  RouteRef     rte( this->zip, prefix_len + 16 );
+  if ( look.queue_hash != 0 )
+    return this->bloom.get_queue2( look, prefix_len, hash );
+  bool has_detail = this->bloom.get_route2( look, prefix_len, hash );
+  if ( ! has_detail )
+    this->cache_save( prefix_len, hash, look.routes, look.rcount, look.shard );
+}
+
+bool
+BloomGroup::get_route( RouteLookup &look ) noexcept
+{
+  RouteRef     rte( this->zip, SUB_RTE + 16 );
   RouteSpace & spc        = rte.route_spc;
-  uint64_t     mask       = look.mask;
-  uint32_t     count      = 0;
+  uint32_t     count      = 0,
+               hash       = look.subj_hash;
   bool         has_detail = false;
 
-  if ( this->bloom_list_ptr != NULL ) {
-    if ( ( this->bloom_mask & mask ) != 0 ) {
-      BloomRoute *b = this->bloom_list_ptr->hd( look.shard );
-      for ( ; b != NULL; b = b->next ){
-        if ( b->in_list != look.shard + 1 )
-          continue;
+  for ( BloomRoute *b = this->list.hd( look.shard ); b != NULL; b = b->next ) {
+    if ( b->in_list != look.shard + 1 )
+      continue;
 
-        if ( b->is_invalid )
-          b->update_masks();
+    if ( b->is_invalid )
+      b->update_masks();
 
-        if ( ( b->pref_mask & mask ) == 0 )
-          goto no_match;
+    if ( ! b->has_subs )
+      continue;
 
-        if ( ( b->detail_mask & mask ) == 0 ) {
-          for ( uint32_t i = 0; i < b->nblooms; i++ ) {
-            BloomRef * r = b->bloom[ i ];
-            if ( ( r->pref_mask & mask ) != 0 &&
-                 r->bits->is_member( hash ) )
-              goto match;
-          }
-          goto no_match;
-        }
-        /*printf( "-- %.*s %u:mask 0x%x pref 0x%x detail 0x%x, r %u\n",
-                 (int) sublen, sub, prefix_len,
-                 (uint32_t) mask, (uint32_t) b->pref_mask,
-                 (uint32_t) b->detail_mask , b->r );*/
-        for ( uint32_t i = 0; i < b->nblooms; i++ ) {
-          BloomRef * r = b->bloom[ i ];
-          if ( ( r->pref_mask & mask ) != 0 && r->bits->is_member( hash ) &&
-               ( ( r->detail_mask & mask ) == 0 ||
-                 r->detail_matches( look, prefix_len, hash, has_detail ) ) )
-            goto match;
-        }
-        if ( 0 ) {
-      match:;
-          uint32_t * p = spc.make( count + 1 );
-          p[ count++ ] = b->r; /* route matches */
-        }
-      no_match:; /* next bloom route */
+    for ( uint32_t i = 0; i < b->nblooms; i++ ) {
+      BloomRef * r = b->bloom[ i ];
+      if ( r->pref_count[ SUB_RTE ] != 0 && r->bits->is_member( hash ) &&
+           ( ! r->sub_detail ||
+             r->detail_matches( look, SUB_RTE, hash, has_detail ) ) ) {
+        uint32_t * p = spc.make( count + 1 );
+        p[ count++ ] = b->r;
       }
     }
   }
@@ -743,24 +769,254 @@ RouteGroup::get_bloom_route2( RouteLookup &look,  uint16_t prefix_len,
     look.routes = spc.ptr;
     look.add_ref( rte );
   }
-  if ( ! has_detail )
-    this->cache_save( prefix_len, hash, look.routes, look.rcount, look.shard );
+  return has_detail;
+}
+
+bool
+BloomGroup::get_route2( RouteLookup &look,  uint16_t prefix_len,
+                        uint32_t hash ) noexcept
+{
+  RouteRef     rte( this->zip, prefix_len + 16 );
+  RouteSpace & spc         = rte.route_spc;
+  uint64_t     prefix_mask = look.mask;
+  uint32_t     count       = 0;
+  bool         has_detail  = false;
+
+  if ( ( this->mask & mask ) != 0 ) {
+    BloomRoute *b = this->list.hd( look.shard );
+    for ( ; b != NULL; b = b->next ){
+      if ( b->in_list != look.shard + 1 )
+        continue;
+
+      if ( b->is_invalid )
+        b->update_masks();
+
+      if ( ( b->pref_mask & prefix_mask ) == 0 )
+        continue;
+
+      if ( ( b->detail_mask & mask ) == 0 ) {
+        for ( uint32_t i = 0; i < b->nblooms; i++ ) {
+          BloomRef * r = b->bloom[ i ];
+          if ( ( r->pref_mask & prefix_mask ) != 0 &&
+               r->bits->is_member( hash ) )
+            goto match;
+        }
+        continue;
+      }
+      /*printf( "-- %.*s %u:mask 0x%x pref 0x%x detail 0x%x, r %u\n",
+               (int) sublen, sub, prefix_len,
+               (uint32_t) mask, (uint32_t) b->pref_mask,
+               (uint32_t) b->detail_mask , b->r );*/
+      for ( uint32_t i = 0; i < b->nblooms; i++ ) {
+        BloomRef * r = b->bloom[ i ];
+        if ( ( r->pref_mask & prefix_mask ) != 0 && r->bits->is_member( hash ) &&
+             ( ( r->detail_mask & prefix_mask ) == 0 ||
+               r->detail_matches( look, prefix_len, hash, has_detail ) ) )
+          goto match;
+      }
+      if ( 0 ) {
+    match:;
+        uint32_t * p = spc.make( count + 1 );
+        p[ count++ ] = b->r; /* route matches */
+      }
+    }
+  }
+  if ( count > 0 ) {
+    if ( look.rcount > 0 ) {
+      spc.make( count + look.rcount );
+      count = merge_route( spc.ptr, count, look.routes, look.rcount );
+    }
+    look.rcount = count;
+    look.routes = spc.ptr;
+    look.add_ref( rte );
+  }
+  return has_detail;
+}
+
+uint32_t
+rai::kv::merge_queue( QueueRef *routes,  uint32_t count,
+                      const uint32_t *merge,  uint32_t mcount ) noexcept
+{
+  uint32_t i = 0, j = 0, k;
+  while ( i < count && j < mcount ) {
+    if ( routes[ i ].r <= merge[ j ] ) {
+      if ( routes[ i ].r == merge[ j ] ) {
+        routes[ i ].refcnt++;
+        j++;
+      }
+      i++;
+    }
+    else {
+      k = j + 1;
+      while ( k < mcount && routes[ i ].r > merge[ k ] )
+        k++;
+      uint32_t len = k - j, dest = count + len, src = count;
+      while ( src > i )
+        routes[ --dest ] = routes[ --src ];
+      count += len;
+      do {
+        routes[ i ].r = merge[ j++ ];
+        routes[ i++ ].refcnt = 1;
+      } while ( j < k );
+    }
+  }
+  while ( j < mcount ) {
+    routes[ count ].r = merge[ j++ ];
+    routes[ count++ ].refcnt = 1;
+  }
+  return count;
+}
+
+uint32_t
+rai::kv::merge_queue2( QueueRef *routes,  uint32_t count,
+                       const QueueRef *merge,  uint32_t mcount ) noexcept
+{
+  uint32_t i = 0, j = 0, k;
+  while ( i < count && j < mcount ) {
+    if ( routes[ i ].r <= merge[ j ].r ) {
+      if ( routes[ i ].r == merge[ j ].r ) {
+        routes[ i ].refcnt += merge[ j ].refcnt;
+        j++;
+      }
+      i++;
+    }
+    else {
+      k = j + 1;
+      while ( k < mcount && routes[ i ].r > merge[ k ].r )
+        k++;
+      uint32_t len = k - j, dest = count + len, src = count;
+      while ( src > i )
+        routes[ --dest ] = routes[ --src ];
+      count += len;
+      do {
+        routes[ i++ ] = merge[ j++ ];
+      } while ( j < k );
+    }
+  }
+  while ( j < mcount )
+    routes[ count++ ] = merge[ j++ ];
+  return count;
+}
+
+void
+BloomGroup::get_queue( RouteLookup &look ) noexcept
+{
+  RouteRef     rte( this->zip, SUB_RTE + 16 );
+  RouteSpace & spc   = rte.route_spc;
+  uint32_t     count = 0,
+               hash  = look.subj_hash,
+               refcnt;
+
+  for ( BloomRoute *b = this->list.hd( look.shard ); b != NULL;
+        b = b->next ) {
+    if ( b->in_list != look.shard + 1 )
+      continue;
+
+    if ( b->is_invalid )
+      b->update_masks();
+
+    if ( ! b->has_subs || b->queue_cnt == 0 )
+      continue;
+
+    QueueRef * p = NULL;
+    for ( uint32_t i = 0; i < b->nblooms; i++ ) {
+      BloomRef * r = b->bloom[ i ];
+      if ( r->queue_cnt != 0 && r->pref_count[ SUB_RTE ] != 0 &&
+           r->bits->is_member( hash ) &&
+           r->queue_matches( look, SUB_RTE, hash, refcnt ) ) {
+        if ( p == NULL ) {
+          p = (QueueRef *) spc.make( ( count + 1 ) * 2 );
+          p[ count ].r = b->r;
+          p[ count++ ].refcnt = refcnt;
+        }
+        else {
+          p[ count - 1 ].refcnt += refcnt;
+        }
+      }
+    }
+  }
+  if ( count > 0 ) {
+    if ( look.rcount > 0 ) {
+      spc.make( ( count + look.rcount ) * 2 );
+      count = merge_queue( (QueueRef *) spc.ptr, count, look.routes,
+                           look.rcount );
+    }
+    look.rcount  = count;
+    look.routes  = NULL;
+    look.qroutes = (QueueRef *) spc.ptr;
+    look.add_ref( rte );
+  }
+}
+
+void
+BloomGroup::get_queue2( RouteLookup &look,  uint16_t prefix_len,
+                        uint32_t hash ) noexcept
+{
+  RouteRef     rte( this->zip, prefix_len + 16 );
+  RouteSpace & spc         = rte.route_spc;
+  uint64_t     prefix_mask = look.mask;
+  uint32_t     count       = 0,
+               refcnt;
+
+  if ( ( this->mask & prefix_mask ) != 0 ) {
+    BloomRoute *b = this->list.hd( look.shard );
+    for ( ; b != NULL; b = b->next ){
+      if ( b->in_list != look.shard + 1 )
+        continue;
+
+      if ( b->is_invalid )
+        b->update_masks();
+
+      if ( ( b->pref_mask & prefix_mask ) == 0 || b->queue_cnt == 0 )
+        continue;
+
+      QueueRef * p = NULL;
+      for ( uint32_t i = 0; i < b->nblooms; i++ ) {
+        BloomRef * r = b->bloom[ i ];
+        if ( r->queue_cnt != 0 && ( r->detail_mask & prefix_mask ) != 0 &&
+             r->bits->is_member( hash ) &&
+             r->queue_matches( look,  prefix_len, hash, refcnt ) ) {
+          if ( p == NULL ) {
+            p = (QueueRef *) spc.make( ( count + 1 ) * 2 );
+            p[ count ].r = b->r;
+            p[ count++ ].refcnt = refcnt;
+          }
+          else {
+            p[ count - 1 ].refcnt += refcnt;
+          }
+        }
+      }
+    }
+  }
+  if ( count > 0 ) {
+    if ( look.rcount > 0 ) {
+      spc.make( ( count + look.rcount ) * 2 );
+      count = merge_queue( (QueueRef *) spc.ptr, count, look.routes,
+                           look.rcount );
+    }
+    look.rcount  = count;
+    look.routes  = NULL;
+    look.qroutes = (QueueRef *) spc.ptr;
+    look.add_ref( rte );
+  }
 }
 
 uint16_t
 BloomMatch::test_prefix( BloomMatchArgs &args,  const BloomRef &bloom,
                          uint16_t prefix_len ) noexcept
 {
+  bool has_det;
   if ( prefix_len == SUB_RTE ) {
     if ( bloom.pref_count[ SUB_RTE ] != 0 &&
-         bloom.bits->is_member( args.subj_hash ) )
+         bloom.bits->is_member( args.subj_hash ) &&
+         ( ! bloom.sub_detail ||
+             bloom.detail_matches( args, SUB_RTE, args.subj_hash, has_det ) ) )
       return SUB_RTE;
     return MAX_RTE;
   }
   if ( prefix_len < this->max_pref ) {
     if ( test_prefix_mask( bloom.pref_mask, prefix_len ) ) {
       uint32_t prefix_hash = this->get_prefix_hash( args, prefix_len );
-      bool     has_det;
       if ( bloom.bits->is_member( prefix_hash ) &&
            ( ! test_prefix_mask( bloom.detail_mask, prefix_len ) ||
             bloom.detail_matches( args, prefix_len, prefix_hash, has_det ) ) )
@@ -776,10 +1032,16 @@ BloomRoute::update_masks( void ) noexcept
   this->is_invalid  = false;
   this->pref_mask   = 0;
   this->detail_mask = 0;
+  this->queue_cnt   = 0;
+  this->sub_detail  = false;
+  this->has_subs    = false;
   for ( uint32_t i = 0; i < this->nblooms; i++ ) {
     BloomRef * r = this->bloom[ i ];
     this->pref_mask   |= r->pref_mask;
     this->detail_mask |= r->detail_mask;
+    this->sub_detail  |= r->sub_detail;
+    this->queue_cnt   += r->queue_cnt;
+    this->has_subs    |= ( r->pref_count[ SUB_RTE ] != 0 );
   }
 }
 
@@ -787,12 +1049,12 @@ uint32_t
 RouteDB::get_bloom_count( uint16_t prefix_len,  uint32_t hash,
                           uint32_t shard ) noexcept
 {
-  if ( this->bloom_pref_count[ prefix_len ] == 0 )
+  if ( this->bloom.pref_count[ prefix_len ] == 0 )
     return 0;
   BloomRoute * b;
   BloomRef   * r;
   uint32_t     rcnt = 0;
-  for ( b = this->bloom_list.hd( shard ); b != NULL; b = b->next ) {
+  for ( b = this->bloom.list.hd( shard ); b != NULL; b = b->next ) {
     if ( b->in_list == shard + 1 ) {
       for ( uint32_t i = 0; i < b->nblooms; i++ ) {
         r = b->bloom[ i ];
@@ -812,11 +1074,11 @@ RouteDB::create_bloom_route( uint32_t r,  BloomRef *ref,
 {
   BloomRoute * b = NULL;
 
-  for ( BloomRoute *p = this->bloom_list.hd( shard ); ; p = p->next ) {
+  for ( BloomRoute *p = this->bloom.list.hd( shard ); ; p = p->next ) {
     if ( p == NULL ) {
       void * m = this->g_bloom_db.bloom_mem.alloc( sizeof( BloomRoute ) );
       b = new ( m ) BloomRoute( r, *this, shard + 1 );
-      this->bloom_list.get_list( shard ).push_tl( b );
+      this->bloom.list.get_list( shard ).push_tl( b );
       break;
     }
     if ( p->r > r || ( p->r == r && p->in_list >= shard + 1 ) ) {
@@ -825,7 +1087,7 @@ RouteDB::create_bloom_route( uint32_t r,  BloomRef *ref,
       else {
         void * m = this->g_bloom_db.bloom_mem.alloc( sizeof( BloomRoute ) );
         b = new ( m ) BloomRoute( r, *this, shard + 1 );
-        this->bloom_list.get_list( shard ).insert_before( b, p );
+        this->bloom.list.get_list( shard ).insert_before( b, p );
       }
       break;
     }
@@ -843,7 +1105,7 @@ RouteDB::remove_bloom_route( BloomRoute *b ) noexcept
     return;
   }
   if ( b->in_list ) {
-    this->bloom_list.get_list( b->in_list - 1 ).pop( b );
+    this->bloom.list.get_list( b->in_list - 1 ).pop( b );
     if ( b->bloom != NULL ) {
       ::free( b->bloom );
       b->bloom = NULL;
@@ -910,7 +1172,7 @@ RouteDB::remove_bloom_ref( BloomRef *ref ) noexcept
 BloomRef::BloomRef( uint32_t seed,  const char *nm,  BloomDB &db ) noexcept
         : bits( 0 ), links( 0 ), details( 0 ), pref_mask( 0 ),
           detail_mask( 0 ), nlinks( 0 ), ndetails( 0 ), ref_num( db.count ),
-          bloom_db( db )
+          bloom_db( db ), sub_detail( false )
 {
   size_t len = ::strlen( nm );
   len = min_int( len, sizeof( this->name ) - 1 );
@@ -924,7 +1186,8 @@ BloomRef::BloomRef( uint32_t seed,  const char *nm,  BloomDB &db ) noexcept
 BloomRef::BloomRef( BloomBits *b,  const uint32_t *pref,
                     const char *nm,  BloomDB &db,  uint32_t num ) noexcept
         : bits( 0 ), links( 0 ), details( 0 ), pref_mask( 0 ),
-          detail_mask( 0 ), nlinks( 0 ), ndetails( 0 ), bloom_db( db )
+          detail_mask( 0 ), nlinks( 0 ), ndetails( 0 ),
+          queue_cnt( 0 ), bloom_db( db ), sub_detail( false )
 {
   size_t len = ::strlen( nm );
   len = min_int( len, sizeof( this->name ) - 1 );
@@ -956,7 +1219,7 @@ BloomRoute::add_bloom_ref( BloomRef *ref ) noexcept
   uint16_t prefix_len;
   for ( prefix_len = 0; prefix_len < MAX_RTE; prefix_len++ ) {
     if ( ref->pref_count[ prefix_len ] != 0 ) {
-      if ( this->rdb.bloom_pref_count[ prefix_len ]++ == 0 ) {
+      if ( this->rdb.bloom.pref_count[ prefix_len ]++ == 0 ) {
         this->rdb.add_prefix_len( prefix_len, false );
       }
     }
@@ -988,6 +1251,10 @@ BloomRef::zero( void ) noexcept
     this->details  = NULL;
     this->ndetails = 0;
   }
+  this->pref_mask = 0;
+  this->detail_mask = 0;
+  this->queue_cnt = 0;
+  this->sub_detail = false;
 }
 
 BloomRef *
@@ -1023,7 +1290,7 @@ BloomRoute::del_bloom_ref( BloomRef *ref ) noexcept
   uint16_t prefix_len;
   for ( prefix_len = 0; prefix_len < MAX_RTE; prefix_len++ ) {
     if ( ref->pref_count[ prefix_len ] != 0 ) {
-      if ( --this->rdb.bloom_pref_count[ prefix_len ] == 0 ) {
+      if ( --this->rdb.bloom.pref_count[ prefix_len ] == 0 ) {
         this->rdb.del_prefix_len( prefix_len, false );
       }
     }
@@ -1098,7 +1365,7 @@ BloomRef::add_route( uint16_t prefix_len,  uint32_t hash ) noexcept
 }
 
 BloomDetail &
-BloomRef::add_detail( uint16_t prefix_len ) noexcept
+BloomRef::add_detail( uint16_t prefix_len,  uint32_t hash ) noexcept
 {
   BloomDetail * d = this->details;
   uint32_t      n = this->ndetails++;
@@ -1106,11 +1373,16 @@ BloomRef::add_detail( uint16_t prefix_len ) noexcept
   this->details = d;
 
   for ( ; ; n -= 1 ) {
-    if ( n == 0 || d[ n - 1 ].prefix_len <= prefix_len )
+    if ( n == 0 || ( d[ n - 1 ].prefix_len < prefix_len ||
+         ( d[ n - 1 ].prefix_len == prefix_len &&
+           d[ n - 1 ].hash <= hash ) ) )
       break;
     d[ n ].copy( d[ n - 1 ] );
   }
-  this->detail_mask |= (uint64_t) 1 << prefix_len;
+  if ( prefix_len < SUB_RTE )
+    this->detail_mask |= (uint64_t) 1 << prefix_len;
+  else
+    this->sub_detail = true;
   return d[ n ];
 }
 
@@ -1118,10 +1390,10 @@ bool
 BloomRef::add_shard_route( uint16_t prefix_len,  uint32_t hash,
                            const ShardMatch &match ) noexcept
 {
-  BloomDetail &d = this->add_detail( prefix_len );
-  d.hash       = hash;
-  d.prefix_len = prefix_len;
-  d.init_shard( match );
+  BloomDetail &a = this->add_detail( prefix_len, hash );
+  a.hash       = hash;
+  a.prefix_len = prefix_len;
+  a.init_shard( match );
   return this->add_route( prefix_len, hash );
 }
 
@@ -1129,10 +1401,36 @@ bool
 BloomRef::add_suffix_route( uint16_t prefix_len,  uint32_t hash,
                             const SuffixMatch &match ) noexcept
 {
-  BloomDetail &d = this->add_detail( prefix_len );
-  d.hash       = hash;
-  d.prefix_len = prefix_len;
-  d.init_suffix( match );
+  BloomDetail &a = this->add_detail( prefix_len, hash );
+  a.hash       = hash;
+  a.prefix_len = prefix_len;
+  a.init_suffix( match );
+  return this->add_route( prefix_len, hash );
+}
+
+bool
+BloomRef::add_queue_route( uint16_t prefix_len,  uint32_t hash,
+                           const QueueMatch &match ) noexcept
+{
+  BloomDetail * d = this->details;
+  uint32_t      i,     /* first prefix that matches */
+                j = 0, /* exact match */
+                n = this->ndetails;
+  BloomDetailHash v = { hash, prefix_len };
+  i = lower_bound( d, v, n, cmp_prefix );
+  for ( j = i; j < n; j++ ) {
+    if ( d[ j ].hash != hash || d[ j ].prefix_len != prefix_len )
+      break;
+    if ( d[ j ].queue_equals( match ) ) {
+      d[ j ].init_queue( match );
+      return false;
+    }
+  }
+  BloomDetail &a = this->add_detail( prefix_len, hash );
+  a.hash       = hash;
+  a.prefix_len = prefix_len;
+  a.init_queue( match );
+  this->queue_cnt++;
   return this->add_route( prefix_len, hash );
 }
 
@@ -1154,22 +1452,32 @@ BloomRef::del_detail( uint16_t prefix_len,  uint32_t hash,  const Match &match,
   uint32_t      i,     /* first prefix that matches */
                 j = 0, /* exact match */
                 n = this->ndetails;
+  BloomDetailHash v = { hash, prefix_len };
   bool matched = false;
 
-  i = lower_bound( d, prefix_len, n, cmp_prefix );
-  for ( j = i; j < n && d[ j ].prefix_len == prefix_len; j++ ) {
-    if ( d[ j ].hash == hash && ( d[ j ].*equals )( match ) ) {
+  i = lower_bound( d, v, n, cmp_prefix );
+  for ( j = i; j < n; j++ ) {
+    if ( d[ j ].hash != hash || d[ j ].prefix_len != prefix_len )
+      break;
+    if ( ( d[ j ].*equals )( match ) ) {
       matched = true;
       break;
     }
   }
   if ( matched ) {
-    if ( i + 1 == n || d[ i + 1 ].prefix_len != prefix_len )
-      this->detail_mask &= ~( (uint64_t) 1 << prefix_len );
-    if ( j < n - 1 )
+    if ( d[ j ].detail_type == QUEUE_MATCH )
+      this->queue_cnt--;
+    if ( j < --n )
       ::memmove( &this->details[ j ], &this->details[ j + 1 ],
-                 sizeof( this->details[ 0 ] ) * ( n - ( j + 1 ) ) );
-    this->ndetails = n - 1;
+                 sizeof( this->details[ 0 ] ) * ( n - j ) );
+    this->ndetails = n;
+    if ( ! ( ( j > 0 && d[ j - 1 ].prefix_len == prefix_len ) ||
+             ( j < n && d[ j ].prefix_len == prefix_len ) ) ) {
+      if ( prefix_len < SUB_RTE )
+        this->detail_mask &= ~( (uint64_t) 1 << prefix_len );
+      else
+        this->sub_detail = false;
+    }
     this->del_route( prefix_len, hash );
   }
 }
@@ -1191,12 +1499,20 @@ BloomRef::del_suffix_route( uint16_t prefix_len,  uint32_t hash,
 }
 
 void
+BloomRef::del_queue_route( uint16_t prefix_len,  uint32_t hash,
+                           const QueueMatch &match ) noexcept
+{
+  this->del_detail<QueueMatch>( prefix_len, hash, match,
+                                &BloomDetail::queue_equals );
+}
+
+void
 BloomRef::ref_pref_count( uint16_t prefix_len ) noexcept
 {
   if ( prefix_len != SUB_RTE )
     this->pref_mask |= (uint64_t) 1 << prefix_len;
   for ( uint32_t i = 0; i < this->nlinks; i++ ) {
-    if ( this->links[ i ]->rdb.bloom_pref_count[ prefix_len ]++ == 0 ) {
+    if ( this->links[ i ]->rdb.bloom.pref_count[ prefix_len ]++ == 0 ) {
       /*if ( this->links[ i ]->rdb.rt_hash[ prefix_len ]->is_empty() )*/
       this->links[ i ]->rdb.add_prefix_len( prefix_len, false );
     }
@@ -1209,7 +1525,7 @@ BloomRef::deref_pref_count( uint16_t prefix_len ) noexcept
   if ( prefix_len != SUB_RTE )
     this->pref_mask &= ~( (uint64_t) 1 << prefix_len );
   for ( uint32_t i = 0; i < this->nlinks; i++ ) {
-    if ( --this->links[ i ]->rdb.bloom_pref_count[ prefix_len ] == 0 ) {
+    if ( --this->links[ i ]->rdb.bloom.pref_count[ prefix_len ] == 0 ) {
       this->links[ i ]->rdb.del_prefix_len( prefix_len, false );
     }
   }
@@ -1273,8 +1589,16 @@ BloomRef::update_route( const uint32_t *pref_count,  BloomBits *bits,
   this->ndetails    = ndetails;
   this->details     = details;
   this->detail_mask = 0;
-  for ( uint32_t i = 0; i < ndetails; i++ )
-    this->detail_mask |= (uint64_t) 1 << details[ i ].prefix_len;
+  this->sub_detail  = false;
+  this->queue_cnt   = 0;
+  for ( uint32_t i = 0; i < ndetails; i++ ) {
+    if ( details[ i ].prefix_len < SUB_RTE )
+      this->detail_mask |= (uint64_t) 1 << details[ i ].prefix_len;
+    else
+      this->sub_detail = true;
+    if ( details[ i ].detail_type == QUEUE_MATCH )
+      this->queue_cnt++;
+  }
   if ( this->bits->count != 0 )
     this->invalid();
   /*printf( "update fd %d ndetails %u mask %lx\n",
@@ -1401,10 +1725,7 @@ RouteGroup::add_prefix_len( uint16_t prefix_len,  bool is_rt_hash ) noexcept
     if ( is_rt_hash )
       this->rt_mask |= mask;
     else
-      this->bloom_mask |= mask;
-    if ( ( mask & this->pat_mask ) == 0 ) {
-      this->pat_mask |= mask;
-    }
+      this->bloom.mask |= mask;
   }
 }
 
@@ -1412,18 +1733,11 @@ void
 RouteGroup::del_prefix_len( uint16_t prefix_len,  bool is_rt_hash ) noexcept
 {
   if ( prefix_len < SUB_RTE ) {
-    if ( this->bloom_pref_count[ prefix_len ] == 0 ) {
-      uint64_t mask = (uint64_t) 1 << prefix_len;
-      if ( is_rt_hash )
-        this->rt_mask &= ~mask;
-      else
-        this->bloom_mask &= ~mask;
-      if ( ( mask & this->pat_mask ) != 0 ) {
-        if ( ( ( this->rt_mask | this->bloom_mask ) & mask ) == 0 ) {
-          this->pat_mask &= ~mask;
-        }
-      }
-    }
+    uint64_t mask = (uint64_t) 1 << prefix_len;
+    if ( is_rt_hash )
+      this->rt_mask &= ~mask;
+    else
+      this->bloom.mask &= ~mask;
   }
 }
 

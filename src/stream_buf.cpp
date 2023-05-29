@@ -12,11 +12,13 @@ char *
 StreamBuf::alloc_temp( size_t amt ) noexcept
 {
   char *spc = (char *) this->tmp.alloc( amt );
+#if 0
   if ( spc == NULL ) {
     this->wr_used++;
     this->alloc_fail = true;
     return NULL;
   }
+#endif
   this->wr_used += amt;
   if ( this->wr_used > this->wr_max )
     this->wr_max = this->wr_used;

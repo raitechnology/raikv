@@ -101,8 +101,14 @@ struct BloomList {
   }
 };
 
+struct QueueRef {
+  uint32_t r;
+  uint32_t refcnt;
+  bool operator==( uint32_t i ) const { return i == this->r; }
+};
 /* find r in routes[] */
 uint32_t bsearch_route( uint32_t r, const uint32_t *routes, uint32_t size ) noexcept;
+uint32_t bsearch_route( uint32_t r, const QueueRef *routes, uint32_t size ) noexcept;
 /* insert r in routes[] if not already there */
 uint32_t insert_route( uint32_t r, uint32_t *routes, uint32_t rcnt ) noexcept;
 /* delete r from routes[] if found */
@@ -112,6 +118,12 @@ uint32_t merge_route( uint32_t *routes,  uint32_t count,
                       const uint32_t *merge,  uint32_t mcount ) noexcept;
 uint32_t merge_route2( uint32_t *dest,  const uint32_t *routes,  uint32_t count,
                        const uint32_t *merge,  uint32_t mcount ) noexcept;
+uint32_t merge_route2( QueueRef *dest,  const QueueRef *routes,  uint32_t count,
+                       const QueueRef *merge,  uint32_t mcount ) noexcept;
+uint32_t merge_queue( QueueRef *routes,  uint32_t count,
+                      const uint32_t *merge,  uint32_t mcount ) noexcept;
+uint32_t merge_queue2( QueueRef *routes,  uint32_t count,
+                       const QueueRef *merge,  uint32_t mcount ) noexcept;
 
 /* ptr to route[] array */
 struct RteCacheVal {
@@ -213,11 +225,13 @@ struct RouteRef {
     this->routes = this->route_spc.make( this->rcnt + bcnt );
     this->rcnt   = merge_route( this->routes, this->rcnt, b, bcnt );
   }
+#if 0
   void merge2( const uint32_t *a,  uint32_t acnt,  const uint32_t *b,
                uint32_t bcnt ) {
     this->routes = this->route_spc.make( acnt + bcnt );
     this->rcnt   = merge_route2( this->routes, a, acnt, b, bcnt );
   }
+#endif
   /* val is the route id, decompress with add space for inserting */
   uint32_t decompress( uint32_t val,  uint32_t add ) {
     if ( DeltaCoder::is_not_encoded( val ) ) /* if is a multi value code */
@@ -271,19 +285,22 @@ struct RouteLookup {
   const char  * sub;        /* find routes for subject */
   uint16_t      sublen;     /* length of sub */
   uint32_t    * routes;     /* routes found for a prefix */
+  QueueRef    * qroutes;
   uint64_t      mask;       /* current get_route prefix mask */
   uint32_t      rcount,     /* count of routes */
                 subj_hash,  /* hash of sub */
                 shard,      /* which shard the route lookup is using */
-                prefix_cnt; /* how many prefixes are matched */
+                prefix_cnt, /* how many prefixes are matched */
+                queue_hash;
   size_t        keylen[ MAX_PRE ]; /* length of prefix */
   uint32_t      hash[ MAX_PRE ];   /* hash of prefix */
   uint64_t      prefix_mask;/* all prefix mask bits */
   RouteRefCount rte_ref;    /* route, rcount ref counters */
 
   RouteLookup( const char *s,  uint16_t slen,  uint32_t h,  uint32_t sh )
-    : sub( s ), sublen( slen ), routes( 0 ),  mask( 0 ), rcount( 0 ),
-      subj_hash( h ), shard( sh ), prefix_cnt( 0 ), prefix_mask( 0 ) {}
+    : sub( s ), sublen( slen ), routes( 0 ),  qroutes( 0 ), mask( 0 ),
+      rcount( 0 ), subj_hash( h ), shard( sh ), prefix_cnt( 0 ),
+      queue_hash( 0 ), prefix_mask( 0 ) {}
 
   void add_ref( RouteRef &ref ) { this->rte_ref.add_ref( ref ); }
   void deref( RouteDB &rdb )  { this->rte_ref.deref( rdb ); }
@@ -294,6 +311,23 @@ static inline bool test_prefix_mask( uint64_t mask,  uint16_t prefix_len ) {
   return ( mask & ( (uint64_t) 1 << prefix_len ) ) != 0;
 }
 
+struct BloomGroup {
+  RouteZip & zip;                   /* route ids compressed */
+  BloomList  list;                  /* list of bloom filters*/
+  uint64_t   mask;                  /* bloom filter subject prefixes */
+  uint32_t   pref_count[ MAX_RTE ]; /* count of prefix subjects */
+
+  BloomGroup( RouteZip &z ) : zip( z ), mask( 0 ) {
+    ::memset( this->pref_count, 0, sizeof( this->pref_count ) );
+  }
+  bool get_route( RouteLookup &look ) noexcept;
+  bool get_route2( RouteLookup &look, uint16_t prefix_len,
+                   uint32_t hash ) noexcept;
+  void get_queue( RouteLookup &look ) noexcept;
+  void get_queue2( RouteLookup &look,  uint16_t prefix_len,
+                   uint32_t hash ) noexcept;
+};
+
 struct RouteGroup {
   static uint32_t pre_seed[ MAX_PRE ]; /* hash seeds for each prefix */
   RouteCache  & cache;                 /* the route arrays indexed by ht */
@@ -301,19 +335,16 @@ struct RouteGroup {
   UIntHashTab * rt_hash[ MAX_RTE ];    /* ht for each prefix */
   uint32_t      group_num,             /* which route group number */
                 entry_count;           /* count of rt_hash subjects */
-  uint64_t      pat_mask,              /* mask of subject prefixes */
-                rt_mask,               /* subjects subscribed mask */
-                bloom_mask;            /* bloom filter subject prefixes */
-  BloomList   * bloom_list_ptr;        /* list of bloom filters*/
-  uint32_t      bloom_pref_count[ MAX_RTE ]; /* count of prefix subjects */
+  uint64_t      rt_mask;               /* subjects subscribed mask */
+  BloomGroup  & bloom;
 
   void * operator new( size_t, void *ptr ) { return ptr; }
   void operator delete( void * ) {}
-  RouteGroup( RouteCache &c,  RouteZip &z,  BloomList *bl,  uint32_t gn ) noexcept;
+  RouteGroup( RouteCache &c,  RouteZip &z,  BloomGroup &b,  uint32_t gn ) noexcept;
   /* modify the bits of the prefixes used */
   void add_prefix_len( uint16_t prefix_len,  bool is_rt_hash ) noexcept;
   void del_prefix_len( uint16_t prefix_len,  bool is_rt_hash ) noexcept;
-  /*void update_prefix_len( void ) noexcept;*/
+  uint64_t pat_mask( void ) const { return this->bloom.mask | this->rt_mask; }
 
   uint32_t add_route( uint16_t prefix_len,  uint32_t hash,
                       uint32_t r ) noexcept;
@@ -445,17 +476,17 @@ struct QueueDB {
     }
     return false;
   }
-  void init( RouteCache &c,  RouteZip &z,  const char *q,  uint32_t qlen,
-             uint32_t qhash,  uint32_t gn ) noexcept;
+  void init( RouteCache &c,  RouteZip &z,  BloomGroup &b,  const char *q,
+             uint32_t qlen,  uint32_t qhash,  uint32_t gn ) noexcept;
 };
 
 struct RouteDB : public RouteGroup {
-  RouteCache    cache;
-  BloomList     bloom_list;
-  BloomDB     & g_bloom_db;
-  RouteZip      zip;
-  QueueDB     * queue_db;
-  size_t        queue_db_size;
+  RouteCache cache;
+  RouteZip   zip;
+  BloomGroup bloom_grp;
+  BloomDB  & g_bloom_db;
+  QueueDB  * queue_db;
+  size_t     queue_db_size;
 
   RouteDB( BloomDB &g_db ) noexcept;
 
@@ -485,10 +516,20 @@ struct ShardMatch {
   uint32_t start, /* start hash */
            end;   /* end hash, inclusive, start <= hash <= end */
 };
+struct QueueMatch {
+  uint32_t qhash, /* hash of queue */
+           refcnt;/* how many subscribers */
+};
 enum DetailType {
   NO_DETAIL    = 0,
   SUFFIX_MATCH = 1,
-  SHARD_MATCH  = 2
+  SHARD_MATCH  = 2,
+  QUEUE_MATCH  = 3
+};
+
+struct BloomDetailHash {
+  uint32_t hash;
+  uint16_t prefix_len;
 };
 
 struct BloomDetail {
@@ -498,6 +539,7 @@ struct BloomDetail {
   union {
     SuffixMatch suffix; /* match wildcard suffix */
     ShardMatch  shard;  /* match shard hash */
+    QueueMatch  queue;
   } u;
   void copy( const BloomDetail &det ) {
     this->hash        = det.hash;
@@ -507,6 +549,8 @@ struct BloomDetail {
       this->u.suffix = det.u.suffix;
     else if ( det.detail_type == SHARD_MATCH )
       this->u.shard = det.u.shard;
+    else if ( det.detail_type == QUEUE_MATCH )
+      this->u.queue = det.u.queue;
   }
   void init_suffix( const SuffixMatch &match ) {
     this->detail_type = SUFFIX_MATCH;
@@ -515,6 +559,10 @@ struct BloomDetail {
   void init_shard( const ShardMatch &match ) {
     this->detail_type = SHARD_MATCH;
     this->u.shard     = match;
+  }
+  void init_queue( const QueueMatch &match ) {
+    this->detail_type = QUEUE_MATCH;
+    this->u.queue     = match;
   }
   void init_none( void ) {
     this->detail_type = NO_DETAIL;
@@ -529,6 +577,10 @@ struct BloomDetail {
            this->u.shard.start == match.start &&
            this->u.shard.end   == match.end;
   }
+  bool queue_equals( const QueueMatch &match ) const {
+    return this->detail_type   == QUEUE_MATCH &&
+           this->u.queue.qhash == match.qhash;
+  }
   bool match( const char *sub,  uint16_t sublen,  uint32_t subj_hash ) const {
     if ( this->detail_type == SUFFIX_MATCH ) {
       if ( this->prefix_len + this->u.suffix.len > sublen )
@@ -541,6 +593,8 @@ struct BloomDetail {
     }
     if ( this->detail_type == SHARD_MATCH )
       return subj_hash >= this->u.shard.start && subj_hash <= this->u.shard.end;
+    if ( this->detail_type == QUEUE_MATCH )
+      return false;
     return true;
   }
   static bool shard_endpoints( uint32_t shard,  uint32_t nshards,
@@ -558,9 +612,11 @@ struct BloomRef {
   uint32_t      nlinks,
                 ndetails,
                 pref_count[ MAX_RTE ],
-                ref_num;
+                ref_num,
+                queue_cnt;
   BloomDB     & bloom_db;
-  char          name[ 32 ];
+  bool          sub_detail;
+  char          name[ 31 ];
 
   void * operator new( size_t, void *ptr ) { return ptr; }
   void operator delete( void * ) {}
@@ -578,11 +634,13 @@ struct BloomRef {
   void deref_pref_count( uint16_t prefix_len ) noexcept;
   void invalid( void ) noexcept;
   bool add_route( uint16_t prefix_len,  uint32_t hash ) noexcept;
-  BloomDetail & add_detail( uint16_t prefix_len ) noexcept;
+  BloomDetail & add_detail( uint16_t prefix_len,  uint32_t hash ) noexcept;
   bool add_shard_route( uint16_t prefix_len,  uint32_t hash,
                         const ShardMatch &match ) noexcept;
   bool add_suffix_route( uint16_t prefix_len,  uint32_t hash,
                          const SuffixMatch &match ) noexcept;
+  bool add_queue_route( uint16_t prefix_len,  uint32_t hash,
+                        const QueueMatch &match ) noexcept;
   void del_route( uint16_t prefix_len,  uint32_t hash ) noexcept;
   template <class Match>
   void del_detail( uint16_t prefix_len,  uint32_t hash,  const Match &match,
@@ -591,6 +649,8 @@ struct BloomRef {
                         const ShardMatch &match ) noexcept;
   void del_suffix_route( uint16_t prefix_len,  uint32_t hash,
                          const SuffixMatch &match ) noexcept;
+  void del_queue_route( uint16_t prefix_len,  uint32_t hash,
+                        const QueueMatch &match ) noexcept;
   void update_route( const uint32_t *pref_count,  BloomBits *bits,
                      BloomDetail *details,  uint32_t ndetails ) noexcept;
   /*void notify_update( void ) noexcept;*/
@@ -622,16 +682,18 @@ struct BloomRef {
   template <class Match>
   bool detail_matches( Match &look,  uint16_t prefix_len,
                        uint32_t hash,  bool &has_detail ) const noexcept;
+  bool queue_matches( RouteLookup &look,  uint16_t prefix_len,
+                      uint32_t hash,  uint32_t &refcnt ) const noexcept;
 };
 
 struct BloomMatchArgs {
-  const char     * sub;
-  uint32_t         subj_hash;
-  uint16_t         sublen;
-  const uint32_t * seed;
+  const char * sub;
+  uint32_t     subj_hash,
+               queue_hash;
+  uint16_t     sublen;
 
-  BloomMatchArgs( uint32_t h, const char *s,  uint16_t l, const uint32_t * p )
-    : sub( s ), subj_hash( h ), sublen( l ), seed( p ) {
+  BloomMatchArgs( uint32_t h, const char *s,  uint16_t l )
+    : sub( s ), subj_hash( h ), queue_hash( 0 ), sublen( l ) {
     if ( h == 0 )
       this->subj_hash = kv_crc_c( this->sub, this->sublen, 0 );
   }
@@ -660,7 +722,7 @@ struct BloomMatch {
     if ( ! test_prefix_mask( this->pref_mask, prefix_len ) ) {
       this->pref_mask |= (uint64_t) 1 << prefix_len;
       this->pref_hash[ prefix_len ] = kv_crc_c( args.sub, prefix_len,
-                                                args.seed[ prefix_len ] );
+                                           RouteGroup::pre_seed[ prefix_len ] );
     }
     return this->pref_hash[ prefix_len ];
   }
@@ -672,7 +734,7 @@ struct BloomMatch {
     uint16_t max_pref = min_int<uint16_t>( sublen + 1, MAX_PRE );
     size_t   len = sizeof( BloomMatch ) -
                    ( sizeof( uint32_t ) * ( MAX_PRE - max_pref ) );
-    return ( len + 7 ) & ~(size_t) 7;
+    return align<size_t>( len, 8 );
   }
 };
 
@@ -685,15 +747,19 @@ struct BloomRoute {
                nblooms;     /* count of bloom[] */
   uint64_t     pref_mask,   /* prefix mask for blooms */
                detail_mask; /* shard/suffix mask */
-  uint32_t     in_list;     /* whether in bloom_list and what shard */
-  bool         is_invalid;  /* whether to recalculate masks after sub ob */
+  uint32_t     in_list,     /* whether in bloom_list and what shard */
+               queue_cnt;
+  uint8_t      sub_detail;
+  bool         has_subs,
+               is_invalid;  /* whether to recalculate masks after sub ob */
 
   void * operator new( size_t, void *ptr ) { return ptr; }
   void operator delete( void * ) {} /* no delete, in rdb.bloom_mem */
 
   BloomRoute( uint32_t fd,  RouteDB &db,  uint32_t lst )
     : next( 0 ), back( 0 ), rdb( db ), bloom( 0 ), r( fd ), nblooms( 0 ),
-      pref_mask( 0 ), detail_mask( 0 ), in_list( lst ), is_invalid( true ) {}
+      pref_mask( 0 ), detail_mask( 0 ), in_list( lst ),
+      queue_cnt( 0 ), sub_detail( 0 ), has_subs( false ), is_invalid( true ) {}
 
   void add_bloom_ref( BloomRef *ref ) noexcept;
   BloomRef *del_bloom_ref( BloomRef *ref ) noexcept;
@@ -705,64 +771,11 @@ struct BloomRoute {
   }
 };
 
-struct EvPublish;
-struct RoutePublishData {
-  uint16_t prefix; /* prefix size (how much of subject matches) */
-  uint32_t rcount, /* count of routes (fd)) */
-           hash,   /* hash of prefix (is subject hash if prefix=64) */
-         * routes; /* routes for this hash */
-
-  void set( uint16_t pref,  uint32_t rcnt,  uint32_t h,  uint32_t *r ) {
-    this->prefix = pref;
-    this->rcount = rcnt;
-    this->hash   = h;
-    this->routes = r;
-  }
-  bool is_member( uint32_t r ) const {
-    uint32_t j = bsearch_route( r, this->routes, this->rcount );
-    return j < this->rcount && this->routes[ j ] == r;
-  }
-};
-
 struct EvPoll;
 enum { /* BPData::flags */
   BP_FORWARD = 1,
   BP_NOTIFY  = 2,
   BP_IN_LIST = 4
-};
-
-struct PubFanout64 {
-  BitSet64 bi;
-  uint32_t start_fd;
-  uint8_t  fdidx[ 64 ],
-           fdcnt[ 64 ];
-  PubFanout64( RoutePublishData *rpd,  uint32_t n,  uint32_t min_fd ) noexcept;
-  bool first( uint32_t &k ) { return this->bi.first( k ); }
-  bool next( uint32_t &k )  { return this->bi.next( k ); }
-};
-
-struct PubFanout512 {
-  uint64_t   bits[ 512 / 64 ];
-  UIntBitSet fdset;
-  uint32_t   start_fd;
-  uint16_t   fdidx[ 512 ];
-  uint8_t    fdcnt[ 512 ];
-  PubFanout512( RoutePublishData *rpd,  uint32_t n,  uint32_t min_fd ) noexcept;
-  bool first( uint32_t &k ) { return this->fdset.first( k, 512 ); }
-  bool next( uint32_t &k )  { return this->fdset.next( k, 512 ); }
-};
-struct FDSet;
-struct PubFanoutN {
-  void     * bits;
-  UIntBitSet fdset;
-  uint32_t   start_fd, nfds;
-  uint32_t * fdidx;
-  uint8_t  * fdcnt;
-
-  PubFanoutN( RoutePublishData *rpd,  uint32_t n,  uint32_t min_fd,  uint32_t range,
-              FDSet &spc ) noexcept;
-  bool first( uint32_t &k ) { return this->fdset.first( k, this->nfds ); }
-  bool next( uint32_t &k )  { return this->fdset.next( k, this->nfds ); }
 };
 
 struct BPData {
@@ -777,28 +790,6 @@ struct BPData {
   bool bp_in_list( void ) const { return ( this->bp_flags & BP_IN_LIST ) != 0; }
   bool bp_notify( void ) const { return ( this->bp_flags & BP_NOTIFY ) != 0; }
   bool has_back_pressure( EvPoll &poll,  uint32_t fd ) noexcept;
-  bool test_back_pressure_one( EvPoll &poll,  RoutePublishData &rpd ) noexcept;
-  template <class Fanout>
-  bool test_back_pressure_multi( EvPoll &poll,  Fanout &m ) noexcept;
-};
-
-struct RoutePublishContext : public RouteLookup {
-  RouteDB        & rdb;
-  uint32_t         n, min_fd, max_fd;
-  uint64_t         rpd_mask;
-  RoutePublishData rpd[ MAX_RTE ];
-
-  RoutePublishContext( RouteDB &db,  const char *subject,
-                       size_t subject_len,  uint32_t subj_hash,
-                       uint32_t shard ) noexcept;
-  ~RoutePublishContext() {
-    this->RouteLookup::deref( this->rdb );
-  }
-  void get_routes( RouteGroup &db ) noexcept;
-  void add( uint16_t pref,  uint32_t rcnt,  uint32_t h,  uint32_t *r,  uint64_t mask ) noexcept;
-  void merge( RoutePublishData &data,  uint16_t pref,  uint32_t rcnt,  uint32_t *r ) noexcept;
-  void add_queues( void ) noexcept;
-  void prune_queue( QueueDB &q ) noexcept;
 };
 
 struct PeerData;
@@ -862,7 +853,7 @@ static inline void
 set_strlen64( char buf[ 64 ],  const char *s,  size_t len )
 {
   size_t len63 = ( len < 63 ? len : 63 );
-  ::memcpy( buf, s, len63 );
+  if ( s != NULL ) ::memcpy( buf, s, len63 );
   ::memset( &buf[ len63 ], 0, 63 - len63 );
   buf[ 63 ] = (char) (uint8_t) ( len63 < 63 ? len63 : 0 );
 }
@@ -976,11 +967,20 @@ struct PeerData : public PeerId {
 };
 
 enum {
-  NOTIFY_ADD_SUB = 0,
-  NOTIFY_REM_SUB = 1,
-  NOTIFY_ADD_REF = 2,
-  NOTIFY_REM_REF = 3
+  NOTIFY_ADD_SUB  = 0,
+  NOTIFY_REM_SUB  = 1,
+  NOTIFY_ADD_REF  = 2,
+  NOTIFY_REM_REF  = 3,
+  NOTIFY_IS_QUEUE = 4
 };
+
+static inline uint8_t get_notify_type( uint8_t notify_type ) {
+  return ( notify_type & 0x3 );
+}
+static inline bool is_notify_queue( uint8_t notify_type ) {
+  return ( notify_type & NOTIFY_IS_QUEUE ) != 0;
+}
+
 struct NotifySub {
   const char   * subject,
                * reply;
@@ -993,7 +993,7 @@ struct NotifySub {
   BloomRef     * bref;
   uint8_t        hash_collision;
   char           src_type;  /* C:console, M:session, V:rv, 'R:redis, K:kv */
-  uint8_t        notify_type; /* start, addref, minref, unsub */
+  uint8_t        notify_type; /* addsub, addref, remref, remsub */
 
   NotifySub( const char *s,  size_t slen, const char *r,  size_t rlen,
              uint32_t shash,  bool coll,  char t,  const PeerId &source ) :
@@ -1034,7 +1034,7 @@ struct NotifyPattern {
   BloomRef         * bref;
   uint8_t            hash_collision;
   char               src_type;  /* C:console, M:session, V:rv, 'R:redis, K:kv */
-  uint8_t            notify_type; /* start, addref, minref, unsub */
+  uint8_t            notify_type; /* addsub, addref, remref, remsub */
 
   NotifyPattern( const PatternCvt &c,
                  const char *s,  size_t slen,  const char *r,  size_t rlen,
@@ -1096,36 +1096,11 @@ struct RouteNotify {
   virtual void on_bloom_ref( BloomRef &ref ) noexcept;
   virtual void on_bloom_deref( BloomRef &ref ) noexcept;
 };
-#if 0
-struct RedisKeyspaceNotify : public RouteNotify {
-  /* this should be moved to raids */
-  uint32_t keyspace, /* route of __keyspace@N__ subscribes active */
-           keyevent, /* route of __keyevent@N__ subscribes active */
-           listblkd, /* route of __listblkd@N__ subscribes active */
-           zsetblkd, /* route of __zsetblkd@N__ subscribes active */
-           strmblkd, /* route of __strmblkd@N__ subscribes active */
-           monitor;  /* route of __monitor_@N__ subscribes active */
-  void * operator new( size_t, void *ptr ) { return ptr; }
-  void operator delete( void *ptr ) { ::free( ptr ); }
-  RedisKeyspaceNotify( RoutePublish &p ) : RouteNotify( p ), keyspace( 0 ),
-    keyevent( 0 ), listblkd( 0 ), zsetblkd( 0 ), strmblkd( 0 ), monitor( 0 ) {
-    this->notify_type = 'R';
-  }
-  void update_keyspace_route( uint32_t &val,  uint16_t bit,
-                              int add,  uint32_t fd ) noexcept;
-  void update_keyspace_count( const char *sub,  size_t len,
-                              int add,  uint32_t fd ) noexcept;
-  virtual void on_sub( NotifySub &sub ) noexcept;
-  virtual void on_unsub( NotifySub &sub ) noexcept;
-  virtual void on_psub( NotifyPattern &pat ) noexcept;
-  virtual void on_punsub( NotifyPattern &pat ) noexcept;
-  virtual void on_reassert( uint32_t fd,  RouteVec<RouteSub> &sub_db,
-                            RouteVec<RouteSub> &pat_db ) noexcept;
-};
-#endif
+
 struct KvPubSub; /* manages pubsub through kv shm */
 struct HashTab;  /* shm ht */
 struct EvShm;    /* shm context */
+struct EvPublish;
 /*struct RedisKeyspaceNotify;*/
 
 struct RoutePublish : public RouteDB {
@@ -1200,6 +1175,18 @@ struct RoutePublish : public RouteDB {
     sub.sub_count = 0;
     this->do_snotify( sub, NOTIFY_REM_SUB, NULL, &RouteNotify::on_unsub );
   }
+  void do_notify_sub_q( NotifyQueue &sub ) {
+    this->do_qnotify( sub, NOTIFY_ADD_SUB, NULL, &RouteNotify::on_sub_q );
+  }
+  void do_notify_unsub_q( NotifyQueue &sub ) {
+    this->do_qnotify( sub, NOTIFY_REM_SUB, NULL, &RouteNotify::on_unsub_q );
+  }
+  void do_notify_psub_q( NotifyPatternQueue &pat ) {
+    this->do_pqnotify( pat, NOTIFY_ADD_SUB, NULL, &RouteNotify::on_psub_q );
+  }
+  void do_notify_punsub_q( NotifyPatternQueue &pat ) {
+    this->do_pqnotify( pat, NOTIFY_REM_SUB, NULL, &RouteNotify::on_punsub_q );
+  }
   void notify_sub( NotifySub &sub ) {
     this->do_snotify( sub, NOTIFY_ADD_REF, NULL, &RouteNotify::on_resub );
   }
@@ -1242,7 +1229,8 @@ struct RoutePublish : public RouteDB {
                    void (RouteNotify::*cb)( NotifyQueue & ) ) {
     RouteGroup & grp = this->get_queue_group( sub.queue, sub.queue_len,
                                               sub.queue_hash );
-    this->do_notify( grp, SUB_RTE, sub.subj_hash, sub, type, mod_route, cb );
+    this->do_notify( grp, SUB_RTE, sub.subj_hash, sub,
+                     type | NOTIFY_IS_QUEUE, mod_route, cb );
   }
   void add_sub_queue( NotifyQueue &sub ) {
     sub.sub_count = 1;
@@ -1266,8 +1254,8 @@ struct RoutePublish : public RouteDB {
     RouteGroup & grp = this->get_queue_group( pat.queue, pat.queue_len,
                                               pat.queue_hash );
     uint16_t prefix_len = (uint16_t) pat.cvt.prefixlen;
-    this->do_notify( grp, prefix_len, pat.prefix_hash, pat, type, mod_route,
-                     cb );
+    this->do_notify( grp, prefix_len, pat.prefix_hash, pat,
+                     type | NOTIFY_IS_QUEUE, mod_route, cb );
   }
   void add_pat_queue( NotifyPatternQueue &pat ) {
     pat.sub_count = 1;

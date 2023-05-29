@@ -618,7 +618,7 @@ struct EvConnection : public EvSocket, public StreamBuf {
       this->len = new_len;
     }
     else {
-      this->resize_recv_buf( new_len );
+      this->resize_recv_buf( 0 );
     }
   }
   void recv_need( uint32_t need_bytes ) {

@@ -296,7 +296,7 @@ KvPubSub::send_hello( KvPubSubPeer &c ) noexcept
   }
   c.append_iov( (void *) m.msg(), m.len() );
 
-  for ( BloomRoute *rt = this->sub_route.bloom_list.hd( 0 ); rt != NULL;
+  for ( BloomRoute *rt = this->sub_route.bloom.list.hd( 0 ); rt != NULL;
         rt = rt->next ) {
     if ( this->peer_set.is_member( rt->r ) )
       continue;
@@ -434,7 +434,7 @@ KvMsgIn::decode( const char *msg,  uint32_t msglen ) noexcept
 bool
 KvPubSubPeer::on_msg( EvPublish &pub ) noexcept
 {
-  if ( pub.pub_type == 'K' )
+  if ( pub.is_pub_type( PUB_TYPE_KV ) )
     return true;
   KvEst e;
   e.subject    ( pub.subject_len )
@@ -472,7 +472,7 @@ KvPubSubPeer::fwd_msg( KvMsgIn &msg ) noexcept
   if ( kv_ps_debug )
     msg.print();
   EvPublish pub( subject, subject_len, reply, reply_len, data, data_len,
-                 this->sub_route, *this, subj_hash, msg_enc, 'K' );
+                 this->sub_route, *this, subj_hash, msg_enc, PUB_TYPE_KV );
   if ( msg.is_set( KV_FLD_PUB_STATUS ) )
     pub.pub_status = msg.get<uint16_t>( KV_FLD_PUB_STATUS );
   this->sub_route.forward_msg( pub );

@@ -32,7 +32,7 @@ default_cflags := -ggdb -O3
 # use 'make port_extra=-g' for debug build
 ifeq (-g,$(findstring -g,$(port_extra)))
   default_cflags := -ggdb
-#  xtra_cflags    := -fanalyzer
+#  xtra_cflags    := -fanalyzer -Wno-analyzer-null-dereference -Wno-analyzer-malloc-leak -Wno-analyzer-possible-null-argument -Wno-analyzer-null-argument -Wno-analyzer-possible-null-dereference
 endif
 ifeq (-a,$(findstring -a,$(port_extra)))
   default_cflags := -fsanitize=address -ggdb -O3
@@ -137,7 +137,7 @@ $(objd)/server.fpic.o : .copr/Makefile
 
 libraikv_files := key_ctx ht_linear ht_cuckoo key_hash msg_ctx ht_stats \
                   ht_init scratch_mem util rela_ts radix_sort print \
-		  ev_net route_db timer_queue stream_buf array_out \
+		  ev_net route_db publish timer_queue stream_buf array_out \
 		  bloom monitor ev_tcp ev_udp ev_unix ev_cares logger kv_pubsub
 ifeq (true,$(mingw))
 libraikv_files += win

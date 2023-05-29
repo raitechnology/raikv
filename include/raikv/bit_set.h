@@ -272,23 +272,21 @@ struct BitSetT {
     return true;
   }
   bool index( uint32_t &b,  uint32_t pos,  uint32_t max_bit ) {
-    uint32_t cnt = 0;
-    for ( uint32_t off = 0; off * WORD_BITS < max_bit; off++ ) {
+    uint32_t cnt = 0, off = 0;
+    b = 0;
+    for ( ; off * WORD_BITS < max_bit; off++ ) {
       T x = this->ptr[ off ];
       if ( x != 0 ) {
-        uint32_t n = cnt;
-        cnt += kv_popcountl( x );
-        if ( cnt > pos ) {
-          b    = off * WORD_BITS;
-          pos -= n;
-          for (;;) {
-            if ( ( x & 1 ) != 0 ) {
-              if ( pos == 0 )
-                return true;
-              pos -= 1;
-            }
-            x >>= 1;
-            b  += 1;
+        uint32_t n = kv_popcountl( x );
+        if ( n + cnt <= pos ) {
+          cnt += n;
+          continue;
+        }
+        for ( ; ; b++ ) {
+          b += kv_ffsl( x >> b ) - 1;
+          if ( cnt++ == pos ) {
+            b += off * WORD_BITS;
+            return true;
           }
         }
       }

@@ -46,7 +46,7 @@ void print_routedb( RouteDB &rte )
     } while ( rte.zip.zht->next( i ) );
   }
   printf( "bloom:\n" );
-  for ( BloomRoute *b = rte.bloom_list.hd( 0 ); b != NULL; b = b->next ) {
+  for ( BloomRoute *b = rte.bloom.list.hd( 0 ); b != NULL; b = b->next ) {
     BloomCodec c, c2;
     b->bloom[ 0 ]->encode( c );
     uint32_t pref[ MAX_RTE ];
@@ -112,7 +112,7 @@ arg_equal( const char *arg,  size_t len,  const char *match ) noexcept
 void
 bloom_add( RouteDB &rte,  uint32_t hash,  uint32_t r ) noexcept
 {
-  for ( BloomRoute *b = rte.bloom_list.hd( 0 ); b != NULL; b = b->next ) {
+  for ( BloomRoute *b = rte.bloom.list.hd( 0 ); b != NULL; b = b->next ) {
     if ( b->r == r ) {
       b->bloom[ 0 ]->add( hash );
       return;
@@ -124,7 +124,7 @@ bloom_add( RouteDB &rte,  uint32_t hash,  uint32_t r ) noexcept
 void
 bloom_del( RouteDB &rte,  uint32_t hash,  uint32_t r ) noexcept
 {
-  for ( BloomRoute *b = rte.bloom_list.hd( 0 ); b != NULL; b = b->next ) {
+  for ( BloomRoute *b = rte.bloom.list.hd( 0 ); b != NULL; b = b->next ) {
     if ( b->r == r ) {
       b->bloom[ 0 ]->del( hash );
       return;
