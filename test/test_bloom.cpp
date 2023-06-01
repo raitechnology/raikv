@@ -64,10 +64,12 @@ serialize( const BloomBits &bits ) noexcept
   size_t npref = 65;
   void * shards;
   size_t shards_size;
+  void * queue;
+  size_t queue_size;
   ::memset( pref, 0, sizeof( pref ) );
 
   uint64_t t2, t1 = current_monotonic_time_ns();
-  spc.encode( pref, 65, shard, sizeof( shard ), bits );
+  spc.encode( pref, 65, shard, sizeof( shard ), NULL, 0, bits );
   t2 = current_monotonic_time_ns();
 
   printf( "encode time %.3f usecs\n", ((double) t2 - (double) t1) / 1000.0 );
@@ -77,7 +79,7 @@ serialize( const BloomBits &bits ) noexcept
            (double) spc.code_sz * 4 / (double) bits.width, bits.width );
   t1 = current_monotonic_time_ns();
   if ( (bits2 = spc2.decode( pref2, npref, shards, shards_size,
-                             spc.ptr, spc.code_sz )) == NULL ) {
+                          queue, queue_size, spc.ptr, spc.code_sz )) == NULL ) {
     fprintf( stderr, "failed to decode\n" );
   }
   else {

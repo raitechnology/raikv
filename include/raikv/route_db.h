@@ -250,9 +250,47 @@ struct RouteRef {
   void deref_coderef( void ) noexcept;    /* deref code ref, could gc */
 };
 
+struct QueueName {
+  const char * queue;
+  uint32_t     queue_len,
+               queue_hash,
+               refs,
+               idx;
+  void * operator new( size_t, void *ptr ) { return ptr; }
+  void operator delete( void *ptr ) { ::free( ptr ); }
+  QueueName( const char *q,  uint32_t qlen,  uint32_t qhash ) :
+    queue( q ), queue_len( qlen ), queue_hash( qhash ), refs( 0 ), idx( 0 ) {}
+  bool equals( const QueueName &qn ) const {
+    if ( qn.queue_hash == this->queue_hash ) {
+      if ( qn.queue_len == 0 ||
+           ( qn.queue_len == this->queue_len &&
+             ::memcmp( qn.queue, this->queue, qn.queue_len ) == 0 ) )
+        return true;
+    }
+    return false;
+  }
+};
+
+typedef ArrayCount<QueueName *, 4> QueueNameArray;
+
+struct QueueNameDB {
+  char         * queue_str;
+  size_t         queue_strlen;
+  QueueNameArray queue_name;
+  UIntHashTab  * q_ht;
+
+  QueueNameDB() : queue_str( 0 ), queue_strlen( 0 ), q_ht( 0 ) {}
+  QueueName *get_queue_name( const QueueName &qn ) noexcept;
+  QueueName *get_queue_str( const char *name,  size_t len ) noexcept;
+  QueueName *get_queue_hash( uint32_t q_hash ) noexcept;
+  QueueName *get_queue_idx( uint32_t idx ) {
+    return this->queue_name.ptr[ idx ];
+  }
+};
 /* Map a subscription hash to a route list using RouteZip */
 struct BloomDB : public ArrayCount<BloomRef *, 128> {
   BallocList<8, 16*1024> bloom_mem;
+  QueueNameDB q_db;
 };
 
 struct RouteDB;
@@ -465,28 +503,24 @@ struct RouteGroup {
 
 struct QueueDB {
   RouteGroup * route_group;
-  char       * queue;
-  uint32_t     queue_len, queue_hash, next_route;
+  QueueName  * q_name;
+  uint32_t     next_route;
 
-  bool equal( const char *q,  uint32_t qlen,  uint32_t qhash ) const {
-    if ( qhash == this->queue_hash ) {
-      if ( qlen == 0 || ( qlen  == this->queue_len &&
-                          ::memcmp( this->queue, q, qlen ) == 0 ) )
-        return true;
-    }
-    return false;
+  bool equals( const char *q,  uint32_t qlen,  uint32_t qhash ) const {
+    QueueName qn( q, qlen, qhash );
+    return this->q_name->equals( qn );
   }
-  void init( RouteCache &c,  RouteZip &z,  BloomGroup &b,  const char *q,
-             uint32_t qlen,  uint32_t qhash,  uint32_t gn ) noexcept;
+  void init( RouteCache &c,  RouteZip &z,  BloomGroup &b,  QueueName *qn,
+             uint32_t gn ) noexcept;
 };
 
 struct RouteDB : public RouteGroup {
-  RouteCache cache;
-  RouteZip   zip;
-  BloomGroup bloom_grp;
-  BloomDB  & g_bloom_db;
-  QueueDB  * queue_db;
-  size_t     queue_db_size;
+  RouteCache             cache;
+  RouteZip               zip;
+  BloomGroup             bloom_grp;
+  BloomDB              & g_bloom_db;
+  ArrayCount<QueueDB, 4> queue_db;
+  UIntHashTab          * q_ht;
 
   RouteDB( BloomDB &g_db ) noexcept;
 
@@ -504,8 +538,12 @@ struct RouteDB : public RouteGroup {
   void remove_bloom_ref( BloomRef *ref ) noexcept;
   uint32_t get_bloom_count( uint16_t prefix_len,  uint32_t hash,
                             uint32_t shard ) noexcept;
+  RouteGroup &get_queue_group( const QueueName &qn ) noexcept;
   RouteGroup &get_queue_group( const char *queue,  uint32_t queue_len,
-                               uint32_t queue_hash ) noexcept;
+                               uint32_t queue_hash ) {
+    QueueName qn( queue, queue_len, queue_hash );
+    return this->get_queue_group( qn );
+  }
 };
 
 struct SuffixMatch {
@@ -518,7 +556,11 @@ struct ShardMatch {
 };
 struct QueueMatch {
   uint32_t qhash, /* hash of queue */
-           refcnt;/* how many subscribers */
+           refcnt,/* how many subscribers */
+           xhash;
+  static uint32_t hash2( const char *sub,  uint16_t sublen,  uint32_t seed ) {
+    return seed ^ kv_djb( sub, sublen );
+  }
 };
 enum DetailType {
   NO_DETAIL    = 0,
@@ -579,7 +621,8 @@ struct BloomDetail {
   }
   bool queue_equals( const QueueMatch &match ) const {
     return this->detail_type   == QUEUE_MATCH &&
-           this->u.queue.qhash == match.qhash;
+           this->u.queue.qhash == match.qhash &&
+           this->u.queue.xhash == match.xhash;
   }
   bool match( const char *sub,  uint16_t sublen,  uint32_t subj_hash ) const {
     if ( this->detail_type == SUFFIX_MATCH ) {
@@ -661,29 +704,14 @@ struct BloomRef {
   void del( uint32_t hash ) {
     return this->del_route( SUB_RTE, hash );
   }
-  void encode( BloomCodec &code ) {
-    code.encode( this->pref_count, MAX_RTE,
-                 this->details, this->ndetails * sizeof( this->details[ 0 ] ),
-                 *this->bits );
-  }
-  bool decode( const void *data,  size_t datalen ) {
-    uint32_t     pref[ MAX_RTE ];
-    BloomCodec   code; 
-    BloomBits  * bits;
-    void       * details;
-    size_t       detail_size;
-    bits = code.decode( pref, MAX_RTE, details, detail_size, data, datalen/4 );
-    if ( bits == NULL )
-      return false;
-    this->update_route( pref, bits, (BloomDetail *) details,
-                        (uint32_t) ( detail_size / sizeof( BloomDetail ) ) );
-    return true;
-  }
+  void encode( BloomCodec &code ) noexcept;
+  bool decode( const void *data,  size_t datalen,
+               QueueNameArray &q_ar ) noexcept;
   template <class Match>
   bool detail_matches( Match &look,  uint16_t prefix_len,
                        uint32_t hash,  bool &has_detail ) const noexcept;
-  bool queue_matches( RouteLookup &look,  uint16_t prefix_len,
-                      uint32_t hash,  uint32_t &refcnt ) const noexcept;
+  bool queue_matches( RouteLookup &look,  uint16_t prefix_len,  uint32_t hash,
+                      QueueMatch &m ) const noexcept;
 };
 
 struct BloomMatchArgs {

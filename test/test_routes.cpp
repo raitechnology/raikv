@@ -50,9 +50,12 @@ void print_routedb( RouteDB &rte )
     BloomCodec c, c2;
     b->bloom[ 0 ]->encode( c );
     uint32_t pref[ MAX_RTE ];
-    void * shards;
-    size_t shards_size;
-    BloomBits *bits = c2.decode( pref, MAX_RTE, shards, shards_size, c.ptr, c.code_sz );
+    void * details;
+    size_t details_size;
+    void * queue;
+    size_t queue_size;
+    BloomBits *bits = c2.decode( pref, MAX_RTE, details, details_size,
+                                 queue, queue_size, c.ptr, c.code_sz );
     if ( bits != NULL ) {
       if ( bits->width != b->bloom[ 0 ]->bits->width ||
            ::memcmp( bits->bits, b->bloom[ 0 ]->bits->bits, bits->width ) != 0 )

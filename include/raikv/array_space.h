@@ -165,7 +165,13 @@ struct CatPtr : public CatPtrT<CatPtr> {
 
 struct CatMalloc : public CatPtrT<CatMalloc> {
   CatMalloc( size_t sz ) : CatPtrT( (char *) ::malloc( sz + 1 ) ) {}
-  ~CatMalloc() { ::free( this->start ); }
+  CatMalloc() : CatPtrT( NULL ) {}
+  void resize( size_t sz ) {
+    size_t off = this->len();
+    this->start = (char *) ::realloc( this->start, sz );
+    this->ptr   = &this->start[ off ];
+  }
+  ~CatMalloc() { if ( this->start != NULL ) ::free( this->start ); }
 };
 
 }

@@ -57,42 +57,85 @@ RouteGroup::RouteGroup( RouteCache &c,  RouteZip &z,  BloomGroup &b,
 
 RouteDB::RouteDB( BloomDB &g_db ) noexcept
        : RouteGroup( this->cache, this->zip, this->bloom_grp, 0 ),
-         bloom_grp( this->zip ), g_bloom_db( g_db ), queue_db( 0 ),
-         queue_db_size( 0 )
+         bloom_grp( this->zip ), g_bloom_db( g_db ), q_ht( 0 )
 {
+}
+
+QueueName *
+QueueNameDB::get_queue_name( const QueueName &qn ) noexcept
+{
+  uint32_t i;
+  char   * q;
+  if ( this->q_ht != NULL ) {
+    size_t pos;
+    if ( this->q_ht->find( qn.queue_hash, pos, i ) )
+      return this->queue_name.ptr[ i ];
+  }
+  if ( qn.queue_len == 0 )
+    return NULL;
+  if ( this->q_ht == NULL )
+    this->q_ht = UIntHashTab::resize( NULL );
+  size_t l = this->queue_strlen;
+  this->queue_str = (char *) ::realloc( this->queue_str, l + qn.queue_len + 1 );
+  q = &this->queue_str[ l ];
+  ::memcpy( q, qn.queue, qn.queue_len );
+  q[ qn.queue_len ] = '\0';
+  this->queue_strlen += qn.queue_len + 1;
+
+  q = this->queue_str;
+  for ( i = 0; i < this->queue_name.count; i++ ) {
+    this->queue_name.ptr[ i ]->queue = q;
+    q = &q[ this->queue_name.ptr[ i ]->queue_len + 1 ];
+  }
+  QueueName *p = new ( ::malloc( sizeof( QueueName ) ) )
+    QueueName( q, qn.queue_len, qn.queue_hash );
+  p->idx = this->queue_name.count;
+  this->queue_name.push( p );
+  this->q_ht->upsert_rsz( this->q_ht, qn.queue_hash, p->idx );
+  return p;
+}
+
+QueueName *
+QueueNameDB::get_queue_str( const char *name,  size_t len ) noexcept
+{
+  QueueName qn( name, len, kv_crc_c( name, len, 0 ) );
+  return this->get_queue_name( qn );
+}
+
+QueueName *
+QueueNameDB::get_queue_hash( uint32_t q_hash ) noexcept
+{
+  QueueName qn( NULL, 0, q_hash );
+  return this->get_queue_name( qn );
 }
 
 void
-QueueDB::init( RouteCache &c,  RouteZip &z,  BloomGroup &b,  const char *q,
-               uint32_t qlen,  uint32_t qhash,  uint32_t gn ) noexcept
+QueueDB::init( RouteCache &c,  RouteZip &z,  BloomGroup &b,  QueueName *qn,
+               uint32_t gn ) noexcept
 {
-  this->queue = (char *) ::malloc( queue_len + 1 );
-  this->queue_len = qlen;
-  ::memcpy( this->queue, q, qlen );
-  this->queue[ qlen ] = '\0';
-  this->queue_hash = qhash;
   void * m = ::malloc( sizeof( RouteGroup ) );
+  qn->refs++;
+  this->q_name      = qn;
   this->route_group = new ( m ) RouteGroup( c, z, b, gn );
-  this->next_route = qhash;
+  this->next_route  = 0;
 }
 
 RouteGroup &
-RouteDB::get_queue_group( const char *queue,  uint32_t queue_len,
-                          uint32_t queue_hash ) noexcept
+RouteDB::get_queue_group( const QueueName &qn ) noexcept
 {
-  size_t sz = this->queue_db_size;
-  for ( size_t i = 0; i < sz; i++ ) {
-    if ( this->queue_db[ i ].equal( queue, queue_len, queue_hash ) )
-      return *this->queue_db[ i ].route_group;
-  }
-  if ( sz < 0xffffU ) { /* no more than 64k queues */
-    this->queue_db = (QueueDB *) ::realloc( (void *) this->queue_db,
-                                    sizeof( this->queue_db[ 0 ] ) * ( sz + 1 ) );
-    this->queue_db[ sz ].init( this->cache, this->zip, this->bloom, queue,
-                               queue_len, queue_hash, sz + 1 );
-    this->queue_db_size = ++sz;
-  }
-  return *this->queue_db[ sz - 1 ].route_group;
+  size_t   pos;
+  uint32_t i;
+  if ( this->q_ht != NULL && this->q_ht->find( qn.queue_hash, pos, i ) )
+    return *this->queue_db.ptr[ i ].route_group;
+
+  i = this->queue_db.count;
+  QueueName * q_ptr = this->g_bloom_db.q_db.get_queue_name( qn );
+  QueueDB   & el    = this->queue_db.push();
+  el.init( this->cache, this->zip, this->bloom, q_ptr, i );
+  if ( this->q_ht == NULL )
+    this->q_ht = UIntHashTab::resize( NULL );
+  this->q_ht->upsert_rsz( this->q_ht, qn.queue_hash, i );
+  return *el.route_group;
 }
 
 RouteCache::RouteCache() noexcept
@@ -691,22 +734,25 @@ BloomRef::detail_matches( Match &args,  uint16_t prefix_len,
 
 bool
 BloomRef::queue_matches( RouteLookup &look,  uint16_t prefix_len,
-                         uint32_t hash,  uint32_t &refcnt ) const noexcept
+                         uint32_t hash,  QueueMatch &m ) const noexcept
 {
   uint32_t j = 0, n = this->ndetails;
-  BloomDetail * d = this->details;
+  BloomDetail   * d = this->details;
   BloomDetailHash v = { hash, prefix_len };
-  QueueMatch q = { look.queue_hash, 0 };
 
   j = lower_bound( d, v, n, cmp_prefix );
-  refcnt = 0;
+  m.refcnt = 0;
   for ( ; j < n; j++ ) {
     if ( d[ j ].hash != hash || d[ j ].prefix_len != prefix_len )
       break;
-    if ( d[ j ].queue_equals( q ) )
-      refcnt += this->details[ j ].u.queue.refcnt;
+    if ( m.xhash == 0 ) {
+      uint16_t sublen = ( prefix_len < SUB_RTE ? prefix_len : look.sublen );
+      m.xhash = QueueMatch::hash2( look.sub, sublen, hash );
+    }
+    if ( d[ j ].queue_equals( m ) )
+      m.refcnt += this->details[ j ].u.queue.refcnt;
   }
-  return refcnt > 0;
+  return m.refcnt > 0;
 }
 
 void
@@ -904,8 +950,8 @@ BloomGroup::get_queue( RouteLookup &look ) noexcept
   RouteRef     rte( this->zip, SUB_RTE + 16 );
   RouteSpace & spc   = rte.route_spc;
   uint32_t     count = 0,
-               hash  = look.subj_hash,
-               refcnt;
+               hash  = look.subj_hash;
+  QueueMatch   m     = { look.queue_hash, 0, 0 };
 
   for ( BloomRoute *b = this->list.hd( look.shard ); b != NULL;
         b = b->next ) {
@@ -923,14 +969,14 @@ BloomGroup::get_queue( RouteLookup &look ) noexcept
       BloomRef * r = b->bloom[ i ];
       if ( r->queue_cnt != 0 && r->pref_count[ SUB_RTE ] != 0 &&
            r->bits->is_member( hash ) &&
-           r->queue_matches( look, SUB_RTE, hash, refcnt ) ) {
+           r->queue_matches( look, SUB_RTE, hash, m ) ) {
         if ( p == NULL ) {
           p = (QueueRef *) spc.make( ( count + 1 ) * 2 );
           p[ count ].r = b->r;
-          p[ count++ ].refcnt = refcnt;
+          p[ count++ ].refcnt = m.refcnt;
         }
         else {
-          p[ count - 1 ].refcnt += refcnt;
+          p[ count - 1 ].refcnt += m.refcnt;
         }
       }
     }
@@ -955,8 +1001,8 @@ BloomGroup::get_queue2( RouteLookup &look,  uint16_t prefix_len,
   RouteRef     rte( this->zip, prefix_len + 16 );
   RouteSpace & spc         = rte.route_spc;
   uint64_t     prefix_mask = look.mask;
-  uint32_t     count       = 0,
-               refcnt;
+  uint32_t     count       = 0;
+  QueueMatch   m           = { look.queue_hash, 0, 0 };
 
   if ( ( this->mask & prefix_mask ) != 0 ) {
     BloomRoute *b = this->list.hd( look.shard );
@@ -975,14 +1021,14 @@ BloomGroup::get_queue2( RouteLookup &look,  uint16_t prefix_len,
         BloomRef * r = b->bloom[ i ];
         if ( r->queue_cnt != 0 && ( r->detail_mask & prefix_mask ) != 0 &&
              r->bits->is_member( hash ) &&
-             r->queue_matches( look,  prefix_len, hash, refcnt ) ) {
+             r->queue_matches( look, prefix_len, hash, m ) ) {
           if ( p == NULL ) {
             p = (QueueRef *) spc.make( ( count + 1 ) * 2 );
             p[ count ].r = b->r;
-            p[ count++ ].refcnt = refcnt;
+            p[ count++ ].refcnt = m.refcnt;
           }
           else {
-            p[ count - 1 ].refcnt += refcnt;
+            p[ count - 1 ].refcnt += m.refcnt;
           }
         }
       }
@@ -1142,8 +1188,11 @@ RouteDB::update_bloom_ref( const void *data,  size_t datalen,
   BloomBits  * bits;
   void       * details;
   size_t       detail_size;
+  void       * queue;
+  size_t       queue_size;
 
-  bits = code.decode( pref, MAX_RTE, details, detail_size, data, datalen/4 );
+  bits = code.decode( pref, MAX_RTE, details, detail_size, queue,
+                      queue_size, data, datalen/4 );
   if ( bits == NULL )
     return NULL;
 
@@ -1251,10 +1300,10 @@ BloomRef::zero( void ) noexcept
     this->details  = NULL;
     this->ndetails = 0;
   }
-  this->pref_mask = 0;
+  this->pref_mask   = 0;
   this->detail_mask = 0;
-  this->queue_cnt = 0;
-  this->sub_detail = false;
+  this->queue_cnt   = 0;
+  this->sub_detail  = false;
 }
 
 BloomRef *
@@ -1604,6 +1653,82 @@ BloomRef::update_route( const uint32_t *pref_count,  BloomBits *bits,
   /*printf( "update fd %d ndetails %u mask %lx\n",
           this->nlinks > 0 ? this->links[ 0 ]->r : -1,
           ndetails, this->detail_mask );*/
+}
+
+void
+BloomRef::encode( BloomCodec &code ) noexcept
+{
+  const char  * q_str = NULL;
+  size_t        q_len = 0;
+  BloomDetail * d = this->details;
+  CatMalloc     cat;
+
+  if ( this->queue_cnt > 0 ) {
+    uint32_t      i;
+    size_t        len = 0;
+    BitSpace      q_bits;
+    QueueNameDB & q_db = this->bloom_db.q_db;
+    QueueName   * qn;
+    for ( i = 0; i < this->ndetails; i++ ) {
+      if ( d[ i ].detail_type == QUEUE_MATCH ) {
+        qn = q_db.get_queue_hash( d[ i ].u.queue.qhash );
+        if ( qn != NULL && ! q_bits.test_set( qn->idx ) )
+          len += qn->queue_len + 1;
+      }
+    }
+    if ( len == q_db.queue_strlen ) {
+      q_str = q_db.queue_str;
+      q_len = q_db.queue_strlen;
+    }
+    else {
+      cat.resize( len );
+      for ( bool b = q_bits.first( i ); b; b = q_bits.next( i ) ) {
+        qn = q_db.get_queue_idx( i );
+        cat.x( qn->queue, qn->queue_len ).c( 0 );
+      }
+      q_str = cat.start;
+      q_len = cat.len();
+    }
+  }
+  code.encode( this->pref_count, MAX_RTE, d, this->ndetails * sizeof( d[ 0 ] ),
+               q_str, q_len, *this->bits );
+}
+
+bool
+BloomRef::decode( const void *data,  size_t datalen,
+                  QueueNameArray &q_ar ) noexcept
+{
+  uint32_t    pref[ MAX_RTE ];
+  BloomCodec  code;
+  BloomBits * bits;
+  void      * details     = NULL;
+  size_t      detail_size = 0;
+  void      * queue       = NULL;
+  size_t      queue_size  = 0;
+
+  bits = code.decode( pref, MAX_RTE, details, detail_size,
+                      queue, queue_size, data, datalen/4 );
+  if ( bits == NULL )
+    return false;
+  if ( queue_size > 0 ) {
+    const char  * name = (const char *) queue,
+                * end = &name[ queue_size ];
+    QueueNameDB & q_db = this->bloom_db.q_db;
+    for (;;) {
+      size_t len = 0;
+      while ( &name[ len ] < end && name[ len ] != '\0' )
+        len++;
+      if ( len == 0 )
+        break;
+      q_ar.push( q_db.get_queue_str( name, len ) );
+      name = &name[ len + 1 ];
+      if ( name >= end )
+        break;
+    }
+  }
+  this->update_route( pref, bits, (BloomDetail *) details,
+                      (uint32_t) ( detail_size / sizeof( BloomDetail ) ) );
+  return true;
 }
 
 bool

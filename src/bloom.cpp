@@ -279,20 +279,23 @@ BloomCodec::encode_ht( const BloomBits &bits ) noexcept
   }
 }
 
+static const uint32_t BLOOM_CODEC_VERSION = 0xb1c0dec1U;
+
 void
 BloomCodec::encode_pref( const uint32_t *pref,  size_t npref ) noexcept
 {
   uint32_t   sz    = this->code_sz,
-           * code  = this->make( sz + npref + npref / 4 + 1 ),
+           * code  = this->make( sz + npref + npref / 4 + 2 ),
              i, j;
-  uint8_t  * off   = (uint8_t *) (void *) code;
+  uint8_t  * off   = (uint8_t *) (void *) &code[ 1 ];
+  code[ 0 ] = BLOOM_CODEC_VERSION;
   j = 0;
   for ( i = 0; i < npref; i++ ) {
     if ( pref[ i ] != 0 )
       off[ j++ ] = i;
   }
   off[ j++ ] = 0xff;
-  sz += ( j + 3 ) / 4;
+  sz += ( j + 3 ) / 4 + 1;
   for ( i = 0; i < npref; i++ ) {
     if ( pref[ i ] != 0 )
       code[ sz++ ] = pref[ i ];
@@ -301,23 +304,26 @@ BloomCodec::encode_pref( const uint32_t *pref,  size_t npref ) noexcept
 }
 
 void
-BloomCodec::encode_details( const void *details,  size_t details_size ) noexcept
+BloomCodec::encode_blob( const void *blob,  size_t blob_size ) noexcept
 {
-  uint32_t   i    = this->code_sz,
-           * code = this->make( i + ( details_size + 3 ) / 4 + 1 );
-  code[ i ] = (uint32_t) details_size;
-  if ( details_size > 0 )
-    ::memcpy( &code[ i + 1 ], details, details_size );
-  this->code_sz += (uint32_t) ( ( details_size + 3 ) / 4 + 1 );
+  uint32_t   i     = this->code_sz,
+             words = (uint32_t) ( ( blob_size + 3 ) / 4 + 1 ),
+           * code  = this->make( i + words );
+  code[ i ] = (uint32_t) blob_size;
+  if ( blob_size > 0 )
+    ::memcpy( &code[ i + 1 ], blob, blob_size );
+  this->code_sz += words;
 }
 
 void
 BloomCodec::encode( const uint32_t *pref,  size_t npref,
                     const void *details,  size_t details_size,
+                    const void *queue,  size_t queue_size,
                     const BloomBits &bits ) noexcept
 {
   this->encode_pref( pref, npref );
-  this->encode_details( details, details_size );
+  this->encode_blob( details, details_size );
+  this->encode_blob( queue, queue_size );
   this->encode_bloom( bits );
   this->encode_ht( bits );
   this->finalize();
@@ -327,19 +333,21 @@ uint32_t
 BloomCodec::decode_pref( const uint32_t *code,  size_t len,  uint32_t *pref,
                          size_t npref ) noexcept
 {
-  const uint8_t * off = (uint8_t *) (void *) code,
+  const uint8_t * off = (uint8_t *) (void *) &code[ 1 ],
                 * end = (uint8_t *) (void *) &code[ len ];
   uint32_t i, j, sz;
 
+  if ( len == 0 || code[ 0 ] != BLOOM_CODEC_VERSION )
+    return 0;
   for ( i = 0; i < npref; i++ )
     pref[ i ] = 0;
   for ( j = 0; ; ) {
-    if ( off[ j++ ] == 0xff )
-      break;
     if ( &off[ j ] >= end )
       return 0;
+    if ( off[ j++ ] == 0xff )
+      break;
   }
-  sz = ( j + 3 ) / 4;
+  sz = ( j + 3 ) / 4 + 1;
   j  = 0;
   for ( i = 0; i < npref; i++ ) {
     if ( off[ j ] == 0xff )
@@ -354,24 +362,26 @@ BloomCodec::decode_pref( const uint32_t *code,  size_t len,  uint32_t *pref,
 }
 
 uint32_t
-BloomCodec::decode_details( const uint32_t *code,  uint32_t off,  size_t len,
-                            void *&details,  size_t &details_size ) noexcept
+BloomCodec::decode_blob( const uint32_t *code,  uint32_t off,  size_t len,
+                         void *&blob,  size_t &blob_size ) noexcept
 {
-  details_size = code[ off ];
-  details = NULL;
-  if ( details_size == 0 )
+  blob_size = code[ off ];
+  blob = NULL;
+  if ( blob_size == 0 )
     return off + 1;
-  if ( off + ( details_size + 3 ) / 4 > len )
+  uint32_t words = ( blob_size + 3 ) / 4;
+  if ( off + words > len )
     return 0;
-  details = ::malloc( details_size );
-  ::memcpy( details, &code[ off + 1 ], details_size );
-  return off + (uint32_t) ( ( details_size + 3 ) / 4 + 1 );
+  blob = ::malloc( blob_size );
+  ::memcpy( blob, &code[ off + 1 ], blob_size );
+  return off + 1 + words;
 }
 
 BloomBits *
-BloomCodec::decode( uint32_t *pref,  size_t npref,  void *&details,
-                    size_t &details_size,  const void *code_ptr,
-                    size_t len ) noexcept
+BloomCodec::decode( uint32_t *pref,  size_t npref,
+                    void *&details,  size_t &details_size,
+                    void *&queue,  size_t &queue_size,
+                    const void *code_ptr,  size_t len ) noexcept
 {
   ArraySpace<uint32_t, 1> tmp;
   uint32_t  * code;
@@ -394,7 +404,10 @@ BloomCodec::decode( uint32_t *pref,  size_t npref,  void *&details,
   off = this->decode_pref( code, len, pref, npref );
   if ( off == 0 || off >= len )
     return NULL;
-  off = this->decode_details( code, off, len, details, details_size );
+  off = this->decode_blob( code, off, len, details, details_size );
+  if ( off == 0 || off >= len )
+    return NULL;
+  off = this->decode_blob( code, off, len, queue, queue_size );
   if ( off == 0 || off >= len )
     return NULL;
   last = off;

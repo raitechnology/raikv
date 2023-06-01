@@ -406,7 +406,7 @@ RoutePublishContext::RoutePublishContext( RouteDB &db,  EvPublish &p ) noexcept
     pub( p ), rdb( db ), set( db, *this ), save_type( p.publish_type )
 {
   this->set.init();
-  if ( db.queue_db_size != 0 )
+  if ( db.queue_db.count != 0 )
     this->add_queues();
   RouteLookup & look = *this;
   db.get_sub_route( look );
@@ -466,13 +466,13 @@ RoutePublishContext::add_queues( void ) noexcept
   RouteLookup & look = *this;
   bool one = false;
 
-  for ( size_t i = 0; i < this->rdb.queue_db_size; i++ ) {
-    QueueDB     & q  = this->rdb.queue_db[ i ];
+  for ( size_t i = 0; i < this->rdb.queue_db.count; i++ ) {
+    QueueDB     & q  = this->rdb.queue_db.ptr[ i ];
     RouteGroup  & db = *q.route_group;
     RouteQueueSet qset( db, *this );
 
     qset.init();
-    look.queue_hash = q.queue_hash;
+    look.queue_hash = q.q_name->queue_hash;
     look.qroutes = NULL;
     db.get_sub_route( look );
     if ( look.rcount > 0 ) {

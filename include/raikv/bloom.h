@@ -418,24 +418,26 @@ struct BloomCodec : public ArraySpace< uint32_t, 1024 > {
 
   void encode( const uint32_t *pref,  size_t npref,
                const void *details,  size_t detail_size,
+               const void *queue,  size_t queue_size,
                const BloomBits &bits ) noexcept;
   void size_hdr( size_t add_size ) noexcept;
   void finalize( void ) noexcept;
   void encode_pref( const uint32_t *pref,  size_t npref ) noexcept;
-  void encode_details( const void *details,  size_t details_size ) noexcept;
+  void encode_blob( const void *details,  size_t details_size ) noexcept;
   void encode_delta( const uint32_t *values, uint32_t &nvals ) noexcept;
   void encode_int( const uint32_t *values, uint32_t &nvals ) noexcept;
   void encode_geom( const BloomBits &bits ) noexcept;
   void encode_bloom( const BloomBits &bits ) noexcept;
   void encode_ht( const BloomBits &bits ) noexcept;
 
-  BloomBits *decode( uint32_t *pref,  size_t npref,  void *&details,
-                     size_t &details_size,  const void *code,
-                     size_t len ) noexcept;
+  BloomBits *decode( uint32_t *pref,  size_t npref,
+                     void *&details,  size_t &details_size,
+                     void *&queue,  size_t &queue_size,
+                     const void *code,  size_t len ) noexcept;
   uint32_t decode_pref( const uint32_t *code,  size_t len,  uint32_t *pref,
                         size_t npref ) noexcept;
-  uint32_t decode_details( const uint32_t *code,  uint32_t off,  size_t len,
-                           void *&details,  size_t &details_size ) noexcept;
+  uint32_t decode_blob( const uint32_t *code,  uint32_t off,  size_t len,
+                        void *&blob,  size_t &blob_size ) noexcept;
   BloomBits *decode_geom( const uint32_t *buf,  uint32_t &len,
                           uint32_t *elem_count ) noexcept;
   BloomBits *decode_bloom( const uint32_t *buf,  uint32_t len,
