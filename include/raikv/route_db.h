@@ -1002,10 +1002,10 @@ enum {
   NOTIFY_IS_QUEUE = 4
 };
 
-static inline uint8_t get_notify_type( uint8_t notify_type ) {
+static inline uint8_t GNT( uint8_t notify_type ) {
   return ( notify_type & 0x3 );
 }
-static inline bool is_notify_queue( uint8_t notify_type ) {
+static inline bool INQ( uint8_t notify_type ) {
   return ( notify_type & NOTIFY_IS_QUEUE ) != 0;
 }
 
@@ -1035,6 +1035,9 @@ struct NotifySub {
     subject( s ), reply( 0 ), subject_len( (uint16_t) slen ), reply_len( 0 ),
     subj_hash( shash ), sub_count( 0 ), src( source ), refp( 0 ),
     bref( 0 ), hash_collision( coll ), src_type( t ), notify_type( 0 ) {}
+
+  bool    is_notify_queue( void ) const { return INQ( this->notify_type ); }
+  uint8_t get_notify_type( void ) const { return GNT( this->notify_type ); }
 };
 
 struct NotifyQueue : public NotifySub {
@@ -1078,6 +1081,9 @@ struct NotifyPattern {
     reply_len( 0 ), prefix_hash( phash ), sub_count( 0 ),
     src( source ), refp( 0 ), bref( 0 ), hash_collision( coll ),
     src_type( t ), notify_type( 0 ) {}
+
+  bool    is_notify_queue( void ) const { return INQ( this->notify_type ); }
+  uint8_t get_notify_type( void ) const { return GNT( this->notify_type ); }
 };
 
 struct NotifyPatternQueue : public NotifyPattern {
@@ -1099,10 +1105,9 @@ struct RouteNotify {
   RouteNotify  * next,
                * back;
   uint8_t        in_notify;
-  char           notify_type;
 
   RouteNotify( RoutePublish &p ) : sub_route( p ), next( 0 ), back( 0 ),
-                                   in_notify( 0 ), notify_type( 0 ) {}
+                                   in_notify( 0 ) {}
   virtual void on_sub( NotifySub &sub ) noexcept;
   virtual void on_resub( NotifySub &sub ) noexcept;
   virtual void on_unsub( NotifySub &sub ) noexcept;

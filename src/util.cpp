@@ -184,6 +184,18 @@ rai::kv::rand::fill_urandom_bytes( void *buf,  uint16_t sz ) noexcept
   }
 }
 
+void
+rai::kv::rand::xorshift1024star::static_init( void *seed,  uint16_t sz ) noexcept
+{
+  this->p = 0;
+  for ( size_t i = 0; i < sizeof( this->state ) /
+                          sizeof( this->state[ 0 ] ); i += 2 ) {
+    this->state[ i ]   = _U64( 0x9e3779b9, 0x7f4a7c13 );
+    this->state[ i+1 ] = _U64( 0x2b916c87, 0x261fe609 );
+  }
+  xor_bytes( this->state, sizeof( this->state ), seed, sz );
+}
+
 bool
 rai::kv::rand::xorshift1024star::init( void *seed,  uint16_t sz ) noexcept
 {

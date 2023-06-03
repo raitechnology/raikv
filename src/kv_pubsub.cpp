@@ -1133,17 +1133,15 @@ KvPubSub::on_unsub( NotifySub &sub ) noexcept
     return;
   if ( sub.refp != NULL ) {
     RouteRef & rte = *sub.refp;
-    if ( rte.rcnt > 0 ) { /* check all unsubs */
-      for ( uint32_t i = 0; i < rte.rcnt; i++ ) {
-        uint32_t r = rte.routes[ i ];
-        if ( r != (uint32_t) sub.src.fd && ! this->peer_set.is_member( r ) &&
-             r <= this->poll.maxfd ) {
-          EvSocket *s;
-          if ( (s = this->poll.sock[ r ]) != NULL ) {
-            uint8_t v = s->is_subscribed( sub );
-            if ( ( v & EV_NOT_SUBSCRIBED ) == 0 )
-              goto is_subscribed;
-          }
+    for ( uint32_t i = 0; i < rte.rcnt; i++ ) {
+      uint32_t r = rte.routes[ i ];
+      if ( r != (uint32_t) sub.src.fd && ! this->peer_set.is_member( r ) &&
+           r <= this->poll.maxfd ) {
+        EvSocket *s;
+        if ( (s = this->poll.sock[ r ]) != NULL ) {
+          uint8_t v = s->is_subscribed( sub );
+          if ( ( v & EV_NOT_SUBSCRIBED ) == 0 )
+            goto is_subscribed;
         }
       }
     }
@@ -1186,17 +1184,15 @@ KvPubSub::on_psub( NotifyPattern &pat ) noexcept
   if ( pat.refp != NULL ) {
     uint32_t h;
     RouteRef & rte = *pat.refp;
-    if ( rte.rcnt > 1 ) { /* check if psubscribed already */
-      for ( uint32_t i = 0; i < rte.rcnt; i++ ) {
-        uint32_t r = rte.routes[ i ];
-        if ( r != (uint32_t) pat.src.fd && ! this->peer_set.is_member( r ) &&
-             r <= this->poll.maxfd ) {
-          EvSocket *s;
-          if ( (s = this->poll.sock[ r ]) != NULL ) {
-            uint8_t v = s->is_psubscribed( pat );
-            if ( ( v & EV_NOT_SUBSCRIBED ) == 0 )
-              goto already_subscribed;
-          }
+    for ( uint32_t i = 0; i < rte.rcnt; i++ ) {
+      uint32_t r = rte.routes[ i ];
+      if ( r != (uint32_t) pat.src.fd && ! this->peer_set.is_member( r ) &&
+           r <= this->poll.maxfd ) {
+        EvSocket *s;
+        if ( (s = this->poll.sock[ r ]) != NULL ) {
+          uint8_t v = s->is_psubscribed( pat );
+          if ( ( v & EV_NOT_SUBSCRIBED ) == 0 )
+            goto already_subscribed;
         }
       }
     }

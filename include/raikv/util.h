@@ -211,6 +211,7 @@ struct xorshift1024star {
 
   xorshift1024star() : p( 0 ) {}
 
+  void static_init( void *seed = 0,  uint16_t sz = 0 ) noexcept; /* init state */
   bool init( void *seed = 0,  uint16_t sz = 0 ) noexcept; /* init state */
 
   uint64_t next( void ) noexcept;
