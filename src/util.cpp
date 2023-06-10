@@ -799,6 +799,7 @@ rai::kv::valid_uint64( const char *b,  size_t len ) noexcept
                ( b[ i ] >= 'A' && b[ i ] <= 'F' ) ) )
         return false;
     }
+    return true;
   }
   if ( len > 20 )
     return false;

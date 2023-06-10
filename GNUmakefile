@@ -506,6 +506,17 @@ $(bind)/test_balloc$(exe): $(test_balloc_objs) $(test_balloc_libs)
 all_exes       += $(bind)/test_balloc$(exe)
 all_depends    += $(test_balloc_deps)
 
+sub_hash_files := sub_hash
+sub_hash_cfile := $(addprefix test/, $(addsuffix .cpp, $(sub_hash_files)))
+sub_hash_objs  := $(addprefix $(objd)/, $(addsuffix .o, $(sub_hash_files)))
+sub_hash_deps  := $(addprefix $(dependd)/, $(addsuffix .d, $(sub_hash_files)))
+sub_hash_libs  := $(libd)/libraikv.a
+sub_hash_lnk   := $(dlnk_lib)
+
+$(bind)/sub_hash$(exe): $(sub_hash_objs) $(sub_hash_libs)
+all_exes       += $(bind)/sub_hash$(exe)
+all_depends    += $(sub_hash_deps)
+
 all_dirs := $(bind) $(libd) $(objd) $(dependd)
 
 have_pandoc := $(shell if [ -x /usr/bin/pandoc ]; then echo true; fi)
