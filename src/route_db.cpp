@@ -803,6 +803,7 @@ BloomGroup::get_route( RouteLookup &look ) noexcept
              r->detail_matches( look, SUB_RTE, hash, has_detail ) ) ) {
         uint32_t * p = spc.make( count + 1 );
         p[ count++ ] = b->r;
+        break;
       }
     }
   }
