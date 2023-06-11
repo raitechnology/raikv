@@ -51,7 +51,8 @@ struct RoutePublishSetT {
             uint64_t mask ) {
     Data & data = this->rpd[ mask == 0 ? 0 : pref + 1 ];
     if ( this->n == 0 ) {
-      this->min_fd = this->max_fd = route_fd( r[ 0 ] );
+      this->min_fd = route_fd( r[ 0 ] );
+      this->max_fd = route_fd( r[ rcnt - 1 ] );
       this->rpd_mask |= mask;
       this->n = 1;
       data.set( pref, rcnt, h, r );

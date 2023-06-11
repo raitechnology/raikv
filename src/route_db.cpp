@@ -1604,9 +1604,9 @@ BloomRef::update_route( const uint32_t *pref_count,  BloomBits *bits,
                         BloomDetail *details,  uint32_t ndetails ) noexcept
 {
   uint16_t prefix_len;
+  bool had_subs = false;
   if ( this->bits != NULL ) {
-    if ( this->bits->count != 0 )
-      this->invalid();
+    had_subs = ( this->bits->count != 0 );
     delete this->bits;
     this->bits = bits;
 
@@ -1649,7 +1649,7 @@ BloomRef::update_route( const uint32_t *pref_count,  BloomBits *bits,
     if ( details[ i ].detail_type == QUEUE_MATCH )
       this->queue_cnt++;
   }
-  if ( this->bits->count != 0 )
+  if ( had_subs || this->bits->count != 0 )
     this->invalid();
   /*printf( "update fd %d ndetails %u mask %lx\n",
           this->nlinks > 0 ? this->links[ 0 ]->r : -1,
