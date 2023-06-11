@@ -723,7 +723,7 @@ BloomRef::detail_matches( Match &args,  uint16_t prefix_len,
   /* no more details left, is a match */
   if ( detail_not_matched > 0 ) {
     /* if has a regular prefix match */
-    if ( this->bits->ht_refs( args.subj_hash ) >= detail_not_matched ) {
+    if ( this->bits->ht_refs( hash ) >= detail_not_matched ) {
       has_detail = false; /* override since prefix matches */
       return true;
     }
