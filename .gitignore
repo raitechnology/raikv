@@ -13,6 +13,7 @@
 /FC*
 /UB*
 /DEB*
+/ROCKY*
 # log files
 /*.log*
 # ads/adh cnf files
