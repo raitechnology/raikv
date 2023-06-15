@@ -496,8 +496,8 @@ struct RouteGroup {
   }
   void cache_save( uint16_t prefix_len,  uint32_t hash,
                    uint32_t *routes,  uint32_t rcnt,  uint32_t shard ) noexcept;
-  void cache_purge( size_t pos ) noexcept;
-
+  void cache_purge( uint16_t prefix_len,  uint32_t hash,
+                    uint32_t shard ) noexcept;
   void cache_need( void ) noexcept;
 };
 

@@ -588,15 +588,14 @@ uint32_t
 RouteGroup::add_route( uint16_t prefix_len,  uint32_t hash,  uint32_t r,
                        RouteRef &rte ) noexcept
 {
+  this->cache_purge( prefix_len, hash, 0 );
+
   UIntHashTab * xht = this->rt_hash[ prefix_len ];
-  size_t        pos, cpos = 0;
-  uint32_t    * routes;
+  size_t        pos;
   uint32_t      val = 0, rcnt = 0, xcnt;
   bool          exists;
 
   exists = xht->find( hash, pos, val );
-  if ( this->cache_find( prefix_len, hash, routes, rcnt, 0, cpos ) )
-    this->cache_purge( cpos );
   if ( exists )
     rcnt = rte.decompress( val, 1 );
   xcnt = rte.insert( r ); /* add r to rte.routes[] */
@@ -630,14 +629,12 @@ RouteGroup::del_route( uint16_t prefix_len,  uint32_t hash,  uint32_t r,
                        RouteRef &rte ) noexcept
 {
   UIntHashTab * xht = this->rt_hash[ prefix_len ];
-  size_t        pos, cpos = 0;
-  uint32_t    * routes;
+  size_t        pos;
   uint32_t      val, rcnt = 0, xcnt;
 
   if ( ! xht->find( hash, pos, val ) )
     return 0;
-  if ( this->cache_find( prefix_len, hash, routes, rcnt, 0, cpos ) )
-    this->cache_purge( cpos );
+  this->cache_purge( prefix_len, hash, 0 );
   rcnt = rte.decompress( val, 0 );
   xcnt = rte.remove( r ); /* remove r from rte.routes[] */
   /* if route was deleted */
@@ -1833,14 +1830,22 @@ RouteGroup::cache_need( void ) noexcept
 }
 
 void
-RouteGroup::cache_purge( size_t pos ) noexcept
+RouteGroup::cache_purge( uint16_t prefix_len,  uint32_t hash,
+                         uint32_t shard ) noexcept
 {
-  uint64_t    h;
-  RteCacheVal val;
-  this->cache.ht->get( pos, h, val );
-  this->cache.free += val.rcnt;
-  this->cache.count--;
-  this->cache.ht->remove( pos );
+  if ( ! this->cache.is_invalid ) {
+    uint64_t h = ( (uint64_t) this->group_num << 48 ) |
+             ( (uint64_t) shard << 40 ) |
+             ( (uint64_t) prefix_len << 32 ) | (uint64_t) hash;
+    size_t pos;
+    RteCacheVal val;
+
+    if ( this->cache.ht->find( h, pos, val ) ) {
+      this->cache.free += val.rcnt;
+      this->cache.count--;
+      this->cache.ht->remove( pos );
+    }
+  }
 }
 
 void
