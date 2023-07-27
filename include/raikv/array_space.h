@@ -114,8 +114,15 @@ struct CatPtrT {
     return (T &) *this;
   }
   T &s( const char *str ) {
-    while ( *str )
+    while ( *str != '\0' )
       *this->ptr++ = *str++;
+    return (T &) *this;
+  }
+  T &w( int w,  const char *str ) {
+    for ( ; w > 0 && *str != '\0'; w-- )
+      *this->ptr++ = *str++;
+    for ( ; w > 0; w-- )
+      *this->ptr++ = ' ';
     return (T &) *this;
   }
   T &c( char ch ) {
@@ -146,6 +153,17 @@ struct CatPtrT {
   T &i( int32_t n,  size_t d ) {
     this->ptr += int32_to_string( n, this->ptr, d );
     return (T &) *this;
+  }
+  T &n8( uint8_t b ) {
+    *(uint8_t *) this->ptr++ = b;
+    return (T &) *this;
+  }
+  T &n16( uint16_t b ) {
+    return this->n8( ( b >> 8 ) & 0xff ).n8( b & 0xff );
+  }
+  T &n32( uint32_t b ) {
+    return this->n8( ( b >> 24 ) & 0xff ).n8( ( b >> 16 ) & 0xff ).
+                 n8( ( b >> 8 ) & 0xff ).n8( b & 0xff );
   }
   size_t end( void ) {
     *this->ptr = '\0';

@@ -675,7 +675,7 @@ struct BloomRef {
   bool has_link( uint32_t fd ) noexcept;
   void ref_pref_count( uint16_t prefix_len ) noexcept;
   void deref_pref_count( uint16_t prefix_len ) noexcept;
-  void invalid( void ) noexcept;
+  void invalid( uint16_t prefix_len,  uint32_t hash ) noexcept;
   bool add_route( uint16_t prefix_len,  uint32_t hash ) noexcept;
   BloomDetail & add_detail( uint16_t prefix_len,  uint32_t hash ) noexcept;
   bool add_shard_route( uint16_t prefix_len,  uint32_t hash,
@@ -902,6 +902,7 @@ struct PeerAddrStr {
     this->buf[ 63 ] = '\0';
   }
   void set_addr( const struct sockaddr *sa ) noexcept;
+  void set_addr_port( const struct sockaddr *sa,  uint16_t in_port ) noexcept;
   size_t len( void ) const {
     return get_strlen64( this->buf );
   }
@@ -925,8 +926,10 @@ struct PeerAddrStr {
     if ( sa != NULL )
       this->set_addr( sa );
   }
-  bool set_sock_addr( int fd ) noexcept;
+  bool set_sock_addr( int fd ) noexcept; /* with :port */
   bool set_peer_addr( int fd ) noexcept;
+  bool set_sock_ip( int fd ) noexcept; /* no :port */
+  bool set_peer_ip( int fd ) noexcept;
 };
 
 struct PeerId {

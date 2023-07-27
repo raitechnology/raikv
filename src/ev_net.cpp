@@ -904,7 +904,7 @@ PeerAddrStr::set_sock_addr( int fd ) noexcept
     this->set_addr( (struct sockaddr *) &addr );
     return true;
   }
-  this->set_addr( NULL );
+  set_strlen64( this->buf, NULL, 0 );
   return false;
 }
 bool
@@ -916,12 +916,49 @@ PeerAddrStr::set_peer_addr( int fd ) noexcept
     this->set_addr( (struct sockaddr *) &addr );
     return true;
   }
-  this->set_addr( NULL );
+  set_strlen64( this->buf, NULL, 0 );
+  return false;
+}
+bool
+PeerAddrStr::set_sock_ip( int fd ) noexcept
+{
+  struct sockaddr_storage addr;
+  socklen_t addrlen = sizeof( addr );
+  if ( ::getsockname( fd, (struct sockaddr *) &addr, &addrlen ) == 0 ) {
+    this->set_addr_port( (struct sockaddr *) &addr, 0 );
+    return true;
+  }
+  set_strlen64( this->buf, NULL, 0 );
+  return false;
+}
+bool
+PeerAddrStr::set_peer_ip( int fd ) noexcept
+{
+  struct sockaddr_storage addr;
+  socklen_t addrlen = sizeof( addr );
+  if ( ::getpeername( fd, (struct sockaddr *) &addr, &addrlen ) == 0 ) {
+    this->set_addr_port( (struct sockaddr *) &addr, 0 );
+    return true;
+  }
+  set_strlen64( this->buf, NULL, 0 );
   return false;
 }
 /* convert sockaddr into a string and set peer_address[] */
 void
 PeerAddrStr::set_addr( const sockaddr *sa ) noexcept
+{
+  uint16_t in_port = 0;
+  if ( sa != NULL ) {
+    if ( sa->sa_family == AF_INET6 )
+      in_port = ((struct sockaddr_in6 *) sa)->sin6_port;
+    else if ( sa->sa_family == AF_INET )
+      in_port = ((struct sockaddr_in *) sa)->sin_port;
+  }
+  this->set_addr_port( sa, ntohs( in_port ) );
+}
+
+void
+PeerAddrStr::set_addr_port( const sockaddr *sa,  uint16_t in_port ) noexcept
 {
   const size_t maxlen = sizeof( this->buf );
   char         tmp_buf[ maxlen ],
@@ -931,13 +968,11 @@ PeerAddrStr::set_addr( const sockaddr *sa ) noexcept
   size_t       len;
   in_addr    * in;
   in6_addr   * in6;
-  uint16_t     in_port;
 
   if ( sa != NULL ) {
     switch ( sa->sa_family ) {
       case AF_INET6:
-        in6     = &((struct sockaddr_in6 *) sa)->sin6_addr;
-        in_port = ((struct sockaddr_in6 *) sa)->sin6_port;
+        in6 = &((struct sockaddr_in6 *) sa)->sin6_addr;
         /* check if ::ffff: prefix */
         if ( ((uint64_t *) in6)[ 0 ] == 0 &&
              ((uint16_t *) in6)[ 4 ] == 0 &&
@@ -945,22 +980,26 @@ PeerAddrStr::set_addr( const sockaddr *sa ) noexcept
           in = &((in_addr *) in6)[ 3 ];
           goto do_af_inet;
         }
-        p = inet_ntop( AF_INET6, in6, &s[ 1 ], maxlen - 9 );
+        p = inet_ntop( AF_INET6, in6, in_port == 0 ? s : &s[ 1 ], maxlen - 9 );
         if ( p == NULL )
           break;
-        /* make [ip6]:port */
-        len = ::strlen( &s[ 1 ] ) + 1;
-        t   = &s[ len ];
-        s[ 0 ] = '[';
-        t[ 0 ] = ']';
-        t[ 1 ] = ':';
-        len = uint64_to_string( ntohs( in_port ), &t[ 2 ] );
-        t   = &t[ 2 + len ];
+        if ( in_port == 0 ) {
+          t = &s[ ::strlen( s ) ];
+        }
+        else {
+          /* make [ip6]:port */
+          len = ::strlen( &s[ 1 ] ) + 1;
+          t   = &s[ len ];
+          s[ 0 ] = '[';
+          t[ 0 ] = ']';
+          t[ 1 ] = ':';
+          len = uint64_to_string( in_port, &t[ 2 ] );
+          t   = &t[ 2 + len ];
+        }
         break;
 
       case AF_INET:
-        in      = &((struct sockaddr_in *) sa)->sin_addr;
-        in_port = ((struct sockaddr_in *) sa)->sin_port;
+        in = &((struct sockaddr_in *) sa)->sin_addr;
       do_af_inet:;
         p = inet_ntop( AF_INET, in, s, maxlen - 7 );
         if ( p == NULL )
@@ -968,9 +1007,11 @@ PeerAddrStr::set_addr( const sockaddr *sa ) noexcept
         /* make ip4:port */
         len = ::strlen( s );
         t   = &s[ len ];
-        t[ 0 ] = ':';
-        len = uint64_to_string( ntohs( in_port ), &t[ 1 ] );
-        t   = &t[ 1 + len ];
+        if ( in_port != 0 ) {
+          t[ 0 ] = ':';
+          len = uint64_to_string( in_port, &t[ 1 ] );
+          t   = &t[ 1 + len ];
+        }
         break;
 #if ! defined( _MSC_VER ) && ! defined( __MINGW32__ )
       case AF_LOCAL:

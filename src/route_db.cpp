@@ -1278,7 +1278,7 @@ BloomRef::unlink( bool del_empty_routes ) noexcept
 {
   if ( this->nlinks == 0 )
     return;
-  this->invalid();
+  this->invalid( 0, 0 );
   while ( this->nlinks > 0 ) {
     BloomRoute * b = this->links[ this->nlinks - 1 ];
     b->del_bloom_ref( this );
@@ -1407,7 +1407,7 @@ BloomRef::add_route( uint16_t prefix_len,  uint32_t hash ) noexcept
   if ( this->pref_count[ prefix_len ]++ == 0 )
     this->ref_pref_count( prefix_len );
   this->bits->add( hash );
-  this->invalid();
+  this->invalid( prefix_len, hash );
   return this->bits->test_resize();
 }
 
@@ -1487,7 +1487,7 @@ BloomRef::del_route( uint16_t prefix_len,  uint32_t hash ) noexcept
   if ( --this->pref_count[ prefix_len ] == 0 )
     this->deref_pref_count( prefix_len );
   this->bits->remove( hash );
-  this->invalid();
+  this->invalid( prefix_len, hash );
 }
 
 template <class Match>
@@ -1587,12 +1587,20 @@ BloomRoute::invalid( void ) noexcept
 }
 
 void
-BloomRef::invalid( void ) noexcept
+BloomRef::invalid( uint16_t prefix_len,  uint32_t hash ) noexcept
 {
+  bool upd_cache = ( (uint32_t) prefix_len | hash ) != 0;
   for ( uint32_t i = 0; i < this->nlinks; i++ ) {
-    this->links[ i ]->rdb.cache.need       = 0;
-    this->links[ i ]->rdb.cache.is_invalid = true;
-    this->links[ i ]->is_invalid           = true;
+    BloomRoute * b = this->links[ i ];
+    if ( upd_cache && b->in_list > 0 ) {
+      uint32_t shard = b->in_list - 1;
+      b->rdb.cache_purge( prefix_len, hash, shard );
+    }
+    else {
+      b->rdb.cache.need       = 0;
+      b->rdb.cache.is_invalid = true;
+    }
+    b->is_invalid = true;
   }
 }
 
@@ -1647,7 +1655,7 @@ BloomRef::update_route( const uint32_t *pref_count,  BloomBits *bits,
       this->queue_cnt++;
   }
   if ( had_subs || this->bits->count != 0 )
-    this->invalid();
+    this->invalid( 0, 0 );
   /*printf( "update fd %d ndetails %u mask %lx\n",
           this->nlinks > 0 ? this->links[ 0 ]->r : -1,
           ndetails, this->detail_mask );*/
