@@ -500,6 +500,8 @@ struct EvPoll {
   uint64_t current_coarse_ns( void ) noexcept; /* current time */
   uint64_t current_mono_ns( void ) noexcept; /* current mono */
   uint64_t create_ns( void ) const noexcept; /* create time from kv */
+  uint64_t mono_to_utc_secs( uint64_t mono_secs ) noexcept;
+  uint64_t mono_to_utc_ns( uint64_t mono_nanos ) noexcept;
   int get_null_fd( void ) noexcept;         /* return dup /dev/null fd */
   int add_sock( EvSocket *s ) noexcept;     /* add to poll set */
   uint64_t get_next_id( void ) noexcept;

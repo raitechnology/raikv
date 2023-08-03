@@ -743,6 +743,24 @@ EvPoll::create_ns( void ) const noexcept
   return this->init_ns;
 }
 
+uint64_t
+EvPoll::mono_to_utc_secs( uint64_t mono_secs ) noexcept
+{
+  static const uint64_t NS = 1000 * 1000 * 1000;
+  return this->mono_to_utc_ns( mono_secs * NS ) / NS;
+}
+
+uint64_t
+EvPoll::mono_to_utc_ns( uint64_t mono_nanos ) noexcept
+{
+  uint64_t ref = this->now_ns;
+  if ( this->mono_ns > mono_nanos )
+    ref -= ( this->mono_ns - mono_nanos );
+  else
+    ref += ( mono_nanos - this->mono_ns );
+  return ref;
+}
+
 int
 EvPoll::dispatch( void ) noexcept
 {
