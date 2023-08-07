@@ -998,11 +998,12 @@ struct PeerData : public PeerId {
 };
 
 enum {
-  NOTIFY_ADD_SUB  = 0,
-  NOTIFY_REM_SUB  = 1,
-  NOTIFY_ADD_REF  = 2,
-  NOTIFY_REM_REF  = 3,
-  NOTIFY_IS_QUEUE = 4
+  NOTIFY_ADD_SUB    = 0,
+  NOTIFY_REM_SUB    = 1,
+  NOTIFY_ADD_REF    = 2,
+  NOTIFY_REM_REF    = 3,
+  NOTIFY_IS_QUEUE   = 4,
+  NOTIFY_IS_INITIAL = 8
 };
 
 static inline uint8_t GNT( uint8_t notify_type ) {
@@ -1010,6 +1011,9 @@ static inline uint8_t GNT( uint8_t notify_type ) {
 }
 static inline bool INQ( uint8_t notify_type ) {
   return ( notify_type & NOTIFY_IS_QUEUE ) != 0;
+}
+static inline bool INI( uint8_t notify_type ) {
+  return ( notify_type & NOTIFY_IS_INITIAL ) != 0;
 }
 
 struct NotifySub {
@@ -1040,6 +1044,7 @@ struct NotifySub {
     bref( 0 ), hash_collision( coll ), src_type( t ), notify_type( 0 ) {}
 
   bool    is_notify_queue( void ) const { return INQ( this->notify_type ); }
+  bool    is_notify_initial( void ) const { return INI( this->notify_type ); }
   uint8_t get_notify_type( void ) const { return GNT( this->notify_type ); }
 };
 
@@ -1086,6 +1091,7 @@ struct NotifyPattern {
     src_type( t ), notify_type( 0 ) {}
 
   bool    is_notify_queue( void ) const { return INQ( this->notify_type ); }
+  bool    is_notify_initial( void ) const { return INI( this->notify_type ); }
   uint8_t get_notify_type( void ) const { return GNT( this->notify_type ); }
 };
 
@@ -1182,7 +1188,7 @@ struct RoutePublish : public RouteDB {
       if ( mod_route != NULL && sub.hash_collision != 0 )
         sub.sub_count = grp.ref_route( prefix_len, prefix_hash, rte );
       sub.refp = &rte;
-      sub.notify_type = type;
+      sub.notify_type |= type;
       for ( RouteNotify *p = this->notify_list.hd; p != NULL; p = p->next )
         (p->*cb)( sub );
       sub.refp = NULL;

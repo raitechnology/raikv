@@ -341,6 +341,7 @@ struct IntHashTabT : public IntHashUsage
   }
 };
 typedef IntHashTabT<uint32_t, uint32_t> UIntHashTab;
+typedef IntHashTabT<uint64_t, uint64_t> UInt64HashTab;
 
 /* allocates the tab elems separately, slightly slower, but less clutter,
  * no need to call check_resize()
