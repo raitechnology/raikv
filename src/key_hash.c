@@ -36,6 +36,16 @@ kv_hash_uint2( uint32_t r, uint32_t i )
   return _mm_crc32_u32( r, i );
 }
 
+static inline uint32_t rotl32( uint32_t x,  int k ) {
+  return (x << k) | (x >> (32 - k));
+}
+/* lossless hash, unique hash for every input, useful for hashing counters */
+uint32_t
+kv_ll_hash_uint( uint32_t i )
+{
+  return ( i >> 10 ) ^ kv_hash_uint( i & 1023 ); /* cycle period of 1025 */
+}
+
 static inline uint32_t
 trail_crc_c( uint32_t r,  const uint8_t *s,  size_t sz )
 {
