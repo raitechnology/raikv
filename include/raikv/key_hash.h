@@ -7,7 +7,6 @@ extern "C" {
 /* intel crc_c instruction */
 uint32_t kv_hash_uint( uint32_t i );
 uint32_t kv_hash_uint2( uint32_t r,  uint32_t i );
-uint32_t kv_ll_hash_uint( uint32_t i );
 uint32_t kv_crc_c( const void *p, size_t sz, uint32_t seed );
 void kv_crc_c_2_diff( const void *p,  size_t sz,   uint32_t *seed,
                       const void *p2,  size_t sz2,  uint32_t *seed2 );
