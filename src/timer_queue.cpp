@@ -19,7 +19,7 @@ using namespace kv;
 EvTimerQueue::EvTimerQueue( EvPoll &p )
             : EvSocket( p, p.register_type( "timer_queue" ) ),
               epoch( 0 ), cb( 0 ), cb_sz( 0 ),
-              cb_used( 0 ), processing_timers( false )
+              cb_used( 0 ), cb_free( 0 ), processing_timers( false )
 {
 #ifdef HAVE_TIMERFD
   this->sock_opts = OPT_READ_HI;
@@ -101,17 +101,21 @@ bool
 EvTimerQueue::add_timer_cb( EvTimerCallback &tcb,  uint32_t ival,  TimerUnits u,
                             uint64_t timer_id,  uint64_t event_id ) noexcept
 {
-  int32_t id = (int32_t) this->cb_used;
-  if ( this->cb_used < this->cb_sz ) {
-    if ( this->cb[ this->cb_used ] != NULL ) {
-      for ( id = 0; ; id++ ) {
-        if ( this->cb[ id ] == NULL )
+  uint32_t id = this->cb_used;
+  if ( id < this->cb_sz ) {
+    if ( this->cb[ id ] != NULL ) {
+      for ( id = this->cb_free; id < this->cb_sz; id++ ) {
+        if ( this->cb[ id ] == NULL ) {
+          this->cb_free = id + 1;
           break;
+        }
       }
+      if ( id == this->cb_sz )
+        this->cb_free = this->cb_sz;
     }
   }
-  else {
-    size_t new_sz = ( this->cb_sz == 0 ? 8 : this->cb_sz * 2 );
+  if ( id == this->cb_sz ) {
+    size_t new_sz = ( this->cb_sz == 0 ? 8 : (size_t) this->cb_sz * 2 );
     if ( ( new_sz >> 31 ) != 0 ) /* int range */
       return false;
     void * p = ::realloc( this->cb, sizeof( this->cb[ 0 ] ) * new_sz );
@@ -122,7 +126,7 @@ EvTimerQueue::add_timer_cb( EvTimerCallback &tcb,  uint32_t ival,  TimerUnits u,
               sizeof( this->cb[ 0 ] ) * ( new_sz - this->cb_sz ) );
     this->cb_sz = new_sz;
   }
-  if ( this->add_timer_units( -(id+1), ival, u, timer_id, event_id ) ) {
+  if ( this->add_timer_units( -((int32_t)id+1), ival, u, timer_id, event_id ) ) {
     this->cb[ id ] = &tcb;
     this->cb_used++;
     return true;
@@ -147,20 +151,30 @@ bool
 EvTimerQueue::remove_timer_cb( EvTimerCallback &tcb,  uint64_t timer_id,
                                uint64_t event_id ) noexcept
 {
-  uint32_t id;
-  for ( id = 0; id < this->cb_sz; id++ ) {
-    if ( this->cb[ id ] == &tcb )
-      break;
+  size_t i, num_elems = this->queue.num_elems;
+  EvTimerEvent * elem = this->queue.heap;
+
+  for ( i = 0; i < num_elems; i++ ) {
+    if ( elem[ i ].id < 0 &&
+         timer_id == elem[ i ].timer_id &&
+         event_id == elem[ i ].event_id ) {
+      uint32_t id = -(elem[ i ].id+1);
+      if ( this->cb[ id ] == &tcb ) {
+        EvTimerEvent el;
+        el.id          = elem[ i ].id;
+        el.ival        = 0;
+        el.timer_id    = timer_id;
+        el.next_expire = 0;
+        el.event_id    = event_id;
+        this->cb[ id ] = NULL;
+        if ( id < this->cb_free )
+          this->cb_free = id;
+        this->cb_used -= 1;
+        return this->queue.remove( el );
+      }
+    }
   }
-  if ( id == this->cb_sz )
-    return false;
-  EvTimerEvent el;
-  el.id          = -(id+1);
-  el.ival        = 0;
-  el.timer_id    = timer_id;
-  el.next_expire = 0;
-  el.event_id    = event_id;
-  return this->queue.remove( el );
+  return false;
 }
 
 void
@@ -244,11 +258,14 @@ EvTimerQueue::process( void ) noexcept
     if ( ev.next_expire <= this->epoch ) { /* timers are ready to fire */
       this->queue.pop();
       if ( ev.id < 0 ) {
+        uint32_t id = -(ev.id+1);
         rearm_timer =
-          this->cb[ -(ev.id+1) ]->timer_cb( ev.timer_id, ev.event_id );
+          this->cb[ id ]->timer_cb( ev.timer_id, ev.event_id );
         if ( ! rearm_timer ) {
-          this->cb[ -(ev.id+1) ] = NULL;
+          this->cb[ id ] = NULL;
           this->cb_used -= 1;
+          if ( id < this->cb_free )
+            this->cb_free = id;
         }
       }
       else {

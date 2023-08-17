@@ -39,8 +39,9 @@ struct EvTimerQueue : public EvSocket {
   uint64_t           epoch, /* current epoch */
                      expires; /* next delta expires */
   EvTimerCallback ** cb;    /* callbacks when event.id < 0 */
-  size_t             cb_sz, /* extent of cb[] */
-                     cb_used; /* number of cb[] used */
+  uint32_t           cb_sz, /* extent of cb[] */
+                     cb_used, /* number of cb[] used */
+                     cb_free;
   bool               processing_timers;
 
   EvTimerQueue( EvPoll &p );

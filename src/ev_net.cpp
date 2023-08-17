@@ -761,6 +761,17 @@ EvPoll::mono_to_utc_ns( uint64_t mono_nanos ) noexcept
   return ref;
 }
 
+uint64_t
+EvPoll::utc_to_mono_ns( uint64_t utc_nanos ) noexcept
+{
+  uint64_t ref = this->mono_ns;
+  if ( this->now_ns > utc_nanos )
+    ref -= ( this->now_ns - utc_nanos );
+  else
+    ref += ( utc_nanos - this->now_ns );
+  return ref;
+}
+
 int
 EvPoll::dispatch( void ) noexcept
 {

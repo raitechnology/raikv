@@ -1377,6 +1377,7 @@ enum TimerUnits {
   IVAL_MICROS = 2,
   IVAL_NANOS  = 3
 };
+static const uint32_t MAX_TIMER_RANGE = 0xffffffff >> 2;
 struct EvTimerQueue;
 struct TimerQueue {
   EvTimerQueue * queue;
