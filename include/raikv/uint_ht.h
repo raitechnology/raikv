@@ -275,8 +275,10 @@ struct IntHashTabT : public IntHashUsage
   }
   /* room for {h,v} array + used bits */
   static size_t alloc_size( size_t sz ) {
-    return ( sizeof( IntHashTabT ) - ( 2 * sizeof( Elem ) ) ) +
-           ( sz * sizeof( Elem ) ) + IntHashUsage::bits_size( sz );
+    size_t n = sizeof( IntHashTabT );
+    if ( sz > 2 )
+      n += ( sz - 2 ) * sizeof( Elem );
+    return n + IntHashUsage::bits_size( sz );
   }
   /* alloc, copy, delete, null argument is ok */
   static IntHashTabT *resize( IntHashTabT *xht ) {
@@ -332,9 +334,23 @@ struct IntHashTabT : public IntHashUsage
   void remove( size_t pos ) {
     remove_tab<IntHashTabT>( *this, pos );
   }
+  bool find_remove( Int h ) {
+    size_t pos;
+    if ( ! this->find( h, pos ) )
+      return false;
+    this->remove( pos );
+    return true;
+  }
   void remove_rsz( IntHashTabT *&xht,  size_t pos ) {
     this->remove( pos );
     check_resize( xht );
+  }
+  bool find_remove_rsz( IntHashTabT *&xht,  Int h ) {
+    size_t pos;
+    if ( ! this->find( h, pos ) )
+      return false;
+    this->remove_rsz( xht, pos );
+    return true;
   }
   size_t mem_size( void ) const {
     return IntHashTabT::alloc_size( this->tab_size() );
@@ -514,8 +530,10 @@ struct IntHashTabU : public IntHashUsage
   }
   /* room for {h,v} array + used bits */
   static size_t alloc_size( size_t sz ) {
-    return ( sizeof( IntHashTabU ) - ( 2 * sizeof( Elem ) ) ) +
-           ( sz * sizeof( Elem ) ) + IntHashUsage::bits_size( sz );
+    size_t n = sizeof( IntHashTabU );
+    if ( sz > 2 )
+      n += ( sz - 2 ) * sizeof( Elem );
+    return n + IntHashUsage::bits_size( sz );
   }
   /* alloc, copy, delete, null argument is ok */
   static IntHashTabU *resize( IntHashTabU *xht ) {

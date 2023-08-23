@@ -118,7 +118,7 @@ LogTest::timer_cb( uint64_t timer_id,  uint64_t ) noexcept
 }
 
 int
-main( void )
+main( int argc, char *argv[] )
 {
   SignalHandler sighndl;
   EvPoll   poll;
@@ -128,9 +128,16 @@ main( void )
 
   poll.init( 5, false );
   sighndl.install();
+  if ( argc <= 1 )
+    poll.timer.add_timer_millis( test, 100, 0, 0 );
+  else {
+    if ( log.output_log_file( argv[ 1 ] ) != 0 ) {
+      perror( argv[ 1 ] );
+      return 1;
+    }
+  }
   test.out_fd = ::dup( 1 );
-  log.start();
-  poll.timer.add_timer_millis( test, 100, 0, 0 );
+  log.start_ev( poll );
   poll.timer.add_timer_seconds( test, 1, 1, 0 );
   for (;;) {
     /* loop 5 times before quiting, time to flush writes */

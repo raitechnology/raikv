@@ -146,8 +146,6 @@ struct MainLoopVars {
  *
  * Runner<Args, Loop> runner( args, shm, Loop::initialize );
  */
-typedef bool (*initialize_func_t)( void * );
-
 template<class MAIN_LOOP_ARGS>
 struct MainLoop {
   EvPoll            poll;
@@ -156,7 +154,6 @@ struct MainLoop {
   size_t            thr_num;
   bool              running,
                     done;
-  initialize_func_t initialize;
 
   template <class Sock>
   void Alloc( Sock * &s ) {
@@ -176,13 +173,11 @@ struct MainLoop {
   }
   /* the allocs are 64 byte aligned for poll */
   void * operator new( size_t, void *ptr ) { return ptr; }
-  MainLoop( EvShm &m,  MAIN_LOOP_ARGS &args,  size_t num,
-            initialize_func_t ini )
+  MainLoop( EvShm &m,  MAIN_LOOP_ARGS &args,  size_t num )
     : shm( m, num == 0 ), r( args ) {
     uint8_t * b = (uint8_t *) (void *) &this->thr_num;
     ::memset( b, 0, (uint8_t *) (void *) &this[ 1 ] -  b );
-    this->initialize = ini;
-    this->thr_num    = num;
+    this->thr_num = num;
   }
   /* initialize poll event */
   bool poll_init( void ) {
@@ -212,9 +207,9 @@ struct MainLoop {
   void run( void ) {
     int idle_cnt = 0;
     while ( this->r.thr_start < this->thr_num ) /* wait for my turn */
-      idle();
+      this->idle();
     if ( this->r.thr_error == 0 && this->poll_init() &&
-         this->initialize( this ) ) {
+         this->initialize() ) {
       this->r.thr_start++;
       this->running = true;
       for (;;) {
@@ -228,9 +223,10 @@ struct MainLoop {
         else
           idle_cnt = 0;
         this->poll.wait( idle_cnt > 255 ? 100 : 0 );
-        if ( this->r.sighndl.signaled && ! poll.quit ) {
+        if ( this->r.sighndl.signaled && ! this->poll.quit ) {
           if ( this->r.thr_exit >= this->thr_num ) /* wait for my turn */
-            this->poll.quit++;
+            if ( this->finish() )
+              this->poll.quit++;
         }
       }
     }
@@ -246,6 +242,8 @@ struct MainLoop {
   void detach( void ) {
     this->shm.detach();
   }
+  virtual bool initialize( void ) noexcept = 0;
+  virtual bool finish( void ) noexcept = 0;
 };
 
 template <class MAIN_LOOP_ARGS, class MAIN_LOOP>
@@ -264,7 +262,7 @@ struct Runner {
     return nullptr;
   }
 
-  Runner( MAIN_LOOP_ARGS &r,  EvShm &shm,  bool (*ini)( void * ) ) {
+  Runner( MAIN_LOOP_ARGS &r,  EvShm &shm ) {
     this->num_thr = ( r.num_threads <= 1 ? 1 : r.num_threads );
 
     const size_t size = kv::align<size_t>( sizeof( MAIN_LOOP ), 64 );
@@ -272,7 +270,7 @@ struct Runner {
     size_t i, off = 0;
 
     for ( i = 0; i < this->num_thr && i < MAX_THREADS; i++ ) {
-      this->children[ i ] = new ( &buf[ off ] ) MAIN_LOOP( shm, r, i, ini );
+      this->children[ i ] = new ( &buf[ off ] ) MAIN_LOOP( shm, r, i );
       off += size;
     } 
     if ( this->num_thr == 1 ) {

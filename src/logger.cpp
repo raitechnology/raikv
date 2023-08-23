@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <time.h>
 #if ! defined( _MSC_VER ) && ! defined( __MINGW32__ )
 #include <unistd.h>
 #include <fcntl.h>
@@ -14,6 +15,7 @@
 #include <raikv/util.h>
 #include <raikv/array_space.h>
 #include <raikv/ev_net.h>
+#include <raikv/os_file.h>
 
 using namespace rai;
 using namespace kv;
@@ -38,7 +40,6 @@ struct LogOutput {
 };
 
 struct LoggerContext;
-struct LogOutput;
 
 struct EvLogger : public EvConnection {
   LoggerContext & log;
@@ -51,6 +52,61 @@ struct EvLogger : public EvConnection {
   virtual void process( void ) noexcept final;
   virtual void release( void ) noexcept final {}
 };
+
+#if defined( _MSC_VER ) || defined( __MINGW32__ )
+static inline int64_t ms_localtime( time_t t, struct tm &tmbuf ) {
+  ::localtime_s( &tmbuf, &t );
+  TIME_ZONE_INFORMATION tzinfo;
+  if ( GetTimeZoneInformation( &tzinfo ) == TIME_ZONE_ID_INVALID )
+    return 0;
+  return (int64_t) tzinfo.Bias * (int64_t) 60;
+}
+#else
+static inline int64_t ms_localtime( time_t t, struct tm &tmbuf ) {
+  ::localtime_r( &t, &tmbuf );
+  return (int64_t) tmbuf.tm_gmtoff;
+}
+#endif
+
+void
+Logger::update_tz( void ) noexcept
+{
+  time_t now = ::time( NULL );
+  struct tm local;
+  this->tz_off_sec = ms_localtime( now, local );
+  this->tz_off_ns  = this->tz_off_sec * (int64_t) 1000000000;
+  local.tm_sec = 0;
+  local.tm_min = 0;
+  local.tm_hour = 0;
+}
+
+void
+Logger::update_timestamp( uint64_t stamp ) noexcept
+{
+  if ( this->last_secs == 0 )
+    this->update_tz();
+  stamp += this->tz_off_ns;
+  uint64_t secs = stamp / (uint64_t) ( 1000 * 1000 * 1000 );
+  uint64_t ms   = stamp / (uint64_t) ( 1000 * 1000 );
+  if ( secs != this->last_secs ) {
+    uint32_t ar[ 3 ], j = 0;
+    ar[ 2 ] = secs % 60,
+    ar[ 1 ] = ( secs / 60 ) % 60;
+    ar[ 0 ] = ( secs / 3600 ) % 24;
+    for ( int i = 0; i < 3; i++ ) {
+      this->ts[ j++ ] = ( ar[ i ] / 10 ) + '0';
+      this->ts[ j++ ] = ( ar[ i ] % 10 ) + '0';
+      this->ts[ j++ ] = ( i == 2 ? '.' : ':' );
+    }
+    this->last_secs = secs;
+  }
+  if ( ms != this->last_ms ) {
+    this->ts[ TS_LEN+1 ] = ( ( ms / 100 ) % 10 ) + '0';
+    this->ts[ TS_LEN+2 ] = ( ( ms / 10 ) % 10 ) + '0';
+    this->ts[ TS_LEN+3 ] = ( ms % 10 ) + '0';
+    this->last_ms = ms;
+  }
+}
 
 static const int STDOUT_FD = 1,
                  STDERR_FD = 2;
@@ -73,9 +129,11 @@ struct LoggerContext : public Logger {
   int        quit;
   EvLogger * ev_out,
            * ev_err;
+  ArrayCount<char, 1024> buf;
+  int log_fd;
 
   void * operator new( size_t, void *ptr ) { return ptr; }
-  LoggerContext() : quit( 0 ) {
+  LoggerContext() : quit( 0 ), log_fd( -1 ) {
 #if ! defined( _MSC_VER ) && ! defined( __MINGW32__ )
     this->pout[ 0 ] = -1;
     this->pout[ 1 ] = -1;
@@ -101,6 +159,12 @@ struct LoggerContext : public Logger {
 #endif
   /* poll fds and eat pipes */
   bool run( void ) noexcept;
+  void ready( void ) noexcept;
+
+  bool output_log( void ) noexcept;
+  void timestamp_line( int stream,  uint64_t stamp,  size_t len,
+                       const char *buf ) noexcept;
+
 };
 #if defined( _MSC_VER ) || defined( __MINGW32__ )
 static bool create_named_pipe( HANDLE *p ) noexcept;
@@ -285,6 +349,16 @@ Logger::start( void ) noexcept
   return 0;
 }
 
+int
+Logger::output_log_file( const char *fn ) noexcept
+{
+  LoggerContext & log = (LoggerContext &) *this;
+  log.log_fd = os_open( fn, O_CREAT | O_WRONLY | O_APPEND, 0666 );
+  if ( log.log_fd < 0 )
+    return -1;
+  return 0;
+}
+
 void
 EvLogger::process( void ) noexcept
 {
@@ -293,6 +367,7 @@ EvLogger::process( void ) noexcept
                     &this->recv[ this->off ], buflen );
   this->off = this->len;
   this->pop( EV_PROCESS );
+  this->log.ready();
 }
 
 bool
@@ -340,6 +415,10 @@ Logger::shutdown( void ) noexcept
     if ( log.perr[ 0 ] != INVALID_HANDLE_VALUE )
       CancelIo( log.perr[ 0 ] );
 #endif
+    if ( log.log_fd >= 0 ) {
+      os_close( log.log_fd );
+      log.log_fd = -1;
+    }
   }
   return 0;
 }
@@ -437,3 +516,89 @@ LoggerContext::result( int fd, char *&buf ) noexcept
   return 0;
 }
 #endif
+
+void
+LoggerContext::ready( void ) noexcept
+{
+  if ( this->log_fd < 0 )
+    return;
+  this->output_log();
+  if ( this->buf.count > 0 ) {
+    ssize_t n = ::write( this->log_fd, this->buf.ptr, this->buf.count );
+    if ( n == (ssize_t) this->buf.count ) {
+      this->buf.count = 0;
+    }
+    else {
+      ::memmove( this->buf.ptr, &this->buf.ptr[ n ], this->buf.count - n );
+      this->buf.count -= n;
+    }
+  }
+}
+
+bool
+LoggerContext::output_log( void ) noexcept
+{
+  char     out[ 4 * 1024 ],
+           err[ 4 * 1024 ];
+  size_t   out_len   = sizeof( out ),
+           err_len   = sizeof( err );
+  uint64_t out_stamp = 0,
+           err_stamp = 0;
+  bool     out_done  = false,
+           err_done  = false,
+           b         = false;
+
+  while ( ! out_done || ! err_done ) {
+    if ( ! out_done && out_stamp == 0 ) {
+      out_stamp = this->read_stdout( out, out_len );
+      if ( out_stamp == 0 )
+        out_done = true;
+    }
+    if ( ! err_done && err_stamp == 0 ) {
+      err_stamp = this->read_stderr( err, err_len );
+      if ( err_stamp == 0 )
+        err_done = true;
+    }
+    bool do_out = ! out_done, do_err = ! err_done;
+    if ( do_out && do_err ) {
+      if ( out_stamp < err_stamp )
+        do_err = false;
+      else
+        do_out = false;
+    }
+    if ( do_out ) {
+      if ( out_len > 1 || out[ 0 ] != '\n' )
+        this->timestamp_line( 1, out_stamp, out_len, out );
+      out_stamp = 0; out_len = sizeof( out );
+      b = true;
+    }
+    if ( do_err ) {
+      if ( err_len > 1 || err[ 0 ] != '\n' )
+        this->timestamp_line( 2, err_stamp, err_len, err );
+      err_stamp = 0; err_len = sizeof( err );
+      b = true;
+    }
+  }
+  return b;
+}
+
+void
+LoggerContext::timestamp_line( int stream,  uint64_t stamp,  size_t len,
+                               const char *buf ) noexcept
+{
+  size_t sz;
+  char * p;
+
+  this->update_timestamp( stamp );
+
+  sz = len + TSHDR_LEN;
+  p  = this->buf.make( this->buf.count + sz );
+  p = &p[ this->buf.count ];
+  ::memcpy( p, this->ts, TSERR_OFF );
+  p = &p[ TSERR_OFF ];
+  *p++ = ( stream == 1 ? ' ' : '!' );
+  *p++ = ' ';
+  ::memcpy( p, buf, len );
+  this->buf.count += sz;
+}
+
