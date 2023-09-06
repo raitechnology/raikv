@@ -20,7 +20,7 @@ int
 main( int argc, char *argv[] )
 {
   EvPoll poll;
-  CaresAddrInfo info( poll );
+  CaresAddrInfo info( &poll );
 
   poll.init( 5, false );
   for ( int i = 1; i < argc; i++ ) {

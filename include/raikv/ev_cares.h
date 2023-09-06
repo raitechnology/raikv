@@ -37,7 +37,7 @@ struct AddrInfoList {
 };
 
 struct CaresAddrInfo : public EvTimerCallback {
-  EvPoll     & poll;
+  EvPoll     * poll;
   ares_channel channel; /* c-ares context */
 
   ArrayCount<EvCaresAsync *, 2> set; /* set of fds monitoring */
@@ -65,12 +65,12 @@ struct CaresAddrInfo : public EvTimerCallback {
   void * operator new( size_t, void *ptr ) { return ptr; }
   void operator delete( void *ptr ) { ::free( ptr ); }
 
-  CaresAddrInfo( EvPoll &p,  EvCaresCallback *cb = NULL )
+  CaresAddrInfo( EvPoll *p,  EvCaresCallback *cb = NULL )
     : poll( p ), channel( 0 ), notify_cb( cb ),
       addr_list( 0 ), host( 0 ), timer_id( 0 ), event_id( 0 ),
       status( -1 ), timeouts( 0 ), port( 0 ), socktype( 0 ), protocol( 0 ),
       flags( 0 ), family( 0 ), host_count( 0 ), timeout_ms( 2500 ), tries( 3 ),
-      sock_type( p.register_type( "c-ares" ) ), ipv6_prefer( false ),
+      sock_type( p ? p->register_type( "c-ares" ) : 0 ), ipv6_prefer( false ),
       done( true ) {}
   ~CaresAddrInfo() noexcept; /* ares_freeaddrinfo() */
 
@@ -80,6 +80,8 @@ struct CaresAddrInfo : public EvTimerCallback {
   void split_ai( AddrInfoList &inet,  AddrInfoList &inet6 ) noexcept;
   void merge_ai( AddrInfoList &inet,  AddrInfoList &inet6 ) noexcept;
   void free_addr_list( void ) noexcept;
+  void do_pollfds( void ) noexcept;
+  void do_select( void ) noexcept;
   void do_poll( void ) noexcept;
   virtual bool timer_cb( uint64_t timer_id,  uint64_t event_id ) noexcept;
 };

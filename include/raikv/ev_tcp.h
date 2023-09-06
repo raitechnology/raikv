@@ -9,7 +9,7 @@ extern "C" {
 
 namespace rai {
 namespace kv {
-
+#if 0
 struct AddrInfo {
   struct addrinfo *ai;
   AddrInfo() : ai( 0 ) {}
@@ -17,6 +17,7 @@ struct AddrInfo {
   /* getaddrinfo */
   int get_address( const char *ip,  int port,  int opts ) noexcept;
 };
+#endif
 uint32_t fix_ip4_address( uint32_t ipaddr ) noexcept;
 /* find address by device name */
 const char *fix_ip4_device( const char *dev,  char *ipbuf ) noexcept;

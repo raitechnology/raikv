@@ -16,6 +16,7 @@
 #endif
 #include <errno.h>
 #include <raikv/ev_tcp.h>
+#include <raikv/ev_cares.h>
 
 using namespace rai;
 using namespace kv;
@@ -327,7 +328,7 @@ rai::kv::fix_ip4_device( const char *dev, char *ipbuf ) noexcept
 #endif
   return dev;
 }
-
+#if 0
 int
 AddrInfo::get_address( const char *ip,  int port,  int opts ) noexcept
 {
@@ -384,14 +385,14 @@ AddrInfo::~AddrInfo() noexcept
     this->ai = NULL;
   }
 }
-
+#endif
 int
 EvTcpListen::listen2( const char *ip,  int port,  int opts,
                       const char *k,  uint32_t rte_id ) noexcept
 {
   int    status = 0;
   SOCKET sock = INVALID_SOCKET;
-  AddrInfo info;
+  CaresAddrInfo info( NULL );
   struct addrinfo * p = NULL;
   struct sockaddr_storage addr;
   socklen_t addrlen = sizeof( addr );
@@ -403,13 +404,19 @@ EvTcpListen::listen2( const char *ip,  int port,  int opts,
     return this->set_sock_err( EV_ERR_GETADDRINFO, get_errno() );
   /* try inet6 first, since it can listen to both ip stacks */
   for ( int fam = AF_INET6; ; fam = AF_INET ) {
-    for ( p = info.ai; p != NULL; p = p->ai_next ) {
+    for ( p = info.addr_list; p != NULL; p = p->ai_next ) {
       if ( ( fam == AF_INET6 && ( opts & OPT_AF_INET6 ) != 0 ) ||
            ( fam == AF_INET  && ( opts & OPT_AF_INET ) != 0 ) ) {
         if ( fam == p->ai_family ) {
           sock = ::socket( p->ai_family, p->ai_socktype, p->ai_protocol );
           if ( invalid_socket( sock ) )
             continue;
+          if ( p->ai_family == AF_INET ) {
+            uint32_t if_addr;
+            if_addr = ((struct sockaddr_in *) p->ai_addr)->sin_addr.s_addr;
+            if_addr = fix_ip4_address( if_addr );
+            ((struct sockaddr_in *) p->ai_addr)->sin_addr.s_addr = if_addr;
+          }
           this->PeerData::set_addr( p->ai_addr );
           status = bind_socket( sock, fam, opts, p->ai_addr, p->ai_addrlen );
           if ( status == 0 )
@@ -498,11 +505,11 @@ int
 EvTcpConnection::connect2( EvConnection &conn,  const char *ip,  int port,
                            int opts,  const char *k,  uint32_t rte_id ) noexcept
 {
-  AddrInfo info;
+  CaresAddrInfo info( NULL );
   int status = info.get_address( ip, port, opts );
   if ( status != 0 )
     return conn.set_sock_err( EV_ERR_GETADDRINFO, get_errno() );
-  return connect3( conn, info.ai, opts, k, rte_id );
+  return connect3( conn, info.addr_list, opts, k, rte_id );
 }
 
 int

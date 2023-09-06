@@ -13,6 +13,7 @@
 #include <errno.h>
 #include <raikv/ev_net.h>
 #include <raikv/ev_tcp.h>
+#include <raikv/ev_cares.h>
 
 using namespace rai;
 using namespace kv;
@@ -118,7 +119,7 @@ namespace {
 struct UdpData {
   EvUdp      & udp;
   const char * ip;
-  AddrInfo     info;
+  CaresAddrInfo info;
   struct sockaddr * ai_addr;
   SOCKET sock;
   int    port, opts, status;
@@ -127,7 +128,7 @@ struct UdpData {
 
   UdpData( EvUdp &udp_sock,  const char *ipaddr,  int p,
            int sock_opts,  bool conn )
-    : udp( udp_sock ), ip( ipaddr ), ai_addr( 0 ),
+    : udp( udp_sock ), ip( ipaddr ), info( NULL ), ai_addr( 0 ),
       sock( INVALID_SOCKET ), port( p ), opts( sock_opts ), status( 0 ),
       is_connect( conn ) {}
 
@@ -155,10 +156,12 @@ UdpData::multicast_setup( void ) noexcept
     op &= ~OPT_LISTEN;
   else
     op |= OPT_LISTEN;
+  this->info.free_addr_list();
+  this->ai_addr = NULL;
   this->status = this->info.get_address( dev_ip, port, op );
 
   if ( this->status == 0 ) {
-    for ( p = this->info.ai; p != NULL; p = p->ai_next )
+    for ( p = this->info.addr_list; p != NULL; p = p->ai_next )
       if ( p->ai_family == AF_INET )
         break;
   }
@@ -169,6 +172,7 @@ UdpData::multicast_setup( void ) noexcept
     return true;
   }
   uint32_t if_addr = ((struct sockaddr_in *) p->ai_addr)->sin_addr.s_addr;
+  if_addr = fix_ip4_address( if_addr );
   struct ip_mreq mr;
   ::memset( &mr, 0, sizeof( mr ) );
   mr.imr_interface.s_addr = if_addr;
@@ -184,12 +188,14 @@ UdpData::multicast_setup( void ) noexcept
     return true;
   }
   op |= OPT_NO_DNS;
+  this->info.free_addr_list();
+  this->ai_addr = NULL;
   this->status = this->info.get_address( mcast_ip, port, op );
   if ( this->status != 0 ) {
     this->status = this->udp.set_sock_err( EV_ERR_GETADDRINFO, get_errno() );
     return true;
   }
-  for ( p = this->info.ai; p != NULL; p = p->ai_next )
+  for ( p = this->info.addr_list; p != NULL; p = p->ai_next )
     if ( p->ai_family == AF_INET )
       break;
   if ( p == NULL ) {
@@ -264,6 +270,8 @@ UdpData::unicast_setup( void ) noexcept
     op &= ~OPT_LISTEN;
   else
     op |= OPT_LISTEN;
+  this->info.free_addr_list();
+  this->ai_addr = NULL;
   this->status = this->info.get_address( dev_ip, this->port, op );
   if ( this->status != 0 ) {
     this->status = this->udp.set_sock_err( EV_ERR_GETADDRINFO, get_errno() );
@@ -271,7 +279,7 @@ UdpData::unicast_setup( void ) noexcept
   }
   /* try inet6 first, since it can listen to both ip stacks */
   for ( int fam = AF_INET6; ; fam = AF_INET ) {
-    for ( p = this->info.ai; p != NULL; p = p->ai_next ) {
+    for ( p = this->info.addr_list; p != NULL; p = p->ai_next ) {
       if ( ( fam == AF_INET6 && ( this->opts & OPT_AF_INET6 ) != 0 ) ||
            ( fam == AF_INET  && ( this->opts & OPT_AF_INET ) != 0 ) ) {
         if ( fam == p->ai_family ) {
@@ -288,6 +296,12 @@ UdpData::unicast_setup( void ) noexcept
                                (setsockopt_cast) &off, sizeof( off ) ) != 0 )
               if ( ( this->opts & OPT_VERBOSE ) != 0 )
                 show_error( "warning: IPV6_V6ONLY" );
+          }
+          if ( ! is_connect && p->ai_family == AF_INET ) {
+            uint32_t if_addr;
+            if_addr = ((struct sockaddr_in *) p->ai_addr)->sin_addr.s_addr;
+            if_addr = fix_ip4_address( if_addr );
+            ((struct sockaddr_in *) p->ai_addr)->sin_addr.s_addr = if_addr;
           }
           this->udp.PeerData::set_addr( p->ai_addr );
           this->ai_addr = p->ai_addr;

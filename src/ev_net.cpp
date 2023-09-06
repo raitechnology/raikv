@@ -1936,6 +1936,8 @@ void EvConnectionNotify::on_data_loss( EvSocket &, EvPublish & ) noexcept {}
 void
 EvSocket::idle_push( EvState s ) noexcept
 {
+  if ( ! this->in_list( IN_ACTIVE_LIST ) )
+    return;
   /* if no state, not currently in the queue */
   if ( ! this->in_poll( IN_EPOLL_WRITE ) ) {
     if ( ! this->in_queue( IN_EVENT_QUEUE ) ) {

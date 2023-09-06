@@ -7,6 +7,7 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <arpa/nameser.h>
+#include <poll.h>
 #else
 #include <raikv/win.h>
 #endif
@@ -18,7 +19,7 @@
 using namespace rai;
 using namespace kv;
 
-CaresAddrInfo::~CaresAddrInfo()
+CaresAddrInfo::~CaresAddrInfo() noexcept
 {
   if ( this->addr_list != NULL )
     this->free_addr_list();
@@ -38,7 +39,7 @@ void
 CaresAddrInfo::stop( void ) noexcept
 {
   if ( this->event_id != 0 ) {
-    this->poll.timer.remove_timer_cb( *this, this->timer_id, this->event_id );
+    this->poll->timer.remove_timer_cb( *this, this->timer_id, this->event_id );
     this->event_id = 0;
   }
   for ( size_t i = 0; i < this->set.count; i++ ) {
@@ -357,108 +358,154 @@ CaresAddrInfo::get_address( const char *ip,  int port,  int opts ) noexcept
   return 0;
 }
 
+#if ! defined( _MSC_VER ) && ! defined( __MINGW32__ )
+void
+CaresAddrInfo::do_pollfds( void ) noexcept
+{
+  pollfd pfd[ ARES_GETSOCK_MAXNUM ];
+  ares_socket_t socks[ ARES_GETSOCK_MAXNUM ];
+  uint32_t bitmap;
+  int i, nfds;
+
+  for (;;) {
+    ::memset( socks, 0, sizeof( socks ) );
+    bitmap = (uint32_t) ares_getsock( this->channel, socks, ARES_GETSOCK_MAXNUM );
+    nfds = 0;
+    for ( i = 0; i < ARES_GETSOCK_MAXNUM; i++ ) {
+      if ( socks[ i ] > 0 ) {
+        pfd[ nfds ].events = 0;
+        if ( ARES_GETSOCK_READABLE( bitmap, i ) ) {
+          pfd[ nfds ].fd = socks[ i ];
+          pfd[ nfds ].events |= POLLRDNORM|POLLIN;
+        }
+        if ( ARES_GETSOCK_WRITABLE( bitmap, i ) ) {
+          pfd[ nfds ].fd = socks[ i ];
+          pfd[ nfds ].events |= POLLWRNORM|POLLOUT;
+        }
+        if ( pfd[ nfds ].events != 0 ) {
+          pfd[ nfds ].revents = 0;
+          nfds++;
+        }
+      }
+    }
+    if ( nfds != 0 ) {
+      struct timeval * tvp, tv;
+      tvp  = ares_timeout( this->channel, NULL, &tv );
+      nfds = ::poll( pfd, nfds, tvp->tv_sec * 1000 + tvp->tv_usec / 1000 );
+    }
+    if ( nfds <= 0 )
+      break;
+    for ( i = 0; i < nfds; i++ ) {
+      ares_process_fd(
+        this->channel,
+        pfd[ i ].revents & ( POLLRDNORM | POLLIN ) ? pfd[ i ].fd
+                                                   : ARES_SOCKET_BAD,
+        pfd[ i ].revents & ( POLLWRNORM | POLLOUT ) ? pfd[ i ].fd
+                                                    : ARES_SOCKET_BAD );
+    }
+  }
+}
+#else
+void
+CaresAddrInfo::do_pollfds( void ) noexcept
+{
+  /* not used */
+}
+#endif
+
+void
+CaresAddrInfo::do_select( void ) noexcept
+{
+  int    nfds, count;
+  fd_set read_fds, write_fds;
+  struct timeval *tvp, tv;
+  for (;;) {
+    FD_ZERO( &read_fds );
+    FD_ZERO( &write_fds );
+    nfds = ares_fds( this->channel, &read_fds, &write_fds );
+    if ( nfds == 0 )
+      break;
+    tvp   = ares_timeout( this->channel, NULL, &tv );
+    count = select( nfds, &read_fds, &write_fds, NULL, tvp );
+    if ( count < 0 && ( status = errno ) != EINVAL )
+      break;
+    ares_process( this->channel, &read_fds, &write_fds );
+  }
+}
+
 void
 CaresAddrInfo::do_poll( void ) noexcept
 {
   ares_socket_t socks[ ARES_GETSOCK_MAXNUM ];
   EvCaresAsync * c;
-  uint32_t i, k, bitmap;
+  uint32_t i, k, bitmap = 0;
   bool has_write = false;
 
-  bitmap = (uint32_t)
-    ares_getsock( this->channel, socks, ARES_GETSOCK_MAXNUM );
   this->poll_count++;
-  /* add fds if polling them */
-  for ( k = 0; k < ARES_GETSOCK_MAXNUM; k++ ) {
-    if ( ARES_GETSOCK_READABLE( bitmap, k ) ) {
-      for ( i = 0; i < this->set.count; i++ ) {
-        if ( (c = this->set.ptr[ i ]) != NULL ) {
+  if ( this->poll == NULL ) {
 #if ! defined( _MSC_VER ) && ! defined( __MINGW32__ )
-          if ( (ares_socket_t) c->fd == socks[ k ] )
+    this->do_pollfds();
 #else
-          SOCKET s;
-          if ( wp_get_socket( c->fd, &s ) == 0 &&
-               (ares_socket_t) s == socks[ k ] )
+    this->do_select();
 #endif
-          {
-            c->poll_count = this->poll_count;
-            break;
+  }
+  else {
+    bitmap = (uint32_t)
+      ares_getsock( this->channel, socks, ARES_GETSOCK_MAXNUM );
+    /* add fds if polling them */
+    for ( k = 0; k < ARES_GETSOCK_MAXNUM; k++ ) {
+      if ( ARES_GETSOCK_READABLE( bitmap, k ) ) {
+        for ( i = 0; i < this->set.count; i++ ) {
+          if ( (c = this->set.ptr[ i ]) != NULL ) {
+#if ! defined( _MSC_VER ) && ! defined( __MINGW32__ )
+            if ( (ares_socket_t) c->fd == socks[ k ] )
+#else
+            SOCKET s;
+            if ( wp_get_socket( c->fd, &s ) == 0 &&
+                 (ares_socket_t) s == socks[ k ] )
+#endif
+            {
+              c->poll_count = this->poll_count;
+              break;
+            }
           }
         }
-      }
-      if ( i == this->set.count ) {
-        c = this->poll.get_free_list<EvCaresAsync, CaresAddrInfo &>(
-              this->sock_type, *this );
-        this->set[ i ] = c;
+        if ( i == this->set.count ) {
+          c = this->poll->get_free_list<EvCaresAsync, CaresAddrInfo &>(
+                this->sock_type, *this );
+          this->set[ i ] = c;
 #if ! defined( _MSC_VER ) && ! defined( __MINGW32__ )
-        c->PeerData::init_peer( this->poll.get_next_id(), socks[ k ], -1,
-                                NULL, "c-ares" );
+          c->PeerData::init_peer( this->poll->get_next_id(), socks[ k ], -1,
+                                  NULL, "c-ares" );
 #else
-        int fd = wp_register_fd( socks[ k ] );
-        c->PeerData::init_peer( this->poll.get_next_id(), fd, -1,
-                                NULL, "c-ares" );
+          int fd = wp_register_fd( socks[ k ] );
+          c->PeerData::init_peer( this->poll->get_next_id(), fd, -1,
+                                  NULL, "c-ares" );
 #endif
-        c->poll_count = this->poll_count;
-        this->poll.add_sock( c );
-      }
-      ares_process_fd( this->channel, socks[ k ], ARES_SOCKET_BAD );
-    }
-    if ( ARES_GETSOCK_WRITABLE( bitmap, k ) ) {
-      ares_process_fd( this->channel, ARES_SOCKET_BAD, socks[ k ] );
-      has_write = true;
-    }
-  }
-#if 0
-  fd_set readers, writers;
-  EvCaresAsync * c;
-  size_t i;
-  int    nfds;
-  bool   has_write = false;
-
-  FD_ZERO( &readers );
-  FD_ZERO( &writers );
-  nfds = ares_fds( this->channel, &readers, &writers );
-  this->poll_count++;
-  /* add fds if polling them */
-  for ( int fd = 0; fd < nfds; fd++ ) {
-    if ( FD_ISSET( fd, &readers ) ) {
-      for ( i = 0; i < this->set.count; i++ ) {
-        if ( (c = this->set.ptr[ i ]) != NULL ) {
-          if ( c->fd == fd ) {
-            c->poll_count = this->poll_count;
-            break;
-          }
+          c->poll_count = this->poll_count;
+          this->poll->add_sock( c );
         }
+        ares_process_fd( this->channel, socks[ k ], ARES_SOCKET_BAD );
       }
-      if ( i == this->set.count ) {
-        c = this->poll.get_free_list<EvCaresAsync, CaresAddrInfo &>(
-              this->sock_type, *this );
-        this->set[ i ] = c;
-        c->PeerData::init_peer( fd, -1, NULL, "c-ares" );
-        c->poll_count = this->poll_count;
-        this->poll.add_sock( c );
+      if ( ARES_GETSOCK_WRITABLE( bitmap, k ) ) {
+        ares_process_fd( this->channel, ARES_SOCKET_BAD, socks[ k ] );
+        has_write = true;
       }
-      ares_process_fd( this->channel, fd, ARES_SOCKET_BAD );
     }
-    if ( FD_ISSET( fd, &writers ) ) {
-      ares_process_fd( this->channel, ARES_SOCKET_BAD, fd );
-      has_write = true;
-    }
-  }
-#endif
-  /* remove fds not used */
-  for ( i = 0; i < this->set.count; i++ ) {
-    if ( (c = this->set.ptr[ i ]) != NULL ) {
-      if ( c->poll_count != this->poll_count ) {
-        c->process_close();
-        this->set.ptr[ i ] = NULL;
+    /* remove fds not used */
+    for ( i = 0; i < this->set.count; i++ ) {
+      if ( (c = this->set.ptr[ i ]) != NULL ) {
+        if ( c->poll_count != this->poll_count ) {
+          c->process_close();
+          this->set.ptr[ i ] = NULL;
+        }
       }
     }
   }
   /* no work left to do */
   if ( bitmap == 0 || this->done ) {
     if ( this->event_id != 0 ) {
-      this->poll.timer.remove_timer_cb( *this, this->timer_id, this->event_id );
+      this->poll->timer.remove_timer_cb( *this, this->timer_id, this->event_id);
       this->event_id = 0;
     }
     bool b = this->done;
@@ -482,14 +529,14 @@ CaresAddrInfo::do_poll( void ) noexcept
     }
   }
   if ( this->event_id != 0 && timeout_us < this->event_id ) {
-    this->poll.timer.remove_timer_cb( *this, this->timer_id, this->event_id );
+    this->poll->timer.remove_timer_cb( *this, this->timer_id, this->event_id );
     this->event_id = 0;
   }
   if ( this->event_id == 0 && timeout_us != 0 ) {
     this->timer_id++;
     this->event_id = timeout_us;
-    this->poll.timer.add_timer_millis( *this, ( timeout_us - cur_time ) / 1000,
-                                       this->timer_id, this->event_id );
+    this->poll->timer.add_timer_millis( *this, ( timeout_us - cur_time ) / 1000,
+                                        this->timer_id, this->event_id );
   }
 }
 
