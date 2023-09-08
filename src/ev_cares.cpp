@@ -294,9 +294,11 @@ CaresAddrInfo::get_address( const char *ip,  int port,  int opts ) noexcept
       this->family = AF_UNSPEC;
       break;
   }
-  char svc[ 16 ];
-  uint32_to_string( port, svc );
-
+  char svc[ 16 ], *svcp = NULL;
+  if ( port != 0 ) {
+    uint32_to_string( port, svc );
+    svcp = svc;
+  }
   this->host_count = 1;
   if ( ip == NULL ) {
     struct addrinfo hints, * nodes, * n;
@@ -305,7 +307,7 @@ CaresAddrInfo::get_address( const char *ip,  int port,  int opts ) noexcept
     hints.ai_protocol = this->protocol;
     hints.ai_flags    = this->flags;
     hints.ai_family   = this->family;
-    this->status = ::getaddrinfo( NULL, svc, &hints, &nodes );
+    this->status = ::getaddrinfo( NULL, svcp, &hints, &nodes );
     if ( this->status != 0 )
       return this->status;
     if ( nodes != NULL ) {
@@ -351,7 +353,7 @@ CaresAddrInfo::get_address( const char *ip,  int port,  int opts ) noexcept
     hints.ai_protocol = this->protocol;
     hints.ai_flags    = this->flags;
     hints.ai_family   = this->family;
-    ares_getaddrinfo( this->channel, ip, svc, &hints, cares_addr_cb, this );
+    ares_getaddrinfo( this->channel, ip, svcp, &hints, cares_addr_cb, this );
   #endif
   }
   this->do_poll();
