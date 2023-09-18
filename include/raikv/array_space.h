@@ -67,6 +67,17 @@ struct ArrayCount : public kv::ArraySpace<T, arsz> {
       this->ptr[ this->count ] = *el;
     return this->ptr[ this->count++ ];
   }
+  void pop( size_t i ) {
+    for ( ; i + 1 < this->count; i++ )
+      this->ptr[ i ] = this->ptr[ i + 1 ];
+    this->count -= 1;
+  }
+  T &last( void ) const {
+    return this->ptr[ this->count - 1 ];
+  }
+  T &first( void ) const {
+    return this->ptr[ 0 ];
+  }
   void clear( void ) {
     this->reset();
     this->count = 0;
