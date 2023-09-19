@@ -384,6 +384,7 @@ struct RouteGroup {
   void del_prefix_len( uint16_t prefix_len,  bool is_rt_hash ) noexcept;
   uint64_t pat_mask( void ) const { return this->bloom.mask | this->rt_mask; }
 
+  static bool illegal_route( uint32_t r ) noexcept;
   uint32_t add_route( uint16_t prefix_len,  uint32_t hash,
                       uint32_t r ) noexcept;
   uint32_t del_route( uint16_t prefix_len,  uint32_t hash,

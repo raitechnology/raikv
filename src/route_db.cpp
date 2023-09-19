@@ -280,14 +280,20 @@ RouteZip::make_code_ref( uint32_t *code,  uint32_t ecnt,
   size_t   off, pos;
   for ( seed = 0; ; seed++ ) {
     h = CodeRef::hash_code( code, ecnt, seed );
-    if ( ! this->zht->find( h, pos, x ) )
-      break;
-    off = x;
-    CodeRef *p = (CodeRef *) (void *) &this->code_buf.ptr[ off ];
-    if ( p->equals( code, ecnt ) ) {
-      if ( p->ref++ == 0 ) /* previously free, now used */
-        this->code_free -= p->word_size();
-      return h;
+    if ( h == 0 ) {
+      if ( ecnt == 0 )
+        return 0;
+    }
+    else {
+      if ( ! this->zht->find( h, pos, x ) )
+        break;
+      off = x;
+      CodeRef *p = (CodeRef *) (void *) &this->code_buf.ptr[ off ];
+      if ( p->equals( code, ecnt ) ) {
+        if ( p->ref++ == 0 ) /* previously free, now used */
+          this->code_free -= p->word_size();
+        return h;
+      }
     }
   }
   uint32_t * spc = this->make_code_ref_space( ecnt, off );
@@ -584,10 +590,22 @@ RouteGroup::add_route( uint16_t prefix_len,  uint32_t hash,
   return this->add_route( prefix_len, hash, r, rte );
 }
 
+bool
+RouteGroup::illegal_route( uint32_t r ) noexcept
+{
+  if ( ( r & 0xc0000000 ) != 0 ) {
+    fprintf( stderr, "illegal route used: %x\n", r );
+    return true;
+  }
+  return false;
+}
+
 uint32_t
 RouteGroup::add_route( uint16_t prefix_len,  uint32_t hash,  uint32_t r,
                        RouteRef &rte ) noexcept
 {
+  if ( RouteGroup::illegal_route( r ) )
+    return 0;
   this->cache_purge( prefix_len, hash, 0 );
 
   UIntHashTab * xht = this->rt_hash[ prefix_len ];
@@ -628,6 +646,8 @@ uint32_t
 RouteGroup::del_route( uint16_t prefix_len,  uint32_t hash,  uint32_t r,
                        RouteRef &rte ) noexcept
 {
+  if ( RouteGroup::illegal_route( r ) )
+    return 0;
   UIntHashTab * xht = this->rt_hash[ prefix_len ];
   size_t        pos;
   uint32_t      val, rcnt = 0, xcnt;

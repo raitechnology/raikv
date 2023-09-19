@@ -32,10 +32,9 @@ default_cflags := -ggdb -O3
 # use 'make port_extra=-g' for debug build
 ifeq (-g,$(findstring -g,$(port_extra)))
   default_cflags := -ggdb
-#  xtra_cflags    := -fanalyzer -Wno-analyzer-null-dereference -Wno-analyzer-malloc-leak -Wno-analyzer-possible-null-argument -Wno-analyzer-null-argument -Wno-analyzer-possible-null-dereference
 endif
 ifeq (-a,$(findstring -a,$(port_extra)))
-  default_cflags := -fsanitize=address -ggdb -O3
+  default_cflags += -fsanitize=address
 endif
 ifeq (-mingw,$(findstring -mingw,$(port_extra)))
   CC    := /usr/bin/x86_64-w64-mingw32-gcc
