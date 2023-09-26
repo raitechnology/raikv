@@ -82,22 +82,24 @@ struct CodeRefPtr {
 struct BloomRoute;
 struct BloomRef;
 struct BloomList {
-  kv::DLinkList<BloomRoute> list[ 4 ];
+  ArrayCount<DLinkList<BloomRoute>, 4> list
   BloomList() {}
   bool is_empty( void ) const {
-    for ( int i = 0; i < 4; i++ )
-      if ( ! this->list[ i ].is_empty() )
+    for ( size_t i = 0; i < this->list.count; i++ )
+      if ( ! this->list.ptr[ i ].is_empty() )
         return false;
     return true;
   }
   bool is_empty( uint32_t shard ) const {
-    return this->list[ shard & 3 ].is_empty();
+    return shard >= this->list.count ||
+           this->list.ptr[ shard ].is_empty();
   }
   BloomRoute *hd( uint32_t shard ) {
-    return this->list[ shard & 3 ].hd;
+    if ( shard >= this->list.count ) return NULL;
+    return this->list.ptr[ shard ].hd;
   }
-  kv::DLinkList<BloomRoute> & get_list( uint32_t shard ) {
-    return this->list[ shard & 3 ];
+  DLinkList<BloomRoute> & get_list( uint32_t shard ) {
+    return this->list[ shard ];
   }
 };
 
