@@ -58,8 +58,8 @@ CXX         ?= g++
 cc          := $(CC) -std=c11
 cpp         := $(CXX)
 arch_cflags := -mavx -maes -fno-omit-frame-pointer
-gcc_wflags  := -Wall -Wextra -Werror
-
+gcc_wflags  := -Wall -Wextra
+# -Werror ... broken in gcc 13.2.1-3
 # if windows cross compile
 ifeq (true,$(mingw))
 dll       := dll
