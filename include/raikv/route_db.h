@@ -81,24 +81,39 @@ struct CodeRefPtr {
 
 struct BloomRoute;
 struct BloomRef;
+typedef DLinkList<BloomRoute> BloomRouteList;
+static const uint32_t ANY_SHARD = 0x80000000U;
 struct BloomList {
-  ArrayCount<DLinkList<BloomRoute>, 4> list
+  ArrayCount<BloomRouteList, 4> list;
+  BloomRouteList any_shard_list;
   BloomList() {}
   bool is_empty( void ) const {
     for ( size_t i = 0; i < this->list.count; i++ )
       if ( ! this->list.ptr[ i ].is_empty() )
         return false;
-    return true;
+    return this->any_shard_list.is_empty();
   }
   bool is_empty( uint32_t shard ) const {
-    return shard >= this->list.count ||
-           this->list.ptr[ shard ].is_empty();
+    if ( shard >= this->list.count ) {
+      if ( shard == ANY_SHARD )
+        return this->any_shard_list.is_empty();
+      return true;
+    }
+    return this->list.ptr[ shard ].is_empty();
   }
   BloomRoute *hd( uint32_t shard ) {
-    if ( shard >= this->list.count ) return NULL;
+    if ( shard >= this->list.count ) {
+      if ( shard == ANY_SHARD )
+        return this->any_shard_list.hd;
+      return NULL;
+    }
     return this->list.ptr[ shard ].hd;
   }
-  DLinkList<BloomRoute> & get_list( uint32_t shard ) {
+  BloomRouteList & get_list( uint32_t shard ) {
+    if ( shard >= this->list.count ) {
+      if ( shard == ANY_SHARD )
+        return this->any_shard_list;
+    }
     return this->list[ shard ];
   }
 };
@@ -354,10 +369,10 @@ static inline bool test_prefix_mask( uint64_t mask,  uint16_t prefix_len ) {
 struct BloomGroup {
   RouteZip & zip;                   /* route ids compressed */
   BloomList  list;                  /* list of bloom filters*/
-  uint64_t   mask;                  /* bloom filter subject prefixes */
+  uint64_t   pref_mask;             /* bloom filter subject prefixes */
   uint32_t   pref_count[ MAX_RTE ]; /* count of prefix subjects */
 
-  BloomGroup( RouteZip &z ) : zip( z ), mask( 0 ) {
+  BloomGroup( RouteZip &z ) : zip( z ), pref_mask( 0 ) {
     ::memset( this->pref_count, 0, sizeof( this->pref_count ) );
   }
   bool get_route( RouteLookup &look ) noexcept;
@@ -384,7 +399,7 @@ struct RouteGroup {
   /* modify the bits of the prefixes used */
   void add_prefix_len( uint16_t prefix_len,  bool is_rt_hash ) noexcept;
   void del_prefix_len( uint16_t prefix_len,  bool is_rt_hash ) noexcept;
-  uint64_t pat_mask( void ) const { return this->bloom.mask | this->rt_mask; }
+  uint64_t pat_mask( void ) const { return this->bloom.pref_mask | this->rt_mask; }
 
   static bool illegal_route( uint32_t r ) noexcept;
   uint32_t add_route( uint16_t prefix_len,  uint32_t hash,
@@ -800,6 +815,13 @@ struct BloomRoute {
     if ( this->nblooms == 0 )
       this->rdb.remove_bloom_route( this );
   }
+  bool hash_exists( uint16_t prefix_len,  uint32_t hash ) const noexcept;
+  bool hash_exists2( uint64_t prefix_mask,  uint32_t hash ) const noexcept;
+  bool route_matches( RouteLookup &look,  uint32_t hash,
+                      bool &has_detail ) noexcept;
+  bool route_matches( RouteLookup &look,  uint16_t prefix_len,
+                      uint32_t hash,  uint64_t prefix_mask,
+                      bool &has_detail ) noexcept;
 };
 
 struct EvPoll;

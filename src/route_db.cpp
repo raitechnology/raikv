@@ -803,25 +803,26 @@ BloomGroup::get_route( RouteLookup &look ) noexcept
                hash       = look.subj_hash;
   bool         has_detail = false;
 
-  for ( BloomRoute *b = this->list.hd( look.shard ); b != NULL; b = b->next ) {
-    if ( b->in_list != look.shard + 1 )
-      continue;
-
+  BloomRoute *b  = this->list.hd( look.shard ),
+             *b2 = this->list.hd( ANY_SHARD );
+  for ( ; ; b = b->next ) {
+    if ( b == NULL ) {
+      if ( b2 == NULL )
+        break;
+      b = b2;
+      b2 = NULL;
+    }
+    /*if ( b->in_list != look.shard + 1 )
+      continue;*/
     if ( b->is_invalid )
       b->update_masks();
 
     if ( ! b->has_subs )
       continue;
 
-    for ( uint32_t i = 0; i < b->nblooms; i++ ) {
-      BloomRef * r = b->bloom[ i ];
-      if ( r->pref_count[ SUB_RTE ] != 0 && r->bits->is_member( hash ) &&
-           ( ! r->sub_detail ||
-             r->detail_matches( look, SUB_RTE, hash, has_detail ) ) ) {
-        uint32_t * p = spc.make( count + 1 );
-        p[ count++ ] = b->r;
-        break;
-      }
+    if ( b->route_matches( look, hash, has_detail ) ) {
+      uint32_t * p = spc.make( count + 1 );
+      p[ count++ ] = b->r;
     }
   }
   if ( count > 0 ) {
@@ -837,6 +838,36 @@ BloomGroup::get_route( RouteLookup &look ) noexcept
 }
 
 bool
+BloomRoute::route_matches( RouteLookup &look,  uint32_t hash,
+                           bool &has_detail ) noexcept
+{
+  for ( uint32_t i = 0; i < this->nblooms; i++ ) {
+    BloomRef * r = this->bloom[ i ];
+    if ( r->pref_count[ SUB_RTE ] != 0 && r->bits->is_member( hash ) &&
+         ( ! r->sub_detail ||
+           r->detail_matches( look, SUB_RTE, hash, has_detail ) ) ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool
+BloomRoute::route_matches( RouteLookup &look,  uint16_t prefix_len,
+                           uint32_t hash,  uint64_t prefix_mask,
+                           bool &has_detail ) noexcept
+{
+  for ( uint32_t i = 0; i < this->nblooms; i++ ) {
+    BloomRef * r = this->bloom[ i ];
+    if ( ( r->pref_mask & prefix_mask ) != 0 && r->bits->is_member( hash ) &&
+         ( ( r->detail_mask & prefix_mask ) == 0 ||
+           r->detail_matches( look, prefix_len, hash, has_detail ) ) )
+      return true;
+  }
+  return false;
+}
+
+bool
 BloomGroup::get_route2( RouteLookup &look,  uint16_t prefix_len,
                         uint32_t hash ) noexcept
 {
@@ -846,39 +877,33 @@ BloomGroup::get_route2( RouteLookup &look,  uint16_t prefix_len,
   uint32_t     count       = 0;
   bool         has_detail  = false;
 
-  if ( ( this->mask & mask ) != 0 ) {
-    BloomRoute *b = this->list.hd( look.shard );
-    for ( ; b != NULL; b = b->next ){
-      if ( b->in_list != look.shard + 1 )
-        continue;
-
+  if ( ( this->pref_mask & prefix_mask ) != 0 ) {
+    BloomRoute *b  = this->list.hd( look.shard ),
+               *b2 = this->list.hd( ANY_SHARD );
+    for ( ; ; b = b->next ) {
+      if ( b == NULL ) {
+        if ( b2 == NULL )
+          break;
+        b = b2;
+        b2 = NULL;
+      }
+      /*if ( b->in_list != look.shard + 1 )
+        continue;*/
       if ( b->is_invalid )
         b->update_masks();
 
       if ( ( b->pref_mask & prefix_mask ) == 0 )
         continue;
 
-      if ( ( b->detail_mask & mask ) == 0 ) {
-        for ( uint32_t i = 0; i < b->nblooms; i++ ) {
-          BloomRef * r = b->bloom[ i ];
-          if ( ( r->pref_mask & prefix_mask ) != 0 &&
-               r->bits->is_member( hash ) )
-            goto match;
-        }
+      if ( ( b->detail_mask & prefix_mask ) == 0 ) {
+         /* skip the detail match if none exits */
+        if ( b->hash_exists2( prefix_mask, hash ) )
+          goto match;
         continue;
       }
-      /*printf( "-- %.*s %u:mask 0x%x pref 0x%x detail 0x%x, r %u\n",
-               (int) sublen, sub, prefix_len,
-               (uint32_t) mask, (uint32_t) b->pref_mask,
-               (uint32_t) b->detail_mask , b->r );*/
-      for ( uint32_t i = 0; i < b->nblooms; i++ ) {
-        BloomRef * r = b->bloom[ i ];
-        if ( ( r->pref_mask & prefix_mask ) != 0 && r->bits->is_member( hash ) &&
-             ( ( r->detail_mask & prefix_mask ) == 0 ||
-               r->detail_matches( look, prefix_len, hash, has_detail ) ) )
-          goto match;
-      }
-      if ( 0 ) {
+      /* match the details */
+      if ( b->route_matches( look, prefix_len, hash, prefix_mask,
+                             has_detail ) ) {
     match:;
         uint32_t * p = spc.make( count + 1 );
         p[ count++ ] = b->r; /* route matches */
@@ -971,11 +996,17 @@ BloomGroup::get_queue( RouteLookup &look ) noexcept
                hash  = look.subj_hash;
   QueueMatch   m     = { look.queue_hash, 0, 0 };
 
-  for ( BloomRoute *b = this->list.hd( look.shard ); b != NULL;
-        b = b->next ) {
-    if ( b->in_list != look.shard + 1 )
-      continue;
-
+  BloomRoute *b  = this->list.hd( look.shard ),
+             *b2 = this->list.hd( ANY_SHARD );
+  for ( ; ; b = b->next ) {
+    if ( b == NULL ) {
+      if ( b2 == NULL )
+        break;
+      b = b2;
+      b2 = NULL;
+    }
+    /*if ( b->in_list != look.shard + 1 )
+      continue;*/
     if ( b->is_invalid )
       b->update_masks();
 
@@ -1022,12 +1053,18 @@ BloomGroup::get_queue2( RouteLookup &look,  uint16_t prefix_len,
   uint32_t     count       = 0;
   QueueMatch   m           = { look.queue_hash, 0, 0 };
 
-  if ( ( this->mask & prefix_mask ) != 0 ) {
-    BloomRoute *b = this->list.hd( look.shard );
-    for ( ; b != NULL; b = b->next ){
-      if ( b->in_list != look.shard + 1 )
-        continue;
-
+  if ( ( this->pref_mask & prefix_mask ) != 0 ) {
+    BloomRoute *b  = this->list.hd( look.shard ),
+               *b2 = this->list.hd( ANY_SHARD );
+    for ( ; ; b = b->next ) {
+      if ( b == NULL ) {
+        if ( b2 == NULL )
+          break;
+        b = b2;
+        b2 = NULL;
+      }
+      /*if ( b->in_list != look.shard + 1 )
+        continue;*/
       if ( b->is_invalid )
         b->update_masks();
 
@@ -1115,21 +1152,37 @@ RouteDB::get_bloom_count( uint16_t prefix_len,  uint32_t hash,
 {
   if ( this->bloom.pref_count[ prefix_len ] == 0 )
     return 0;
-  BloomRoute * b;
-  BloomRef   * r;
-  uint32_t     rcnt = 0;
-  for ( b = this->bloom.list.hd( shard ); b != NULL; b = b->next ) {
+  uint32_t rcnt = 0;
+  for ( BloomRoute *b = this->bloom.list.hd( shard ); b != NULL; b = b->next ) {
     if ( b->in_list == shard + 1 ) {
-      for ( uint32_t i = 0; i < b->nblooms; i++ ) {
-        r = b->bloom[ i ];
-        if ( r->pref_count[ prefix_len ] != 0 && r->bits->is_member( hash ) ) {
-          rcnt++;
-          break;
-        }
-      }
+      if ( b->hash_exists( prefix_len, hash ) )
+        rcnt++;
     }
   }
   return rcnt;
+}
+
+bool
+BloomRoute::hash_exists( uint16_t prefix_len,  uint32_t hash ) const noexcept
+{
+  for ( uint32_t i = 0; i < this->nblooms; i++ ) {
+    BloomRef * r = this->bloom[ i ];
+    if ( r->pref_count[ prefix_len ] != 0 && r->bits->is_member( hash ) )
+      return true;
+  }
+  return false;
+}
+
+bool
+BloomRoute::hash_exists2( uint64_t prefix_mask,  uint32_t hash ) const noexcept
+{
+  for ( uint32_t i = 0; i < this->nblooms; i++ ) {
+    BloomRef * r = this->bloom[ i ];
+    if ( ( r->pref_mask & prefix_mask ) != 0 &&
+         r->bits->is_member( hash ) )
+      return true;
+  }
+  return false;
 }
 
 BloomRoute *
@@ -1884,7 +1937,7 @@ RouteGroup::add_prefix_len( uint16_t prefix_len,  bool is_rt_hash ) noexcept
     if ( is_rt_hash )
       this->rt_mask |= mask;
     else
-      this->bloom.mask |= mask;
+      this->bloom.pref_mask |= mask;
   }
 }
 
@@ -1896,7 +1949,7 @@ RouteGroup::del_prefix_len( uint16_t prefix_len,  bool is_rt_hash ) noexcept
     if ( is_rt_hash )
       this->rt_mask &= ~mask;
     else
-      this->bloom.mask &= ~mask;
+      this->bloom.pref_mask &= ~mask;
   }
 }
 
