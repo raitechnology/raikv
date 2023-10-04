@@ -895,7 +895,7 @@ BloomGroup::get_route2( RouteLookup &look,  uint16_t prefix_len,
       if ( ( b->pref_mask & prefix_mask ) == 0 )
         continue;
 
-      if ( ( b->detail_mask & this->mask ) == 0 ) {
+      if ( ( b->detail_mask & this->pref_mask ) == 0 ) {
          /* skip the detail match if none exits */
         if ( b->hash_exists2( prefix_mask, hash ) )
           goto match;
