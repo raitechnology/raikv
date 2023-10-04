@@ -809,6 +809,21 @@ BloomRoute::route_matches( RouteLookup &look,  uint32_t hash,
   return false;
 }
 
+static BloomRoute *
+min_bloom_route( BloomRoute *&b1,  BloomRoute *&b2 ) noexcept
+{
+  BloomRoute *b;
+  if ( b1 != NULL && ( b2 == NULL || b2->r > b1->r ) ) {
+    b = b1;
+    b1 = b->next;
+  }
+  else {
+    b = b2;
+    b2 = b->next;
+  }
+  return b;
+}
+
 bool
 BloomGroup::get_route( RouteLookup &look ) noexcept
 {
@@ -818,15 +833,10 @@ BloomGroup::get_route( RouteLookup &look ) noexcept
                hash       = look.subj_hash;
   bool         has_detail = false;
 
-  BloomRoute *b  = this->list.hd( look.shard ),
+  BloomRoute *b1 = this->list.hd( look.shard ),
              *b2 = this->list.hd( ANY_SHARD );
-  for ( ; ; b = b->next ) {
-    if ( b == NULL ) {
-      if ( b2 == NULL )
-        break;
-      b = b2;
-      b2 = NULL;
-    }
+  while ( b1 != NULL || b2 != NULL ) {
+    BloomRoute * b = min_bloom_route( b1, b2 );
     /*if ( b->in_list != look.shard + 1 )
       continue;*/
     if ( b->is_invalid )
@@ -878,15 +888,10 @@ BloomGroup::get_route2( RouteLookup &look,  uint16_t prefix_len,
   bool         has_detail  = false;
 
   if ( ( this->pref_mask & prefix_mask ) != 0 ) {
-    BloomRoute *b  = this->list.hd( look.shard ),
+    BloomRoute *b1 = this->list.hd( look.shard ),
                *b2 = this->list.hd( ANY_SHARD );
-    for ( ; ; b = b->next ) {
-      if ( b == NULL ) {
-        if ( b2 == NULL )
-          break;
-        b = b2;
-        b2 = NULL;
-      }
+    while ( b1 != NULL || b2 != NULL ) {
+      BloomRoute * b = min_bloom_route( b1, b2 );
       /*if ( b->in_list != look.shard + 1 )
         continue;*/
       if ( b->is_invalid )
@@ -895,7 +900,7 @@ BloomGroup::get_route2( RouteLookup &look,  uint16_t prefix_len,
       if ( ( b->pref_mask & prefix_mask ) == 0 )
         continue;
 
-      if ( ( b->detail_mask & this->pref_mask ) == 0 ) {
+      if ( ( b->detail_mask & prefix_mask ) == 0 ) {
          /* skip the detail match if none exits */
         if ( b->hash_exists2( prefix_mask, hash ) )
           goto match;
@@ -996,15 +1001,10 @@ BloomGroup::get_queue( RouteLookup &look ) noexcept
                hash  = look.subj_hash;
   QueueMatch   m     = { look.queue_hash, 0, 0 };
 
-  BloomRoute *b  = this->list.hd( look.shard ),
+  BloomRoute *b1 = this->list.hd( look.shard ),
              *b2 = this->list.hd( ANY_SHARD );
-  for ( ; ; b = b->next ) {
-    if ( b == NULL ) {
-      if ( b2 == NULL )
-        break;
-      b = b2;
-      b2 = NULL;
-    }
+  while ( b1 != NULL || b2 != NULL ) {
+    BloomRoute * b = min_bloom_route( b1, b2 );
     /*if ( b->in_list != look.shard + 1 )
       continue;*/
     if ( b->is_invalid )
@@ -1054,15 +1054,10 @@ BloomGroup::get_queue2( RouteLookup &look,  uint16_t prefix_len,
   QueueMatch   m           = { look.queue_hash, 0, 0 };
 
   if ( ( this->pref_mask & prefix_mask ) != 0 ) {
-    BloomRoute *b  = this->list.hd( look.shard ),
+    BloomRoute *b1 = this->list.hd( look.shard ),
                *b2 = this->list.hd( ANY_SHARD );
-    for ( ; ; b = b->next ) {
-      if ( b == NULL ) {
-        if ( b2 == NULL )
-          break;
-        b = b2;
-        b2 = NULL;
-      }
+    while ( b1 != NULL || b2 != NULL ) {
+      BloomRoute * b = min_bloom_route( b1, b2 );
       /*if ( b->in_list != look.shard + 1 )
         continue;*/
       if ( b->is_invalid )
