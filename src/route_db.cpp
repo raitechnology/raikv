@@ -795,6 +795,21 @@ RouteGroup::get_bloom_route2( RouteLookup &look,  uint16_t prefix_len,
 }
 
 bool
+BloomRoute::route_matches( RouteLookup &look,  uint32_t hash,
+                           bool &has_detail ) noexcept
+{
+  for ( uint32_t i = 0; i < this->nblooms; i++ ) {
+    BloomRef * r = this->bloom[ i ];
+    if ( r->pref_count[ SUB_RTE ] != 0 && r->bits->is_member( hash ) &&
+         ( ! r->sub_detail ||
+           r->detail_matches( look, SUB_RTE, hash, has_detail ) ) ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool
 BloomGroup::get_route( RouteLookup &look ) noexcept
 {
   RouteRef     rte( this->zip, SUB_RTE + 16 );
@@ -835,21 +850,6 @@ BloomGroup::get_route( RouteLookup &look ) noexcept
     look.add_ref( rte );
   }
   return has_detail;
-}
-
-bool
-BloomRoute::route_matches( RouteLookup &look,  uint32_t hash,
-                           bool &has_detail ) noexcept
-{
-  for ( uint32_t i = 0; i < this->nblooms; i++ ) {
-    BloomRef * r = this->bloom[ i ];
-    if ( r->pref_count[ SUB_RTE ] != 0 && r->bits->is_member( hash ) &&
-         ( ! r->sub_detail ||
-           r->detail_matches( look, SUB_RTE, hash, has_detail ) ) ) {
-      return true;
-    }
-  }
-  return false;
 }
 
 bool
@@ -895,7 +895,7 @@ BloomGroup::get_route2( RouteLookup &look,  uint16_t prefix_len,
       if ( ( b->pref_mask & prefix_mask ) == 0 )
         continue;
 
-      if ( ( b->detail_mask & prefix_mask ) == 0 ) {
+      if ( ( b->detail_mask & this->mask ) == 0 ) {
          /* skip the detail match if none exits */
         if ( b->hash_exists2( prefix_mask, hash ) )
           goto match;
