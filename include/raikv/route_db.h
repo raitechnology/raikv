@@ -690,7 +690,7 @@ struct BloomRef {
   void add_link( BloomRoute *b ) noexcept;
   void del_link( BloomRoute *b ) noexcept;
   BloomRoute *get_bloom_by_fd( uint32_t fd,  uint32_t shard ) noexcept;
-  bool has_link( uint32_t fd ) noexcept;
+  bool has_route( BloomRoute *b ) noexcept;
   void ref_pref_count( uint16_t prefix_len ) noexcept;
   void deref_pref_count( uint16_t prefix_len ) noexcept;
   void invalid( uint16_t prefix_len,  uint32_t hash ) noexcept;

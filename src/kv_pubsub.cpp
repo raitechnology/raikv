@@ -596,7 +596,7 @@ KvPubSubPeer::bloom_msg( KvMsgIn &msg ) noexcept
                                                        this->bloom_db );
     if ( this->bloom_rt == NULL )
       this->bloom_rt = this->sub_route.create_bloom_route( this->fd, ref, 0 );
-    else if ( ! ref->has_link( this->fd ) )
+    else if ( ! ref->has_route( this->bloom_rt ) )
       this->bloom_rt->add_bloom_ref( ref );
   }
 }

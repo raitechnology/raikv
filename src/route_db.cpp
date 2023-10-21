@@ -1318,6 +1318,8 @@ BloomRef::BloomRef( BloomBits *b,  const uint32_t *pref,
 void
 BloomRoute::add_bloom_ref( BloomRef *ref ) noexcept
 {
+  if ( ref->has_route( this ) )
+    return;
   this->invalid();
   uint32_t n = this->nblooms;
   size_t osz = n * sizeof( this->bloom[ 0 ] ),
@@ -1461,10 +1463,10 @@ BloomRef::get_bloom_by_fd( uint32_t fd,  uint32_t shard ) noexcept
 }
 
 bool
-BloomRef::has_link( uint32_t fd ) noexcept
+BloomRef::has_route( BloomRoute *b ) noexcept
 {
   for ( uint32_t i = 0; i < this->nlinks; i++ )
-    if ( this->links[ i ]->r == fd )
+    if ( this->links[ i ] == b )
       return true;
   return false;
 }
