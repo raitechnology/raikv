@@ -117,7 +117,8 @@ enum EvSockErr {
   EV_ERR_MULTI_IF      = 15, /* set multicast interface */
   EV_ERR_ADD_MCAST     = 16, /* join multicast network */
   EV_ERR_CONN_SELF     = 17, /* connected to self */
-  EV_ERR_LAST          = 18  /* extend errors after LAST */
+  EV_ERR_READ_OVERFLOW = 18, /* connected to self */
+  EV_ERR_LAST          = 19  /* extend errors after LAST */
 };
 bool ev_would_block( int err ) noexcept;
 
@@ -145,23 +146,27 @@ struct EvSocket : public PeerData /* fd and address of peer */EV_DBG_INHERIT {
                 sock_errno,
                 sock_wrpoll;
   const uint8_t sock_base;
-  uint8_t       sock_pad;
+  uint8_t       sock_wroff;
   uint64_t      bytes_recv, /* stat counters for bytes and msgs */
                 bytes_sent,
                 msgs_recv,
-                msgs_sent;
+                msgs_sent,
+                bytes_active,
+                sock_unused[ 7 ];
 
   EvSocket( EvPoll &p,  const uint8_t t,  const uint8_t b = EV_OTHER_BASE )
     : poll( p ), prio_cnt( 0 ), sock_state( 0 ),  sock_opts( 0 ),
       sock_type( t ), sock_flags( 0 ), sock_base( b ) { this->init_stats(); }
   void init_stats( void ) {
-    this->sock_err    = 0;
-    this->sock_errno  = 0;
-    this->sock_wrpoll = 0;
-    this->bytes_recv  = 0;
-    this->bytes_sent  = 0;
-    this->msgs_recv   = 0;
-    this->msgs_sent   = 0;
+    this->sock_err     = 0;
+    this->sock_errno   = 0;
+    this->sock_wrpoll  = 0;
+    this->sock_wroff   = 0;
+    this->bytes_recv   = 0;
+    this->bytes_sent   = 0;
+    this->msgs_recv    = 0;
+    this->msgs_sent    = 0;
+    this->bytes_active = 0;
   }
   int set_sock_err( uint16_t serr,  uint16_t err ) noexcept;
   /* if socket mem is free */
@@ -228,6 +233,9 @@ struct EvSocket : public PeerData /* fd and address of peer */EV_DBG_INHERIT {
   void popall( void )     { this->sock_state = 0; }
   void pushpop( int s, int t ) {
     this->sock_state = ( this->sock_state | ( 1U << s ) ) & ~( 1U << t ); }
+  void pushpop3( int s, int t, int t2 ) {
+    this->sock_state = ( this->sock_state | ( 1U << s ) )
+                     & ~( ( 1U << t ) | ( 1U << t2 ) ); }
   void idle_push( EvState s ) noexcept;
   void close_error( uint16_t serr,  uint16_t err ) noexcept;
   bool wait_empty( void ) noexcept;
@@ -305,7 +313,7 @@ struct EvSocket : public PeerData /* fd and address of peer */EV_DBG_INHERIT {
 
 #if __cplusplus >= 201103L
   /* 64b align */
-  static_assert( sizeof( EvSocket ) % 256 == 0, "socket size" );
+  static_assert( sizeof( EvSocket ) % 64 == 0, "socket size" );
 #endif
 
 struct FDSet : public ArraySpace<uint64_t, 16> {
@@ -404,6 +412,7 @@ struct EvPoll {
                         wr_timeout_ns,   /* timeout writes in EV_WRITE_POLL */
                         conn_timeout_ns, /* timeout writes in EV_WRITE_POLL */
                         so_keepalive_ns, /* keep alive ping timeout */
+                        blocked_read_rate, /* rd rate while blocked on writes */
                         next_id,         /* unique id for connection */
                         now_ns,          /* updated by current_coarse_ns() */
                         init_ns,         /* when map or poll was created */
@@ -443,9 +452,12 @@ struct EvPoll {
   void * operator new( size_t, void *ptr ) { return ptr; }
   void operator delete( void *ptr ) { ::free( ptr ); }
   /* 16 seconds */
-  static const uint64_t DEFAULT_NS_TIMEOUT = (uint64_t) 10 * 1000 * 1000 * 1000,
-                        DEFAULT_NS_CONNECT_TIMEOUT =  1000 * 1000 * 1000;
-  static const uint32_t DEFAULT_RCV_BUFSIZE = 16 * 1024;
+  static const uint64_t ONE_NS                     = (uint64_t) 1e9,
+                        DEFAULT_NS_KEEPALIVE       = 10 * ONE_NS,
+                        DEFAULT_NS_WRTIMEOUT       = 15 * ONE_NS,
+                        DEFAULT_NS_CONNECT_TIMEOUT =  1 * ONE_NS,
+                        DEFAULT_BLOCKED_READ_RATE  = 25 * 1024 * 1024;
+  static const uint32_t DEFAULT_RCV_BUFSIZE        = 16 * 1024;
 
   EvPoll() noexcept;
 
@@ -482,7 +494,7 @@ struct EvPoll {
   int init( int numfds,  bool prefetch ) noexcept;
   /* initialize kv */
   void add_write_poll( EvSocket *s ) noexcept;
-  void remove_write_poll( EvSocket *s ) noexcept;
+  void remove_write_poll( EvSocket *s,  bool wrhi ) noexcept;
   int wait( int ms ) noexcept;            /* call epoll() with ms timeout */
   bool check_write_poll_timeout( EvSocket *s,  uint64_t ns ) noexcept;
   void idle_close( EvSocket *s,  uint64_t ns ) noexcept;

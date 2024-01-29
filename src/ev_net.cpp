@@ -28,9 +28,10 @@ using namespace kv;
 
 EvPoll::EvPoll() noexcept
   : sock( 0 ), ev( 0 ), prefetch_queue( 0 ), prio_tick( 0 ),
-    wr_timeout_ns( DEFAULT_NS_TIMEOUT ),
+    wr_timeout_ns( DEFAULT_NS_WRTIMEOUT ),
     conn_timeout_ns( DEFAULT_NS_CONNECT_TIMEOUT ),
-    so_keepalive_ns( DEFAULT_NS_TIMEOUT ),
+    so_keepalive_ns( DEFAULT_NS_KEEPALIVE ),
+    blocked_read_rate( DEFAULT_BLOCKED_READ_RATE ),
     next_id( 0 ), now_ns( 0 ), init_ns( 0 ), mono_ns( 0 ),
     coarse_ns( 0 ), coarse_mono( 0 ),
     fdcnt( 0 ), wr_count( 0 ), maxfd( 0 ), nfds( 0 ),
@@ -189,13 +190,16 @@ EvPoll::add_write_poll( EvSocket *s ) noexcept
 }
 
 void
-EvPoll::remove_write_poll( EvSocket *s ) noexcept
+EvPoll::remove_write_poll( EvSocket *s,  bool wrhi ) noexcept
 {
   struct epoll_event event;
   this->remove_write_queue( s );
   s->set_poll( IN_EPOLL_READ );
   s->pop( EV_WRITE_POLL );
-  s->idle_push( EV_WRITE_HI );
+  if ( wrhi )
+    s->idle_push( EV_WRITE_HI );
+  else
+    s->idle_push( EV_READ_HI );
   this->wr_count--;
   ::memset( &event, 0, sizeof( struct epoll_event ) );
   event.data.fd = s->fd;
@@ -238,7 +242,7 @@ EvPoll::wait( int ms ) noexcept
     if ( s->in_poll( IN_EPOLL_WRITE ) ) {
       if ( ( this->ev[ i ].events & EPOLLOUT ) != 0 ) {
         if ( ( this->ev[ i ].events & ( EPOLLERR | EPOLLHUP ) ) == 0 ) {
-          this->remove_write_poll( s ); /* move back to read poll, try write */
+          this->remove_write_poll( s, true ); /* move to read poll, try write */
           continue;
         }
       }
@@ -307,8 +311,21 @@ EvPoll::check_write_poll_timeout( EvSocket *s,  uint64_t ns ) noexcept
   if ( delta > this->wr_timeout_ns ||
        ( delta > this->conn_timeout_ns &&
          s->bytes_sent + s->bytes_recv == 0 ) ) {
-    this->remove_write_poll( s );
+    this->remove_write_poll( s, true );
     this->idle_close( s, delta );
+    return true;
+  }
+  uint64_t offset = delta * this->blocked_read_rate,
+           roff   = ( s->bytes_recv - s->bytes_active ) * ONE_NS;
+  if ( offset > roff ) {
+    s->sock_wroff++;
+#if 0
+    if ( ( s->sock_wroff & 127 ) == 0 ) {
+      printf( "check wroff %u send %lu recv %lu rate %lu\n", s->sock_wroff, s->bytes_sent,
+              s->bytes_recv, offset - roff );
+    }
+#endif
+    this->remove_write_poll( s, false );
     return true;
   }
   return false;
@@ -1077,7 +1094,6 @@ EvSocket::client_list( char *buf,  size_t buflen ) noexcept
   if ( buflen == 0 )
     return 0;
   /* id=1082 addr=[::1]:43362 fd=8 name= age=1 idle=0 flags=N */
-  static const uint64_t ONE_NS = 1000000000;
   uint64_t cur_time_ns = this->poll.current_coarse_ns();
   /* list: 'id=1082 addr=[::1]:43362 fd=8 name= age=1 idle=0 flags=N db=0
    * sub=0 psub=0 multi=-1 qbuf=0 qbuf-free=32768 obl=0 oll=0 omem=0
@@ -1095,9 +1111,9 @@ EvSocket::client_list( char *buf,  size_t buflen ) noexcept
     this->PeerData::fd,
     (int) this->PeerData::get_name_strlen(), this->PeerData::name,
     this->PeerData::kind,
-    ( cur_time_ns - this->PeerData::start_ns ) / ONE_NS,
-    ( cur_time_ns - this->PeerData::active_ns ) / ONE_NS,
-    ( cur_time_ns - this->PeerData::read_ns ) / ONE_NS );
+    ( cur_time_ns - this->PeerData::start_ns ) / EvPoll::ONE_NS,
+    ( cur_time_ns - this->PeerData::active_ns ) / EvPoll::ONE_NS,
+    ( cur_time_ns - this->PeerData::read_ns ) / EvPoll::ONE_NS );
   return min_int( n, (int) buflen - 1 );
 }
 
@@ -1283,11 +1299,14 @@ EvPoll::timer_expire( EvTimerEvent &ev ) noexcept
 void
 EvConnection::read( void ) noexcept
 {
-  if ( this->off > 0 )
+  ssize_t nbytes;
+  if ( this->off > 0 ) {
+    if ( this->off > this->len )
+      goto read_overflow;
     this->adjust_recv();
+  }
   for (;;) {
     if ( this->len < this->recv_size ) {
-      ssize_t nbytes;
 #if ! defined( _MSC_VER ) && ! defined( __MINGW32__ )
       nbytes = ::read( this->fd, &this->recv[ this->len ],
                        this->recv_size - this->len );
@@ -1303,9 +1322,9 @@ EvConnection::read( void ) noexcept
         this->push( EV_PROCESS );
         /* if buf almost full, switch to low priority read */
         if ( this->len >= this->recv_highwater )
-          this->pushpop( EV_READ_LO, EV_READ );
+          this->pushpop3( EV_READ_LO, EV_READ, EV_READ_HI );
         else
-          this->pushpop( EV_READ, EV_READ_LO );
+          this->pushpop3( EV_READ, EV_READ_LO, EV_READ_HI );
         return;
       }
       /* wait for epoll() to set EV_READ again */
@@ -1333,6 +1352,13 @@ EvConnection::read( void ) noexcept
         this->pushpop( EV_WRITE_HI, EV_WRITE );*/
       return;
     }
+    else if ( this->len > this->recv_size ) {
+read_overflow:;
+      this->set_sock_err( EV_ERR_READ_OVERFLOW, 0 );
+      this->popall();
+      this->push( EV_CLOSE );
+      return;
+    }
     /* allow draining of existing buf before resizing */
     if ( this->test( EV_READ ) && this->off < this->len ) {
       this->pushpop( EV_READ_LO, EV_READ );
@@ -1350,12 +1376,29 @@ EvConnection::read( void ) noexcept
 bool
 EvConnection::resize_recv_buf( size_t new_size ) noexcept
 {
+#if 0
+  volatile uint32_t old_off,
+                    old_len,
+                    old_recv_size;
+           char   * old_recv;
+
+  kv_sync_store( &old_off       , this->off );
+  kv_sync_store( &old_len       , this->len );
+  kv_sync_store( &old_recv_size , this->recv_size );
+  kv_sync_store( &old_recv      , this->recv );
+#endif
   size_t new_len = this->len - this->off;
 
   if ( new_size < this->recv_size * 2 ) {
     size_t avail = this->recv_size - new_len;
-    if ( avail < this->recv_size / 2 )
-      new_size = (size_t) this->recv_size * 2;
+    if ( avail > this->recv_size / 2 ) {
+      if ( avail > this->recv_size / 4 + this->recv_size / 2 )
+        new_size = this->recv_size / 2;
+      else
+        new_size = this->recv_size;
+    }
+    else
+      new_size = this->recv_size * 2;
   }
   new_size = align<size_t>( new_size, 256 );
   if ( new_size > (size_t) 0xffffffffU ) {
@@ -1553,8 +1596,10 @@ write_notify:;
     this->bytes_sent += nbytes;
     this->send_count++;
     nb += nbytes;
+    this->active_ns = this->poll.now_ns;
+    this->sock_wroff = 0;
+    this->bytes_active = this->bytes_recv;
     if ( strm.wr_pending == 0 ) {
-      this->active_ns = this->poll.now_ns;
       this->clear_write_buffers();
       goto write_finished;
     }
@@ -1582,7 +1627,6 @@ write_notify:;
       }
       if ( is_high ) {
         if ( strm.wr_pending < this->send_highwater / 2 ) {
-          this->active_ns = this->poll.now_ns;
           this->pushpop( EV_WRITE, EV_WRITE_HI );
           goto write_notify;
         }
@@ -1868,6 +1912,7 @@ EvSocket::err_string( EvSockErr err ) noexcept
     case EV_ERR_MULTI_IF:      return "EV_ERR_MULTI_IF, set multicast interface";
     case EV_ERR_ADD_MCAST:     return "EV_ERR_ADD_MCAST, join multicast network";
     case EV_ERR_CONN_SELF:     return "EV_ERR_CONN_SELF, connected to self";
+    case EV_ERR_READ_OVERFLOW: return "EV_ERR_READ_OVERFLOW, overflow read buf";
     default:                   return NULL;
   }
 }
@@ -1916,9 +1961,15 @@ EvSocket::print_sock_error( char *out,  size_t outlen ) noexcept
                          this->sock_errno, e );
   }
   else if ( this->sock_err == EV_ERR_WRITE_TIMEOUT ) {
-    if ( off < olen )
-      off += ::snprintf( &o[ off ], olen - off, " %u seconds",
-                         this->sock_errno );
+    if ( off < olen ) {
+      uint64_t cur_time_ns = this->poll.current_coarse_ns();
+      off += ::snprintf( &o[ off ], olen - off,
+                        " %u seconds %.2f last read %u wroff %u wrpoll",
+                         this->sock_errno,
+         (double) ( cur_time_ns - this->PeerData::read_ns ) /
+         (double) EvPoll::ONE_NS,
+         this->sock_wroff, this->sock_wrpoll );
+    }
   }
   off = min_int( off, olen - 1 );
   if ( out == NULL )
