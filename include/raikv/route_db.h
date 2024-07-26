@@ -1409,6 +1409,8 @@ struct TimerQueue {
 
   TimerQueue() : queue( 0 ) {} /* created in EvPoll::init() */
   /* arm a timer by cb */
+  bool add_timer_double( EvTimerCallback &tcb,  double secs,
+                         uint64_t timer_id,  uint64_t event_id ) noexcept;
   bool add_timer_seconds( EvTimerCallback &tcb,  uint32_t secs,
                           uint64_t timer_id,  uint64_t event_id ) noexcept;
   bool add_timer_millis( EvTimerCallback &tcb,  uint32_t msecs,
@@ -1420,6 +1422,8 @@ struct TimerQueue {
   bool add_timer_units( EvTimerCallback &tcb,  uint32_t val,  TimerUnits units,
                         uint64_t timer_id,  uint64_t event_id ) noexcept;
   /* arm a timer by fd */
+  bool add_timer_double( int32_t id,  double secs,  uint64_t timer_id,
+                         uint64_t event_id ) noexcept;
   bool add_timer_seconds( int32_t id,  uint32_t secs,  uint64_t timer_id,
                           uint64_t event_id ) noexcept;
   bool add_timer_millis( int32_t id,  uint32_t msecs,  uint64_t timer_id,

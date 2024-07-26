@@ -8,14 +8,15 @@
 using namespace rai;
 
 struct Elem {
-  Elem * next;
+  Elem * next,
+       * back;
   uint32_t i;
 
   void * operator new( size_t, void *ptr ) { return ptr; }
-  Elem( uint32_t j ) : next( 0 ), i( j ) {}
+  Elem( uint32_t j ) : next( 0 ), back( 0 ), i( j ) {}
 };
 
-typedef kv::SLinkList<Elem> List;
+typedef kv::DLinkList<Elem> List;
 
 void
 print_elem_list( List &list ) noexcept
@@ -43,7 +44,7 @@ int
 run_test( int num, kv::rand::xoroshiro128plus &r ) noexcept
 {
   List list;
-  int i;
+  int i, j;
   size_t off = 0;
 
   list.sort<cmp_elem>();
@@ -57,15 +58,21 @@ run_test( int num, kv::rand::xoroshiro128plus &r ) noexcept
   }
   //print_elem_list( list );
   list.sort<cmp_elem>();
-  i = 1;
+  i = 1; j = 1;
   for ( Elem * e = list.hd; e->next != NULL; e = e->next ) {
     if ( e->i > e->next->i ) {
-      fprintf( stderr, "failed sort %u > %u\n", e->i, e->next->i );
+      fprintf( stderr, "failed next sort %u > %u\n", e->i, e->next->i );
     }
     i++;
   }
-  if ( i != num + 1 ) {
-    printf( "count wrong: %d != %d\n", i, num + 1 );
+  for ( Elem * e = list.tl; e->back != NULL; e = e->back ) {
+    if ( e->i < e->back->i ) {
+      fprintf( stderr, "failed back sort %u < %u\n", e->i, e->back->i );
+    }
+    j++;
+  }
+  if ( i != num + 1 || j != num + 1 ) {
+    printf( "count wrong: %d %d != %d\n", i, j, num + 1 );
   }
   return i;
 }

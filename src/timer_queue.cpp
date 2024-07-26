@@ -188,9 +188,14 @@ EvTimerQueue::repost( EvTimerEvent &ev ) noexcept
   if ( ev.next_expire <= this->epoch ) {
     ev.next_expire += amt;
     if ( ev.next_expire <= this->epoch ) {
-      uint64_t delta = this->epoch - ev.next_expire;
-      delta = ( delta / amt + (uint64_t) 1 ) * amt;
-      ev.next_expire += delta;
+      if ( amt > 0 ) {
+        uint64_t delta = this->epoch - ev.next_expire;
+        delta = ( delta / amt + (uint64_t) 1 ) * amt;
+        ev.next_expire += delta;
+      }
+      else {
+        ev.next_expire = this->epoch;
+      }
     }
   }
   this->queue.push( ev );
@@ -295,8 +300,23 @@ void EvTimerQueue::release( void ) noexcept {
 
 /* start a timer event callback */
 bool
+TimerQueue::add_timer_double( EvTimerCallback &tcb,  double secs,
+                              uint64_t timer_id,  uint64_t event_id ) noexcept
+{
+  TimerUnits u = IVAL_SECS;
+  uint32_t   v = (uint32_t) secs;
+  double     x = secs;
+  while ( u < IVAL_NANOS && x * 1000.0 < 1000000000.0 ) {
+    x *= 1000.0;
+    v  = (uint32_t) x;
+    u  = (TimerUnits) ( u + 1 );
+  }
+  return this->queue->add_timer_cb( tcb, v, u, timer_id, event_id );
+}
+
+bool
 TimerQueue::add_timer_seconds( EvTimerCallback &tcb,  uint32_t secs,
-                               uint64_t timer_id, uint64_t event_id ) noexcept
+                               uint64_t timer_id,  uint64_t event_id ) noexcept
 {
   return this->queue->add_timer_cb( tcb, secs, IVAL_SECS, timer_id, event_id );
 }
@@ -333,6 +353,21 @@ TimerQueue::add_timer_units( EvTimerCallback &tcb,  uint32_t val,
 }
 
 /* start a timer event fd */
+bool
+TimerQueue::add_timer_double( int32_t id,  double secs,  uint64_t timer_id,
+                              uint64_t event_id ) noexcept
+{
+  TimerUnits u = IVAL_SECS;
+  uint32_t   v = (uint32_t) secs;
+  double     x = secs;
+  while ( u < IVAL_NANOS && x * 1000.0 < 1000000000.0 ) {
+    x *= 1000.0;
+    v  = (uint32_t) x;
+    u  = (TimerUnits) ( u + 1 );
+  }
+  return this->queue->add_timer_units( id, v, u, timer_id, event_id );
+}
+
 bool
 TimerQueue::add_timer_seconds( int32_t id,  uint32_t secs,  uint64_t timer_id,
                                uint64_t event_id ) noexcept

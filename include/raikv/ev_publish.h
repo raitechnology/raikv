@@ -49,6 +49,7 @@ struct EvPublish {
   uint8_t      * prefix;      /* the prefixes which match */
   uint64_t       cnt;         /* publish counter */
 
+  void * operator new( size_t, void *ptr ) { return ptr; }
   EvPublish( const char *subj,  size_t subj_len,
              const void *repl,  size_t repl_len,
              const void *mesg,  size_t mesg_len,
