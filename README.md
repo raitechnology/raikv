@@ -157,7 +157,7 @@ the internals of each entry:
 Current development RPM builds are installable from [copr](https://copr.fedorainfracloud.org).
 
 ```console
-$ sudo dnf copr enable injinj/gold
+$ sudo dnf copr enable injinj/rel
 $ sudo dnf install raikv
 ```
 
@@ -165,7 +165,7 @@ If it is necessary to uninstall and removing the copr repository:
 
 ```console
 $ sudo dnf remove raikv
-$ sudo dnf copr disable injinj/gold
+$ sudo dnf copr disable injinj/rel
 ```
 
 ### Running Rai KV after Installing
