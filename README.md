@@ -1,6 +1,6 @@
 # Rai Key Value
 
-[![Copr build status](https://copr.fedorainfracloud.org/coprs/injinj/gold/package/raikv/status_image/last_build.png)](https://copr.fedorainfracloud.org/coprs/injinj/gold/package/raikv/)
+[![Copr build status](https://copr.fedorainfracloud.org/coprs/injinj/rel/package/raikv/status_image/last_build.png)](https://copr.fedorainfracloud.org/coprs/injinj/rel/package/raikv/)
 
 1. [Description of Rai KV](#description-of-rai-kv)
 2. [Features of Rai KV](#features-of-rai-kv)
