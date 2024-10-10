@@ -574,7 +574,19 @@ EvSocket::process_close( void ) noexcept
   this->poll.push_free_list( this );
 }
 
-  /* get service, if none, return false */
+void
+EvSocket::set_prefix( const char *pref,  size_t preflen ) noexcept
+{
+  (void) pref;
+  (void) preflen;
+}
+void
+EvSocket::set_service( void *host,  uint16_t svc ) noexcept
+{
+  (void) host;
+  (void) svc;
+}
+/* get service, if none, return false */
 bool
 EvSocket::get_service( void *host,  uint16_t &svc ) const noexcept
 {

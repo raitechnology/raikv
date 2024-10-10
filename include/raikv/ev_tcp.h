@@ -3,10 +3,6 @@
 
 #include <raikv/ev_net.h>
 
-extern "C" {
-  struct addrinfo;
-}
-
 namespace rai {
 namespace kv {
 #if 0
@@ -41,8 +37,7 @@ namespace EvTcpConnection {
                int opts ) noexcept;
   int connect2( EvConnection &conn,  const char *ip,  int port,
                 int opts,  const char *k,  uint32_t rte_id ) noexcept;
-  int connect3( EvConnection &conn,  const struct addrinfo *addr_list,
-                int opts,  const char *k,  uint32_t rte_id ) noexcept;
+  int connect3( EvConnection &conn,  EvConnectParam &param ) noexcept;
 }
 
 }

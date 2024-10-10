@@ -494,6 +494,14 @@ fail:;
 }
 
 int
+EvConnection::connect( EvConnectParam &param ) noexcept
+{
+  if ( param.n != NULL )
+    this->notify = param.n;
+  return EvTcpConnection::connect3( *this, param );
+}
+
+int
 EvTcpConnection::connect( EvConnection &conn,  const char *ip,  int port,
                           int opts ) noexcept
 {
@@ -509,12 +517,16 @@ EvTcpConnection::connect2( EvConnection &conn,  const char *ip,  int port,
   int status = info.get_address( ip, port, opts );
   if ( status != 0 )
     return conn.set_sock_err( EV_ERR_GETADDRINFO, get_errno() );
-  return connect3( conn, info.addr_list, opts, k, rte_id );
+  EvConnectParam param;
+  param.ai     = info.addr_list;
+  param.opts   = opts;
+  param.k      = k;
+  param.rte_id = rte_id;
+  return connect3( conn, param );
 }
 
 int
-EvTcpConnection::connect3( EvConnection &conn, const struct addrinfo *addr_list,
-                           int opts,  const char *k,  uint32_t rte_id ) noexcept
+EvTcpConnection::connect3( EvConnection &conn,  EvConnectParam &param ) noexcept
 {
   /* for setsockopt() */
   static int  off = 0;
@@ -525,29 +537,29 @@ EvTcpConnection::connect3( EvConnection &conn, const struct addrinfo *addr_list,
   socklen_t addrlen = sizeof( addr );
   struct sockaddr * peer_addr;
 
-  conn.sock_opts = opts;
+  conn.sock_opts = param.opts;
   /* try inet6 first, since it can listen to both ip stacks */
-  for ( p = addr_list; p != NULL; p = p->ai_next ) {
+  for ( p = param.ai; p != NULL; p = p->ai_next ) {
     int fam = p->ai_family;
-    if ( ( fam == AF_INET6 && ( opts & OPT_AF_INET6 ) != 0 ) ||
-         ( fam == AF_INET  && ( opts & OPT_AF_INET ) != 0 ) ) {
+    if ( ( fam == AF_INET6 && ( param.opts & OPT_AF_INET6 ) != 0 ) ||
+         ( fam == AF_INET  && ( param.opts & OPT_AF_INET ) != 0 ) ) {
       sock = ::socket( fam, p->ai_socktype, p->ai_protocol );
       if ( invalid_socket( sock ) )
         continue;
-      if ( fam == AF_INET6 && ( opts & OPT_AF_INET ) != 0 ) {
+      if ( fam == AF_INET6 && ( param.opts & OPT_AF_INET ) != 0 ) {
         if ( ::setsockopt( sock, IPPROTO_IPV6, IPV6_V6ONLY, (char *) &off,
                            sizeof( off ) ) != 0 )
-          if ( ( opts & OPT_VERBOSE ) != 0 )
+          if ( ( param.opts & OPT_VERBOSE ) != 0 )
             show_error( "warning: IPV6_V6ONLY" );
       }
-      tcp_set_sock_opts( conn.poll, sock, opts );
+      tcp_set_sock_opts( conn.poll, sock, param.opts );
       conn.PeerData::set_addr( p->ai_addr );
-      if ( ( opts & OPT_CONNECT_NB ) != 0 )
+      if ( ( param.opts & OPT_CONNECT_NB ) != 0 )
         set_nonblock( sock );
       status = ::connect( sock, p->ai_addr, (int) p->ai_addrlen );
       if ( status == 0 )
         goto break_loop;
-      if ( ( opts & OPT_CONNECT_NB ) != 0 &&
+      if ( ( param.opts & OPT_CONNECT_NB ) != 0 &&
            ev_would_block( get_errno() ) ) {
         status = 0;
         goto break_loop;
@@ -570,7 +582,8 @@ break_loop:;
   else
     peer_addr = p->ai_addr;
 
-  status = finish_init( sock, conn.poll, conn, peer_addr, k, rte_id );
+  status = finish_init( sock, conn.poll, conn, peer_addr, param.k,
+                        param.rte_id );
   if ( status != 0 ) {
 fail:;
     if ( ! invalid_socket( sock ) )

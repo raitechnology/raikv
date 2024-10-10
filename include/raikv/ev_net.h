@@ -10,6 +10,7 @@
 extern "C" {
 struct epoll_event;
 struct mmsghdr;
+struct addrinfo;
 }
 
 namespace rai {
@@ -282,6 +283,15 @@ struct EvSocket : public PeerData /* fd and address of peer */EV_DBG_INHERIT {
 
   static const size_t MAX_USERID_LEN  = 64;
   static const size_t MAX_SESSION_LEN = 64;
+  static const size_t MAX_PREFIX_LEN  = 16;
+  template<size_t LEN>
+  static size_t cpyb( char *buf, const char *x, size_t xlen ) {
+    if ( xlen > LEN - 1 ) xlen = LEN - 1;
+    ::memcpy( buf, x, xlen ); buf[ xlen ] = '\0';
+    return xlen;
+  }
+  virtual void set_prefix( const char *pref,  size_t preflen ) noexcept;
+  virtual void set_service( void *host,  uint16_t svc ) noexcept;
   /* get service, if none, return false */
   virtual bool get_service( void *host,  uint16_t &svc ) const noexcept;
   /* assign a session to connection */
@@ -564,6 +574,23 @@ struct EvListen : public EvSocket {
   virtual void reset_read_poll( void ) noexcept;
 };
 
+struct EvConnectParam {
+  const struct addrinfo * ai;     /* address to connect to */
+  const char            * k;      /* kind of connection, for info only */
+  uint32_t                rte_id; /* which sub route connection belongs to */
+  int                     opts;   /* connection options (OPT_CONNECT_NB, ...)*/
+  const char           ** argv;   /* optional args */
+  int                     argc;   /* count of argv[] */
+  EvConnectionNotify    * n;      /* on_connect, on_shutdown */
+
+  EvConnectParam() : ai( 0 ), k( 0 ), rte_id( 0 ),
+    opts( DEFAULT_TCP_CONNECT_OPTS ), argv( 0 ), argc( 0 ), n( 0 ) {}
+  EvConnectParam( const struct addrinfo *a,  int o,  const char *kind,
+                  uint32_t rid,  int ac = 0, const char **av = 0,
+                  EvConnectionNotify *notify = NULL ) : ai( a ), k( kind ),
+    rte_id( rid ), opts( o ), argv( av ), argc( ac ), n( notify ) {}
+};
+
 struct EvConnection : public EvSocket, public StreamBuf {
   static const uint32_t RCV_BUFSIZE = EvPoll::DEFAULT_RCV_BUFSIZE;
 #ifndef _MSC_VER
@@ -601,6 +628,8 @@ struct EvConnection : public EvSocket, public StreamBuf {
     this->recv_count     = 0;
     this->send_count     = 0;
   }
+  virtual int connect( EvConnectParam &param ) noexcept;
+
   void release_buffers( void ) { /* release all buffs */
     if ( this->recv != this->recv_buf ) {
       if ( this->zref_index != 0 ) {

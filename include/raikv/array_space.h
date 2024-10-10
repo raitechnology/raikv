@@ -88,6 +88,23 @@ struct ArrayCount : public kv::ArraySpace<T, arsz> {
   }
 };
 
+template <size_t arsz>
+struct StrArray : public ArrayCount<char *, arsz> {
+  ~StrArray() {
+    this->release();
+  }
+  void add( const char *s ) {
+    char * t = ::strdup( s );
+    if ( t != NULL )
+      this->push( t );
+  }
+  void release( void ) {
+    for ( size_t i = 0; i < this->count; i++ )
+      ::free( this->ptr[ i ] );
+    this->clear();
+  }
+};
+
 struct ArrayOutput : public ArrayCount< char, 8192 > {
   int puts( const char *s ) noexcept;
   void putchar( char c ) noexcept;
@@ -104,7 +121,7 @@ struct ArrayOutput : public ArrayCount< char, 8192 > {
 template <class T>
 struct CatPtrT {
   char * start, * ptr;
-  CatPtrT( char *out ) { this->ptr = this->start = out; }
+  CatPtrT( void *out ) { this->ptr = this->start = (char *) out; }
   T &begin( void ) {
     this->ptr = this->start;
     return (T &) *this;
@@ -180,6 +197,22 @@ struct CatPtrT {
     *this->ptr = '\0';
     return this->len();
   }
+  char *cstr( const char *s ) {
+    return this->cstr( s, s != NULL ? ::strlen( s ) : 0 );
+  }
+  char *cstr( const char *s,  size_t len ) {
+    if ( s == NULL )
+      return NULL;
+    char *p = this->ptr;
+    ::memcpy( p, s, len );
+    this->ptr += len;
+    *this->ptr++ = '\0';
+    return p;
+  }
+  static size_t a( const char *s ) { return s != NULL ? ::strlen( s ) + 1 : 0; }
+  static size_t a( const char *s,  const char *t ) { return a( s ) + a( t ); }
+  static size_t a( const char *s,  const char *t,  const char *u ) { return a( s, t ) + a( u ); }
+  static size_t a( const char *s,  const char *t,  const char *u,  const char *v ) { return a( s, t, u ) + a( v ); }
 };
 
 template <size_t maxsize>
@@ -189,7 +222,7 @@ struct CatBuf : public CatPtrT<CatBuf<maxsize>> {
 };
 
 struct CatPtr : public CatPtrT<CatPtr> {
-  CatPtr( char *out ) : CatPtrT( out ) {}
+  CatPtr( void *out ) : CatPtrT( out ) {}
 };
 
 struct CatMalloc : public CatPtrT<CatMalloc> {
