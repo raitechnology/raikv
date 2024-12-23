@@ -7,12 +7,13 @@ namespace kv {
 enum EvPubType {
   PUB_TYPE_NORMAL   = 0,  /* not special */
   PUB_TYPE_FRAGMENT = 1,  /* with fragment info */
-  PUB_TYPE_ROUTING  = 2,  /* forward with routing */
+  PUB_TYPE_ROUTING  = 2,  /* forward with routing, from network */
   PUB_TYPE_SERIAL   = 3,  /* serialize, don't shard */
   PUB_TYPE_KEYSPACE = 4,  /* redis keyspace notification */
   PUB_TYPE_MONITOR  = 5,  /* redis monitor command */
   PUB_TYPE_KV       = 6,  /* kv internal publish */
-  PUB_TYPE_INBOX    = 7,  /* extra inbox info */
+  PUB_TYPE_INBOX    = 7,  /* extra inbox info, source from inbox */
+  PUB_TYPE_IPC      = 8,  /* extra source info, b4 routed to ipc */
   PUB_TYPE_QUEUE    = 128 /* forward queue publish */
 };
 

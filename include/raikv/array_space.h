@@ -86,6 +86,12 @@ struct ArrayCount : public kv::ArraySpace<T, arsz> {
     this->ArraySpace<T, arsz>::zero();
     this->count = 0;
   }
+  bool is_member( const T *el ) const {
+    for ( size_t i = 0; i < this->count; i++ )
+      if ( this->ptr[ i ] == el )
+        return true;
+    return false;
+  }
 };
 
 template <size_t arsz>
@@ -144,6 +150,20 @@ struct CatPtrT {
   T &s( const char *str ) {
     while ( *str != '\0' )
       *this->ptr++ = *str++;
+    return (T &) *this;
+  }
+  T &upper_case( const char *str ) {
+    while ( *str != '\0' ) {
+      char c = *str++;
+      *this->ptr++ = ( c >= 'a' && c <= 'z' ? (char) ( c - 0x20 ) : c );
+    }
+    return (T &) *this;
+  }
+  T &lower_case( const char *str ) {
+    while ( *str != '\0' ) {
+      char c = *str++;
+      *this->ptr++ = ( c >= 'A' && c <= 'Z' ? (char) ( c + 0x20 ) : c );
+    }
     return (T &) *this;
   }
   T &w( int w,  const char *str ) {
