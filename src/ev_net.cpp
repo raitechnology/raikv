@@ -280,7 +280,8 @@ EvPoll::wait( int ms ) noexcept
       s->idle_push( EV_CLOSE ); /* maybe print err if bytes unsent */
     }
   }
-  /* check if write pollers are timing out */
+  /* check if write pollers are timing out, then release any rate-limited
+   * back-pressure waiters parked on still-blocked sockets (livelock breaker) */
   if ( ! this->ev_write.is_empty() ) {
     uint64_t ns = this->current_coarse_ns();
     for (;;) {
@@ -290,6 +291,15 @@ EvPoll::wait( int ms ) noexcept
       m++;
       if ( this->ev_write.is_empty() )
         break;
+    }
+    /* notify_ready() only un-parks readers (idle_push EV_READ_LO on other
+     * socks); it does not restructure ev_write, so scanning the heap here is
+     * safe.  bp_rate_ready() meters the release at blocked_read_rate. */
+    for ( size_t i = 0; i < this->ev_write.num_elems; i++ ) {
+      EvSocket * bs = this->ev_write.heap[ i ];
+      if ( ! this->bp_wait.is_empty( (uint32_t) bs->fd ) &&
+           bs->bp_rate_ready( ns ) )
+        bs->notify_ready();
     }
   }
   return n + m; /* returns the number of new events */
@@ -315,20 +325,45 @@ EvPoll::check_write_poll_timeout( EvSocket *s,  uint64_t ns ) noexcept
     this->idle_close( s, delta );
     return true;
   }
-  uint64_t offset = delta * this->blocked_read_rate,
-           roff   = ( s->bytes_recv - s->bytes_active ) * ONE_NS;
-  if ( offset > roff ) {
-    s->sock_wroff++;
-#if 0
-    if ( ( s->sock_wroff & 127 ) == 0 ) {
-      printf( "check wroff %u send %lu recv %lu rate %lu\n", s->sock_wroff, s->bytes_sent,
-              s->bytes_recv, offset - roff );
-    }
-#endif
-    this->remove_write_poll( s, false );
+  /* The blocked_read_rate throttle used to live here, force-reading a blocked
+   * socket via remove_write_poll(s,false).  That is dead now: once bp parking
+   * exists, a forced EV_READ_HI is swallowed by read() while bp_in_list() is
+   * true, so the forced read never happened.  Rate-limited forward progress is
+   * now driven from the ev_write sweep in wait() via bp_rate_ready() +
+   * notify_ready(), which un-parks readers (clearing BP_IN_LIST) instead of
+   * poking epoll.  This function keeps only the write/connect close timeout. */
+  return false;
+}
+
+bool
+EvConnection::bp_rate_ready( uint64_t now ) noexcept
+{
+  /* Sustained-rate moving high-water.  The budget accrues at blocked_read_rate
+   * for the whole time the leg has been over send_highwater, NOT from the last
+   * successful send.  A slow-but-alive consumer drains a trickle and every
+   * partial send bumps active_ns, which pins the budget at send_highwater and
+   * makes blocked_read_rate inert -- the leg backpressures the mesh (starving
+   * pings -> false peer death -> reconverge) instead of buffering.  bp_block_ns
+   * is set once when the buffer first exceeds send_highwater and cleared when it
+   * catches back up, so the budget grows at blocked_read_rate from the start of
+   * the block episode (drop/spill hook goes at the max_buffer cap below). */
+  if ( this->wr_pending <= this->send_highwater ) {
+    this->bp_block_ns = 0;            /* caught up: collapse budget, ready */
     return true;
   }
-  return false;
+  if ( this->bp_block_ns == 0 )
+    this->bp_block_ns = now;          /* start of this block episode */
+  uint64_t elapsed = ( now > this->bp_block_ns ) ? ( now - this->bp_block_ns ) : 0,
+           secs    = elapsed / EvPoll::ONE_NS,
+           frac    = elapsed % EvPoll::ONE_NS,
+           budget  = (uint64_t) this->send_highwater
+                   + secs * this->poll.blocked_read_rate
+                   + ( frac * this->poll.blocked_read_rate ) / EvPoll::ONE_NS;
+#if 0
+  if ( budget > this->max_buffer )
+    budget = this->max_buffer;
+#endif
+  return this->wr_pending < budget;
 }
 
 /* allocate an fd for a null sockets which are used for event based objects
@@ -1604,6 +1639,8 @@ write_notify:;
 #endif
   if ( nbytes > 0 ) {
     strm.wr_pending -= nbytes;
+    if ( strm.wr_pending <= this->send_highwater )
+      this->bp_block_ns = 0;          /* dropped back under highwater: end episode */
     strm.wr_free    += nbytes;
     this->bytes_sent += nbytes;
     this->send_count++;

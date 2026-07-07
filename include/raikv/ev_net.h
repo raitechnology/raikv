@@ -242,6 +242,9 @@ struct EvSocket : public PeerData /* fd and address of peer */EV_DBG_INHERIT {
   bool wait_empty( void ) noexcept;
   void notify_ready( void ) noexcept;
   void bp_retire( BPData &data ) noexcept;
+  /* whether a back-pressured socket may release parked bp_wait readers this
+   * cycle; EvConnection overrides with a blocked_read_rate moving high-water */
+  virtual bool bp_rate_ready( uint64_t now ) noexcept;
   /* convert sock_err to string, or null if unknown code */
   virtual const char *sock_error_string( void ) noexcept;
   /* describe sock and error */
@@ -466,7 +469,8 @@ struct EvPoll {
                         DEFAULT_NS_KEEPALIVE       = 10 * ONE_NS,
                         DEFAULT_NS_WRTIMEOUT       = 15 * ONE_NS,
                         DEFAULT_NS_CONNECT_TIMEOUT =  1 * ONE_NS,
-                        DEFAULT_BLOCKED_READ_RATE  = 25 * 1024 * 1024;
+                        DEFAULT_BLOCKED_READ_RATE  = 25 * 1024 * 1024,
+                        DEFAULT_MAX_BUFFER         = 256 * 1024 * 1024;
   static const uint32_t DEFAULT_RCV_BUFSIZE        = 16 * 1024;
 
   EvPoll() noexcept;
@@ -610,7 +614,12 @@ struct EvConnection : public EvSocket, public StreamBuf {
            palloc_count,
            zref_count;
   uint64_t recv_count,
-           send_count;
+           send_count,
+           bp_block_ns,  /* mono-ns when wr_pending first crossed send_highwater in
+                          * the current block episode; 0 = not blocked. Anchors
+                          * bp_rate_ready()'s budget so partial sends don't reset it. */
+           max_buffer;   /* hard cap on send-buffer growth for a slow leg;
+                          * bp_rate_ready() stops releasing readers past this */
   EvConnectionNotify * notify; /* watch endpoint activity */
 
   EvConnection( EvPoll &p, const uint8_t t, EvConnectionNotify *n = NULL )
@@ -627,8 +636,11 @@ struct EvConnection : public EvSocket, public StreamBuf {
     this->zref_count     = 0;
     this->recv_count     = 0;
     this->send_count     = 0;
+    this->bp_block_ns    = 0;
+    this->max_buffer     = EvPoll::DEFAULT_MAX_BUFFER;
   }
   virtual int connect( EvConnectParam &param ) noexcept;
+  virtual bool bp_rate_ready( uint64_t now ) noexcept;
 
   void release_buffers( void ) { /* release all buffs */
     if ( this->recv != this->recv_buf ) {

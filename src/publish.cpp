@@ -312,15 +312,28 @@ publish_multi( EvPublish &pub,  RoutePublishData *rpd,  uint32_t n,
 void
 EvSocket::notify_ready( void ) noexcept
 {
+  /* Pure release loop.  The decision of WHETHER to release is now made by the
+   * caller: EvConnection::write() releases when it has drained room, and the
+   * ev_write sweep releases rate-limited via bp_rate_ready().  The old
+   * test2(EV_WRITE_POLL,EV_WRITE_HI) gate is gone on purpose -- it prevented
+   * any release while the socket was still blocked, which is exactly when the
+   * livelock breaker must let a bounded amount of reading through.  Popping a
+   * waiter clears BP_IN_LIST so its read() stops no-op'ing. */
   BPList & list = this->poll.bp_wait.ptr[ this->fd ];
   while ( ! list.is_empty() ) {
-    if ( this->test2( EV_WRITE_POLL, EV_WRITE_HI ) )
-      return;
     BPData * data = list.pop_hd();
     data->bp_flags &= ~BP_IN_LIST;
     if ( data->bp_id == this->start_ns )
       data->on_write_ready();
   }
+}
+
+/* Non-connection sockets (IpcRoute, SessionMgr, ...) have no kernel send
+ * buffer to bound, so they never rate-limit their bp_wait releases. */
+bool
+EvSocket::bp_rate_ready( uint64_t ) noexcept
+{
+  return true;
 }
 
 bool
@@ -364,6 +377,18 @@ BPData::has_back_pressure( EvPoll &poll, uint32_t fd ) noexcept
   if ( fd > poll.maxfd || (s = poll.sock[ fd ]) == NULL )
     return false;
   if ( s->test2( EV_WRITE_POLL, EV_WRITE_HI ) ) {
+    /* Downstream is over send_highwater.  Only actually stall (park the source
+     * reader, back-pressuring the whole path) if it is ALSO over its
+     * blocked_read_rate budget.  While under budget, return false so the read
+     * proceeds and the send buffer grows -- prefer buffering (memory) over
+     * back-pressure until the rate / max_buffer budget is exhausted.  This is
+     * what keeps a slow leaf from stalling the shared mesh links (and thereby
+     * starving the control-plane pings -> false peer death -> reconverge). */
+    if ( s->bp_rate_ready( poll.now_ns ) ) {
+      if ( this->bp_in_list() )
+        poll.bp_wait.pop( this->bp_fd, *this );
+      return false;
+    }
     if ( this->bp_in_list() )
       poll.bp_wait.pop( this->bp_fd, *this );
     this->bp_state = s->sock_state;
