@@ -69,12 +69,12 @@ enum EvSockOpts {
 #define LING   OPT_LINGER
 #define ALIVE  OPT_KEEPALIVE
   /* opts inherited from listener, set in EvTcpListen::set_sock_opts()  */
-  ALL_TCP_ACCEPT_OPTS       =                      LING | ALIVE |4,
+  ALL_TCP_ACCEPT_OPTS       =                      ALIVE |4,
 
-  DEFAULT_TCP_LISTEN_OPTS   = LIST | VERB | RDHI | LING | ALIVE |16|8|4|2|1,
-  DEFAULT_TCP_CONNECT_OPTS  =        VERB |        LING | ALIVE |16|8|4,
-  DEFAULT_UDP_LISTEN_OPTS   = LIST | VERB |               UDP   |16|8|2|1,
-  DEFAULT_UDP_CONNECT_OPTS  =        VERB |               UDP   |16|8,
+  DEFAULT_TCP_LISTEN_OPTS   = LIST | VERB | RDHI | ALIVE |16|8|4|2|1,
+  DEFAULT_TCP_CONNECT_OPTS  =        VERB |        ALIVE |16|8|4,
+  DEFAULT_UDP_LISTEN_OPTS   = LIST | VERB |        UDP   |16|8|2|1,
+  DEFAULT_UDP_CONNECT_OPTS  =        VERB |        UDP   |16|8,
   DEFAULT_UNIX_LISTEN_OPTS  = LIST | VERB |1,
   DEFAULT_UNIX_CONNECT_OPTS =        VERB,
   DEFAULT_UNIX_BIND_OPTS    =        VERB |1
@@ -118,8 +118,10 @@ enum EvSockErr {
   EV_ERR_MULTI_IF      = 15, /* set multicast interface */
   EV_ERR_ADD_MCAST     = 16, /* join multicast network */
   EV_ERR_CONN_SELF     = 17, /* connected to self */
-  EV_ERR_READ_OVERFLOW = 18, /* connected to self */
-  EV_ERR_LAST          = 19  /* extend errors after LAST */
+  EV_ERR_READ_OVERFLOW = 18, /* overflow read buf */
+  EV_ERR_MAX_BUFFER    = 19, /* exceeded write buffer space */
+  EV_ERR_STALL         = 20, /* exceeded write stall time */
+  EV_ERR_LAST          = 21  /* extend errors after LAST */
 };
 bool ev_would_block( int err ) noexcept;
 
@@ -245,6 +247,8 @@ struct EvSocket : public PeerData /* fd and address of peer */EV_DBG_INHERIT {
   /* whether a back-pressured socket may release parked bp_wait readers this
    * cycle; EvConnection overrides with a blocked_read_rate moving high-water */
   virtual bool bp_rate_ready( uint64_t now ) noexcept;
+  virtual bool bp_check_write_max_buffer( void ) noexcept;
+  virtual bool bp_check_write_stall( void ) noexcept;
   /* convert sock_err to string, or null if unknown code */
   virtual const char *sock_error_string( void ) noexcept;
   /* describe sock and error */
@@ -426,6 +430,8 @@ struct EvPoll {
                         conn_timeout_ns, /* timeout writes in EV_WRITE_POLL */
                         so_keepalive_ns, /* keep alive ping timeout */
                         blocked_read_rate, /* rd rate while blocked on writes */
+                        max_write_buffer,  /* per-leg send-buffer hard cap (ceiling) */
+                        stall_window_ns, /* zero send-progress time => wedged leg */
                         next_id,         /* unique id for connection */
                         now_ns,          /* updated by current_coarse_ns() */
                         init_ns,         /* when map or poll was created */
@@ -466,11 +472,12 @@ struct EvPoll {
   void operator delete( void *ptr ) { ::free( ptr ); }
   /* 16 seconds */
   static const uint64_t ONE_NS                     = (uint64_t) 1e9,
-                        DEFAULT_NS_KEEPALIVE       = 10 * ONE_NS,
-                        DEFAULT_NS_WRTIMEOUT       = 15 * ONE_NS,
+                        DEFAULT_NS_KEEPALIVE       = 30 * ONE_NS,
+                        DEFAULT_NS_WRITE_TIMEOUT   = 20 * ONE_NS,
                         DEFAULT_NS_CONNECT_TIMEOUT =  1 * ONE_NS,
                         DEFAULT_BLOCKED_READ_RATE  = 25 * 1024 * 1024,
-                        DEFAULT_MAX_BUFFER         = 256 * 1024 * 1024;
+                        DEFAULT_MAX_WRITE_BUFFER   = 256 * 1024 * 1024,
+                        DEFAULT_STALL_WINDOW_NS    =  3 * ONE_NS;
   static const uint32_t DEFAULT_RCV_BUFSIZE        = 16 * 1024;
 
   EvPoll() noexcept;
@@ -618,7 +625,7 @@ struct EvConnection : public EvSocket, public StreamBuf {
            bp_block_ns,  /* mono-ns when wr_pending first crossed send_highwater in
                           * the current block episode; 0 = not blocked. Anchors
                           * bp_rate_ready()'s budget so partial sends don't reset it. */
-           max_buffer;   /* hard cap on send-buffer growth for a slow leg;
+           max_write_buffer;/* hard cap on send-buffer growth for a slow leg;
                           * bp_rate_ready() stops releasing readers past this */
   EvConnectionNotify * notify; /* watch endpoint activity */
 
@@ -627,20 +634,22 @@ struct EvConnection : public EvSocket, public StreamBuf {
         StreamBuf( EvPoll::ev_poll_alloc, EvPoll::ev_poll_free, this ) {
     this->notify         = n;
     this->reset_recv();
-    this->recv_highwater = this->poll.recv_highwater;
-    this->send_highwater = this->poll.send_highwater;
-    this->recv_max       = sizeof( this->recv_buf );
-    this->zref_index     = 0;
-    this->malloc_count   = 0;
-    this->palloc_count   = 0;
-    this->zref_count     = 0;
-    this->recv_count     = 0;
-    this->send_count     = 0;
-    this->bp_block_ns    = 0;
-    this->max_buffer     = EvPoll::DEFAULT_MAX_BUFFER;
+    this->recv_highwater   = this->poll.recv_highwater;
+    this->send_highwater   = this->poll.send_highwater;
+    this->recv_max         = sizeof( this->recv_buf );
+    this->zref_index       = 0;
+    this->malloc_count     = 0;
+    this->palloc_count     = 0;
+    this->zref_count       = 0;
+    this->recv_count       = 0;
+    this->send_count       = 0;
+    this->bp_block_ns      = 0;
+    this->max_write_buffer = this->poll.max_write_buffer;
   }
   virtual int connect( EvConnectParam &param ) noexcept;
   virtual bool bp_rate_ready( uint64_t now ) noexcept;
+  virtual bool bp_check_write_max_buffer( void ) noexcept;
+  virtual bool bp_check_write_stall( void ) noexcept;
 
   void release_buffers( void ) { /* release all buffs */
     if ( this->recv != this->recv_buf ) {

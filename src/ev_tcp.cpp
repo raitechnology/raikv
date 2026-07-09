@@ -77,6 +77,22 @@ tcp_set_sock_opts( EvPoll &poll,  int sock,  int opts ) noexcept
           perror( "warning: TCP_KEEPINTVL" );
     }
   }
+  /* Bound unacked-data time.  SO_KEEPALIVE only probes *idle* connections; once
+   * data is queued unacked in the send buffer (a wedged/frozen consumer), the
+   * kernel uses retransmission timers (~tcp_retries2, ~15 min), NOT keepalive.
+   * TCP_USER_TIMEOUT (ms) forces the kernel to drop the connection if transmitted
+   * data stays unacked this long -- the kernel-side replacement for the app-level
+   * wr_timeout, and the only thing that reaps an active wedged-write peer fast. */
+#ifdef TCP_USER_TIMEOUT
+  if ( poll.wr_timeout_ns > 0 ) {
+    unsigned int user_timeout_ms =
+      (unsigned int) ( poll.wr_timeout_ns / (uint64_t) 1000000UL );
+    if ( ::setsockopt( sock, SOL_TCP, TCP_USER_TIMEOUT, &user_timeout_ms,
+                       sizeof( user_timeout_ms ) ) != 0 )
+      if ( ( opts & OPT_VERBOSE ) != 0 )
+        perror( "warning: TCP_USER_TIMEOUT" );
+  }
+#endif
   if ( (opts & OPT_LINGER) != 0 ) {
     struct linger lin;
     lin.l_onoff  = 1;
@@ -155,6 +171,19 @@ tcp_set_sock_opts( EvPoll &poll,  SOCKET sock,  int opts ) noexcept
         show_error( "warning: SIO_KEEPALIVE_VALS" );
     }
   }
+  /* Windows analog of TCP_USER_TIMEOUT: TCP_MAXRT bounds retransmit time (secs)
+   * for unacked data.  Reaps a wedged-write peer that keepalive can't see. */
+#ifdef TCP_MAXRT
+  if ( poll.wr_timeout_ns > 0 ) {
+    DWORD maxrt_secs =
+      (DWORD) ( ( poll.wr_timeout_ns + (uint64_t) 999999999UL )
+                                     / (uint64_t) 1000000000UL );
+    if ( ::setsockopt( sock, IPPROTO_TCP, TCP_MAXRT, (char *) &maxrt_secs,
+                       sizeof( maxrt_secs ) ) != 0 )
+      if ( ( opts & OPT_VERBOSE ) != 0 )
+        show_error( "warning: TCP_MAXRT" );
+  }
+#endif
   if ( (opts & OPT_LINGER) != 0 ) {
     struct linger lin;
     lin.l_onoff  = 1;

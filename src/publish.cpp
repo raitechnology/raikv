@@ -337,6 +337,18 @@ EvSocket::bp_rate_ready( uint64_t ) noexcept
 }
 
 bool
+EvSocket::bp_check_write_max_buffer( void ) noexcept
+{
+  return false;
+}
+
+bool
+EvSocket::bp_check_write_stall( void ) noexcept
+{
+  return false;
+}
+
+bool
 EvSocket::wait_empty( void ) noexcept
 {
   return this->poll.bp_wait.is_empty( (uint32_t) this->fd );

@@ -28,10 +28,12 @@ using namespace kv;
 
 EvPoll::EvPoll() noexcept
   : sock( 0 ), ev( 0 ), prefetch_queue( 0 ), prio_tick( 0 ),
-    wr_timeout_ns( DEFAULT_NS_WRTIMEOUT ),
+    wr_timeout_ns( DEFAULT_NS_WRITE_TIMEOUT ),
     conn_timeout_ns( DEFAULT_NS_CONNECT_TIMEOUT ),
     so_keepalive_ns( DEFAULT_NS_KEEPALIVE ),
     blocked_read_rate( DEFAULT_BLOCKED_READ_RATE ),
+    max_write_buffer( DEFAULT_MAX_WRITE_BUFFER ),
+    stall_window_ns( DEFAULT_STALL_WINDOW_NS ),
     next_id( 0 ), now_ns( 0 ), init_ns( 0 ), mono_ns( 0 ),
     coarse_ns( 0 ), coarse_mono( 0 ),
     fdcnt( 0 ), wr_count( 0 ), maxfd( 0 ), nfds( 0 ),
@@ -249,6 +251,18 @@ EvPoll::wait( int ms ) noexcept
       this->remove_poll( s ); /* a EPOLLERR, can't write, close it */
       this->remove_event_queue( s );
       this->remove_write_queue( s );
+      /* capture SO_ERROR so the close is attributable: a TCP_USER_TIMEOUT abort
+       * of a wedged write-poll sock surfaces here as ETIMEDOUT with no read(),
+       * so record it as WRITE_TIMEOUT (vs WRITE_RESET for a peer RST/HUP) */
+      if ( s->sock_err == EV_ERR_NONE ) {
+        int err = 0;
+        socklen_t errlen = sizeof( err );
+        if ( ::getsockopt( this->ev[ i ].data.fd, SOL_SOCKET, SO_ERROR,
+                           &err, &errlen ) == 0 && err != 0 )
+          s->set_sock_err( err == ETIMEDOUT ? EV_ERR_WRITE_TIMEOUT
+                                             : EV_ERR_WRITE_RESET,
+                           (uint16_t) err );
+      }
       do_event = EV_CLOSE;
     }
     else {
@@ -318,20 +332,24 @@ EvPoll::check_write_poll_timeout( EvSocket *s,  uint64_t ns ) noexcept
     }
     return false;
   }
-  if ( delta > this->wr_timeout_ns ||
+  if ( delta > this->wr_timeout_ns * 5 / 4 ||
        ( delta > this->conn_timeout_ns &&
          s->bytes_sent + s->bytes_recv == 0 ) ) {
     this->remove_write_poll( s, true );
     this->idle_close( s, delta );
     return true;
   }
-  /* The blocked_read_rate throttle used to live here, force-reading a blocked
-   * socket via remove_write_poll(s,false).  That is dead now: once bp parking
-   * exists, a forced EV_READ_HI is swallowed by read() while bp_in_list() is
-   * true, so the forced read never happened.  Rate-limited forward progress is
-   * now driven from the ev_write sweep in wait() via bp_rate_ready() +
-   * notify_ready(), which un-parks readers (clearing BP_IN_LIST) instead of
-   * poking epoll.  This function keeps only the write/connect close timeout. */
+  if ( s->bp_check_write_max_buffer() ) { /* memory ceiling: fanout-independent */
+    this->remove_write_poll( s, true );
+    this->idle_close( s, 0 );
+    return true;
+  }
+  if ( ! this->bp_wait.is_empty( (uint32_t) s->fd ) &&
+       s->bp_check_write_stall() ) { /* liveness: only if blocking parked readers */
+    this->remove_write_poll( s, true );
+    this->idle_close( s, 0 );
+    return true;
+  }
   return false;
 }
 
@@ -346,7 +364,10 @@ EvConnection::bp_rate_ready( uint64_t now ) noexcept
    * pings -> false peer death -> reconverge) instead of buffering.  bp_block_ns
    * is set once when the buffer first exceeds send_highwater and cleared when it
    * catches back up, so the budget grows at blocked_read_rate from the start of
-   * the block episode (drop/spill hook goes at the max_buffer cap below). */
+   * the block episode.  The absolute memory ceiling (max_buffer) and the wedged-
+   * leg drop (stall_window) are enforced in write() on EAGAIN and the
+   * check_write_poll_timeout sweep, not here: this
+   * function is rate-only and governs when parked readers are released. */
   if ( this->wr_pending <= this->send_highwater ) {
     this->bp_block_ns = 0;            /* caught up: collapse budget, ready */
     return true;
@@ -359,10 +380,6 @@ EvConnection::bp_rate_ready( uint64_t now ) noexcept
            budget  = (uint64_t) this->send_highwater
                    + secs * this->poll.blocked_read_rate
                    + ( frac * this->poll.blocked_read_rate ) / EvPoll::ONE_NS;
-#if 0
-  if ( budget > this->max_buffer )
-    budget = this->max_buffer;
-#endif
   return this->wr_pending < budget;
 }
 
@@ -908,6 +925,7 @@ EvPoll::dispatch( void ) noexcept
     if ( next_state < 0 )
       continue;
     state = (EvState) next_state;
+
     switch ( state ) {
       case EV_NO_STATE:
         break;
@@ -1701,11 +1719,58 @@ write_notify:;
       return;
     }
   }
+  if ( strm.wr_pending > this->send_highwater &&
+       ( this->bp_check_write_max_buffer() ||
+         this->bp_check_write_stall() ) ) {
+    this->popall();
+    this->push( EV_CLOSE );
+    if ( is_high )
+      goto write_notify;
+    return;
+  }
   if ( is_high )
     this->push( EV_WRITE_POLL );
   else
     this->push( EV_WRITE_HI );
 }
+
+bool
+EvConnection::bp_check_write_max_buffer( void ) noexcept
+{
+  StreamBuf & strm = *this;
+  /* Memory ceiling: wr_pending past the per-leg max_buffer.  Fanout-independent
+   * -- a hard cap on send-buffer growth for any slow leg, enforced both from
+   * write() on EAGAIN and from the check_write_poll_timeout sweep, regardless of
+   * whether any readers are parked in bp_wait behind this socket. */
+  if ( strm.wr_pending > this->max_write_buffer ) {
+    this->set_sock_err( EV_ERR_MAX_BUFFER, 0 );
+    return true;
+  }
+  return false;
+}
+
+bool
+EvConnection::bp_check_write_stall( void ) noexcept
+{
+  StreamBuf & strm = *this;
+  /* Wedged leg: backed up past send_highwater with no successful send within
+   * stall_window (active_ns is bumped only by real sends, so reads can't mask a
+   * write stall).  Liveness trigger -- it only matters when the leg is HOL-
+   * blocking parked readers, so check_write_poll_timeout gates it on a non-empty
+   * bp_wait.  A healthy consumer draining a large message keeps bumping
+   * active_ns and never trips. */
+  if ( strm.wr_pending > this->send_highwater ) {
+    uint64_t now = this->poll.now_ns;
+    if ( now > this->active_ns &&
+         now - this->active_ns > this->poll.stall_window_ns ) {
+      this->set_sock_err( EV_ERR_STALL,
+                    (uint16_t) ( ( now - this->active_ns ) / EvPoll::ONE_NS ) );
+      return true;
+    }
+  }
+  return false;
+}
+
 /* use mmsg for udp sockets */
 bool
 EvDgram::alloc_mmsg( void ) noexcept
@@ -1962,6 +2027,8 @@ EvSocket::err_string( EvSockErr err ) noexcept
     case EV_ERR_ADD_MCAST:     return "EV_ERR_ADD_MCAST, join multicast network";
     case EV_ERR_CONN_SELF:     return "EV_ERR_CONN_SELF, connected to self";
     case EV_ERR_READ_OVERFLOW: return "EV_ERR_READ_OVERFLOW, overflow read buf";
+    case EV_ERR_MAX_BUFFER:    return "EV_ERR_MAX_BUFFER, exceeded write buffer space";
+    case EV_ERR_STALL:         return "EV_ERR_STALL, exceeded write stall time";
     default:                   return NULL;
   }
 }
