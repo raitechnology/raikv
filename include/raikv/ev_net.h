@@ -604,10 +604,14 @@ struct EvConnectParam {
 
 struct EvConnection : public EvSocket, public StreamBuf {
   static const uint32_t RCV_BUFSIZE = EvPoll::DEFAULT_RCV_BUFSIZE;
+#if 0 /* not useful */
 #ifndef _MSC_VER
   char     recv_buf[ RCV_BUFSIZE ] __attribute__((__aligned__( 64 )));
 #else
   __declspec(align(64)) char recv_buf[ RCV_BUFSIZE ];
+#endif
+#else
+  char     recv_buf[ RCV_BUFSIZE ];
 #endif
   char   * recv;           /* initially recv_buf, but may realloc */
   uint32_t off,            /* offset of recv_buf consumed */
