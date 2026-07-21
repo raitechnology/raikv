@@ -170,6 +170,20 @@ struct WorkAllocT : public ScratchMem {
               kv_free_func_t bf = 0/*kv_key_ctx_big_free*/,  void *cl = 0 )
     : ScratchMem( cnt, sz, this->spc, sizeof( this->spc ), ba, bf, cl ) {}
 };
+
+struct Buf64 {
+  uint8_t line[ 64 ];
+};
+
+template <size_t fast_size>
+struct WorkAllocX : public ScratchMem {
+  Buf64 spc[ fast_size / sizeof( Buf64 ) ];
+
+  WorkAllocX( uint32_t cnt = 2, uint32_t sz = 16 * 1024 - 32,
+              kv_alloc_func_t ba = 0/*kv_key_ctx_big_alloc*/,
+              kv_free_func_t bf = 0/*kv_key_ctx_big_free*/,  void *cl = 0 )
+    : ScratchMem( cnt, sz, this->spc, sizeof( this->spc ), ba, bf, cl ) {}
+};
 }
 }
 #endif

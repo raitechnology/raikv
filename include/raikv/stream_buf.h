@@ -87,7 +87,7 @@ struct StreamBuf {
   static const size_t SND_BUFSIZE = 32 * 1024;
   static const size_t BUFSIZE     = 1600;
 
-  kv::WorkAllocT< SND_BUFSIZE > tmp;
+  kv::WorkAllocX< SND_BUFSIZE > tmp;
   struct iovec iovbuf[ 32 ]; /* vec of send buffers */
   iovec  * iov;         /* output vectors written to stream */
   char   * out_buf;     /* current buffer to fill, up to BUFSIZE */
@@ -104,6 +104,7 @@ struct StreamBuf {
          * refs,        /* array of zero copy ref indexes */
            refbuf[ 2 ]; /* initial refs[] */
   bool     alloc_fail;  /* if alloc send buffers below failed */
+  uint64_t _unused_[ 4 ];
 
   StreamBuf( kv_alloc_func_t ba,  kv_free_func_t bf, void *cl )
    : tmp( 0, SND_BUFSIZE/2, ba, bf, cl ), idx( 0 ), wr_used( 1 ), ref_cnt( 0 ) {
