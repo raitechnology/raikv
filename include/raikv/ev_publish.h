@@ -49,6 +49,7 @@ struct EvPublish {
                * hash;        /* the prefix hashes which match */
   uint8_t      * prefix;      /* the prefixes which match */
   uint64_t       cnt;         /* publish counter */
+  uint32_t       path_hint;   /* if non-zero, hint which path */
 
   void * operator new( size_t, void *ptr ) { return ptr; }
   EvPublish( const char *subj,  size_t subj_len,
@@ -63,7 +64,7 @@ struct EvPublish {
       reply_len( (uint16_t) repl_len ), msg_len( (uint32_t) mesg_len ), subj_hash( shash ),
       msg_enc( msg_encoding ), shard( 0 ), hdr_len( 0 ), suf_len( 0 ),
       publish_type( pub_type ), prefix_cnt( 0 ), pub_status( status ),
-      pub_host( host ), hash( 0 ), prefix( 0 ), cnt( counter ) {}
+      pub_host( host ), hash( 0 ), prefix( 0 ), cnt( counter ), path_hint( 0 ) {}
 
   EvPublish( const EvPublish &p )
     : subject( p.subject ), reply( p.reply ), msg( p.msg ),
@@ -71,7 +72,7 @@ struct EvPublish {
       reply_len( p.reply_len ), msg_len( p.msg_len ), subj_hash( p.subj_hash ),
       msg_enc( p.msg_enc ), shard( p.shard ), hdr_len( p.hdr_len ), suf_len( p.suf_len ),
       publish_type( p.publish_type ), prefix_cnt( 0 ), pub_status( p.pub_status ),
-      pub_host( p.pub_host ), hash( 0 ), prefix( 0 ), cnt( p.cnt ) {}
+      pub_host( p.pub_host ), hash( 0 ), prefix( 0 ), cnt( p.cnt ), path_hint( p.path_hint ) {}
 
   bool is_pub_type( EvPubType t ) const { return ( this->publish_type & 0x7f ) == t; }
   bool is_queue_pub( void ) const { return ( this->publish_type & PUB_TYPE_QUEUE ) != 0; }
