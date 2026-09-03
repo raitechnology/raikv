@@ -7,11 +7,13 @@
 
 static wp_fd_map_t fdmap[ MAX_FD_MAP_SIZE ];
 
+#if ! defined( __MINGW32__ ) /* mingw crt provides getpid() */
 uint32_t
 getpid( void )
 {
   return GetCurrentProcessId();
 }
+#endif
 
 uint32_t
 getthrid( void )
@@ -76,6 +78,48 @@ int
 wp_register_fd( SOCKET sock )
 {
   return wp_register( WP_FD_SOCKET, sock, 0 );
+}
+
+/* pipe() substitute: a connected loopback TCP pair, both ends non-blocking
+ * and registered as poll fds; fds[0] is the read side, fds[1] the write side
+ * (both are actually bidirectional) */
+int
+wp_socketpair( int fds[ 2 ] )
+{
+  SOCKET lsn = INVALID_SOCKET, a = INVALID_SOCKET, b = INVALID_SOCKET;
+  struct sockaddr_in addr;
+  int    alen = sizeof( addr );
+  u_long nb   = 1;
+
+  if ( ! ws_init_done && ws_global_init() != 0 )
+    return -1;
+  memset( &addr, 0, sizeof( addr ) );
+  addr.sin_family      = AF_INET;
+  addr.sin_addr.s_addr = htonl( INADDR_LOOPBACK );
+  addr.sin_port        = 0;
+  if ( (lsn = socket( AF_INET, SOCK_STREAM, 0 )) == INVALID_SOCKET ||
+       bind( lsn, (struct sockaddr *) &addr, alen ) != 0 ||
+       getsockname( lsn, (struct sockaddr *) &addr, &alen ) != 0 ||
+       listen( lsn, 1 ) != 0 ||
+       (a = socket( AF_INET, SOCK_STREAM, 0 )) == INVALID_SOCKET ||
+       connect( a, (struct sockaddr *) &addr, alen ) != 0 ||
+       (b = accept( lsn, NULL, NULL )) == INVALID_SOCKET ||
+       ioctlsocket( a, FIONBIO, &nb ) != 0 ||
+       ioctlsocket( b, FIONBIO, &nb ) != 0 ) {
+    if ( lsn != INVALID_SOCKET ) closesocket( lsn );
+    if ( a != INVALID_SOCKET ) closesocket( a );
+    if ( b != INVALID_SOCKET ) closesocket( b );
+    return_map_error( -1 );
+  }
+  closesocket( lsn );
+  fds[ 0 ] = wp_register_fd( b );
+  fds[ 1 ] = wp_register_fd( a );
+  if ( fds[ 0 ] < 0 || fds[ 1 ] < 0 ) {
+    if ( fds[ 0 ] >= 0 ) wp_close_fd( fds[ 0 ] ); else closesocket( b );
+    if ( fds[ 1 ] >= 0 ) wp_close_fd( fds[ 1 ] ); else closesocket( a );
+    return -1;
+  }
+  return 0;
 }
 
 int

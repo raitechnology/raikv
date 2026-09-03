@@ -63,6 +63,8 @@ gcc_wflags  := -Wall -Wextra
 # if windows cross compile
 ifeq (true,$(mingw))
 dll       := dll
+# mingw time.h provides localtime_r/gmtime_r behind this
+default_cflags += -D_POSIX_THREAD_SAFE_FUNCTIONS
 exe       := .exe
 soflag    := -shared -Wl,--subsystem,windows
 fpicflags := -fPIC -DKV_SHARED

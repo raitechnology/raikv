@@ -98,7 +98,11 @@ ssize_t wp_read( int fd,  void *buf,  size_t buflen );
 ssize_t wp_send( int fd,  struct iovec *buf,  size_t nbufs );
 ssize_t wp_recvmsg( int fd,  struct msghdr *msg );
 ssize_t wp_sendmsg( int fd,  struct msghdr *msg );
+#if defined( __MINGW32__ )
+#include <process.h> /* int getpid(void); pthread.h pulls this in too */
+#else
 uint32_t getpid( void );
+#endif
 uint32_t getthrid( void );
 int pidexists( uint32_t pid );
 #define strcasecmp _stricmp
@@ -184,6 +188,7 @@ typedef struct wp_fd_map {
 int ws_global_init( void );
 int wp_get_socket( int fd,  SOCKET *s );
 int wp_register_fd( SOCKET sock );
+int wp_socketpair( int fds[ 2 ] ); /* pipe() substitute, loopback tcp */
 int wp_register_listen_fd( SOCKET sock );
 int wp_register_tty_fd( HANDLE h,  void *cl,  tty_reader_f rdr );
 int wp_unregister_fd( int fd );

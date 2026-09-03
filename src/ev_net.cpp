@@ -258,7 +258,7 @@ EvPoll::wait( int ms ) noexcept
         int err = 0;
         socklen_t errlen = sizeof( err );
         if ( ::getsockopt( this->ev[ i ].data.fd, SOL_SOCKET, SO_ERROR,
-                           &err, &errlen ) == 0 && err != 0 )
+                           (char *) &err, &errlen ) == 0 && err != 0 )
           s->set_sock_err( err == ETIMEDOUT ? EV_ERR_WRITE_TIMEOUT
                                              : EV_ERR_WRITE_RESET,
                            (uint16_t) err );
