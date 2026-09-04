@@ -229,6 +229,16 @@ EvPoll::wait( int ms ) noexcept
     return 1;
   }
   n = ::wp_epoll_wait( this->efd, this->ev, this->nfds, us );
+  { /* WP_TRACE=1: debug the windows epoll shim */
+    static int wp_trace = -1;
+    if ( wp_trace < 0 ) wp_trace = ( getenv( "WP_TRACE" ) != NULL );
+    if ( wp_trace && n != 0 ) {
+      fprintf( stderr, "wp_epoll_wait: n=%d", n );
+      for ( int i = 0; i < n; i++ )
+        fprintf( stderr, " [fd %d ev %x]", this->ev[ i ].data.fd, this->ev[ i ].events );
+      fprintf( stderr, "\n" ); fflush( stderr );
+    }
+  }
 #else
   n = ::epoll_wait( this->efd, this->ev, this->nfds, ms );
 #endif

@@ -58,10 +58,9 @@ wp_register( wp_fd_type_t t,  SOCKET sock,  int is_listener )
         fdmap[ i ].sock.socket = sock;
         WSAEVENT event = WSACreateEvent();
         fdmap[ i ].sock.event = event;
-        if ( is_listener )
-          WSAEventSelect( sock, event, FD_ACCEPT );
-        else
-          WSAEventSelect( sock, event, FD_READ | FD_CLOSE );
+        fdmap[ i ].sock.select_mask = is_listener ? FD_ACCEPT
+                                                  : ( FD_READ | FD_CLOSE );
+        WSAEventSelect( sock, event, fdmap[ i ].sock.select_mask );
       }
       return (int) i;
     }
@@ -408,22 +407,33 @@ epoll_ctl( int fd,  int op,  int s,  struct epoll_event* event )
   if ( port == NULL || state == NULL )
     return_set_error( -1, ERROR_INVALID_HANDLE );
 
+  { static int wp_trace = -1;
+    if ( wp_trace < 0 ) wp_trace = ( getenv( "WP_TRACE" ) != NULL );
+    if ( wp_trace ) { fprintf( stderr, "epoll_ctl: op=%d fd=%d events=%x (sock=%p mask=%lx)\n", op, s,
+                               event ? event->events : 0, (void *) sock, sock ? sock->select_mask : 0L ); fflush( stderr ); } }
   if ( op == EPOLL_CTL_ADD || op == EPOLL_CTL_MOD ) {
     port->poll_set_fds[ s_off ] |= s_mask;
     state->user_data = event->data;
-    if ( ( event->events & EPOLLOUT ) != 0 &&
-         ( state->user_events & EPOLLIN ) != 0 ) {
-      if ( sock != NULL )
-        WSAEventSelect( sock->socket, sock->event, FD_WRITE | FD_CLOSE );
-    }
-    else if ( ( state->user_events & EPOLLOUT ) != 0 &&
-              ( event->events & EPOLLIN ) != 0 ) {
-      if ( sock != NULL )
-        WSAEventSelect( sock->socket, sock->event, FD_READ | FD_CLOSE );
-    }
-    else {
-      if ( sock != NULL )
+    if ( sock != NULL && sock->select_mask != FD_ACCEPT ) {
+      /* the network events to wait for follow the requested epoll events;
+       * a non blocking connect() is added with EPOLLOUT and completes with
+       * FD_CONNECT (success or failure), a writer waits for FD_WRITE */
+      long mask = ( ( event->events & EPOLLOUT ) != 0 )
+                  ? ( FD_WRITE | FD_CONNECT | FD_CLOSE )
+                  : ( FD_READ | FD_CLOSE );
+      if ( mask != sock->select_mask ) {
+        sock->select_mask = mask;
+        WSAEventSelect( sock->socket, sock->event, mask );
+      }
+      else if ( ( event->events & EPOLLIN ) != 0 &&
+                ( state->user_events & EPOLLOUT ) == 0 ) {
+        /* same mask, re-armed read (EPOLLET reset): clear the stale signal
+         * only when the read side is known drained by the caller */
         WSAResetEvent( sock->event );
+      }
+    }
+    else if ( sock != NULL ) {
+      WSAResetEvent( sock->event );
     }
     state->user_events = event->events;
   }
@@ -482,6 +492,17 @@ wp_epoll_wait( int fd,  struct epoll_event* events,  int maxevents,
             if ( ( user_events & EPOLLET ) == 0 ||
                  ( ( user_events & EPOLLET ) != 0 &&
                    ( user_events & EPOLLET_TRIGGERED ) == 0 ) ) {
+              /* FD_READ is not recorded for data that arrives on a socket
+               * whose non blocking connect() completed after the
+               * WSAEventSelect() (seen with the rv handshake: 12 bytes
+               * queued, event never signaled).  Data already buffered is
+               * readiness regardless of what the event object says. */
+              if ( sock != NULL ) {
+                u_long avail = 0;
+                if ( ioctlsocket( sock->socket, FIONREAD, &avail ) == 0 &&
+                     avail > 0 )
+                  WSASetEvent( sock->event );
+              }
               ev_count++;
             }
           }
@@ -499,6 +520,23 @@ wp_epoll_wait( int fd,  struct epoll_event* events,  int maxevents,
       }
     }
   }
+  { static int wp_trace = -1, wp_cnt = 0;
+    if ( wp_trace < 0 ) wp_trace = ( getenv( "WP_TRACE" ) != NULL );
+    if ( wp_trace && wp_cnt < 40 && ( wp_cnt++ % 4 ) == 0 ) {
+      fprintf( stderr, "wp_epoll_wait: waiting on %lu events:", (unsigned long) ev_count );
+      for ( i = 0; i < ev_count; i++ ) {
+        wp_epoll_state_t *st = ws_state[ i ];
+        int sfd = st->user_data.fd;
+        u_long avail = 0;
+        if ( fdmap[ sfd ].type == WP_FD_SOCKET ) {
+          ioctlsocket( fdmap[ sfd ].sock.socket, FIONREAD, &avail );
+          fprintf( stderr, " [fd %d uev %x mask %lx avail %lu sig %d]", sfd, st->user_events,
+                   fdmap[ sfd ].sock.select_mask, avail,
+                   (int) ( WaitForSingleObject( fdmap[ sfd ].sock.event, 0 ) == WAIT_OBJECT_0 ) );
+        }
+      }
+      fprintf( stderr, " us=%llu\n", (unsigned long long) us_timeout ); fflush( stderr );
+    } }
   port->us_wait_accum += us_timeout;
   for ( cnt_off = 0; cnt_off < ev_count; ) {
     wait_cnt  = ev_count - cnt_off;

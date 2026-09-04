@@ -64,6 +64,9 @@ struct EvTimerQueue : public EvSocket {
   /* limit how long to set poll timer, only necessary when no timerfd */
   bool is_timer_ready( uint64_t &us,  uint64_t mono_ns ) {
     uint64_t us_left;
+    if ( this->expires == 0 ) /* no timers armed (was: 0 <= mono_ns, always
+                                 ready -> wait() never polled the sockets) */
+      return false;
     if ( this->expires <= mono_ns ) {
       us = 0;
       return true;

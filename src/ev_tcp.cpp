@@ -586,6 +586,13 @@ EvTcpConnection::connect3( EvConnection &conn,  EvConnectParam &param ) noexcept
       if ( ( param.opts & OPT_CONNECT_NB ) != 0 )
         set_nonblock( sock );
       status = ::connect( sock, p->ai_addr, (int) p->ai_addrlen );
+#if defined( _MSC_VER ) || defined( __MINGW32__ )
+      if ( getenv( "WP_TRACE" ) != NULL ) {
+        int e = WSAGetLastError();
+        fprintf( stderr, "connect: status=%d wsaerr=%d errno_mapped=%d would_block=%d\n",
+                 status, e, get_errno(), ev_would_block( get_errno() ) ); fflush( stderr );
+      }
+#endif
       if ( status == 0 )
         goto break_loop;
       if ( ( param.opts & OPT_CONNECT_NB ) != 0 &&

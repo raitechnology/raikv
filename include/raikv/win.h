@@ -162,6 +162,8 @@ typedef struct wp_sock_state {
   wp_port_state_t * poll_group;  /* which wp_port_state_t group */
   SOCKET            socket;      /* windows handle */
   WSAEVENT          event;       /* WaitForMultipleEvents */
+  long              select_mask; /* FD_ACCEPT for listeners, FD_READ|FD_CLOSE
+                                    or FD_WRITE|FD_CONNECT|FD_CLOSE otherwise */
 } wp_sock_state_t;
 
 typedef ssize_t (* tty_reader_f )( void *p,  void *buf,  size_t buflen );
