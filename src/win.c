@@ -4,6 +4,7 @@
 #define __STDC_FORMAT_MACROS
 #include <inttypes.h>
 #include <raikv/win.h>
+#include <psapi.h>
 
 static wp_fd_map_t fdmap[ MAX_FD_MAP_SIZE ];
 
@@ -83,6 +84,70 @@ wp_register_fd( SOCKET sock )
 /* pipe() substitute: a connected loopback TCP pair, both ends non-blocking
  * and registered as poll fds; fds[0] is the read side, fds[1] the write side
  * (both are actually bidirectional) */
+/* dlfcn substitutes */
+static char dl_err_buf[ 256 ];
+static int  dl_err_set = 0;
+
+static void dl_set_error( const char *what,  const char *name ) {
+  DWORD e = GetLastError();
+  snprintf( dl_err_buf, sizeof( dl_err_buf ), "%s %s: error %lu", what,
+            name ? name : "", (unsigned long) e );
+  dl_err_set = 1;
+}
+
+void *
+dlopen( const char *file,  int flags )
+{
+  HMODULE h;
+  (void) flags;
+  if ( file == NULL )
+    h = GetModuleHandleA( NULL );
+  else
+    h = LoadLibraryA( file );
+  if ( h == NULL )
+    dl_set_error( "dlopen", file );
+  return (void *) h;
+}
+
+void *
+dlsym( void *handle,  const char *name )
+{
+  FARPROC f = NULL;
+  if ( handle != RTLD_DEFAULT ) {
+    f = GetProcAddress( (HMODULE) handle, name );
+  }
+  else {
+    HMODULE mods[ 512 ];
+    DWORD   needed = 0, i, n;
+    if ( EnumProcessModules( GetCurrentProcess(), mods, sizeof( mods ),
+                             &needed ) ) {
+      n = needed / sizeof( HMODULE );
+      if ( n > sizeof( mods ) / sizeof( mods[ 0 ] ) )
+        n = sizeof( mods ) / sizeof( mods[ 0 ] );
+      for ( i = 0; i < n && f == NULL; i++ )
+        f = GetProcAddress( mods[ i ], name );
+    }
+  }
+  if ( f == NULL )
+    dl_set_error( "dlsym", name );
+  return (void *) (uintptr_t) f;
+}
+
+int
+dlclose( void *handle )
+{
+  return FreeLibrary( (HMODULE) handle ) ? 0 : -1;
+}
+
+const char *
+dlerror( void )
+{
+  if ( ! dl_err_set )
+    return NULL;
+  dl_err_set = 0;
+  return dl_err_buf;
+}
+
 int
 wp_socketpair( int fds[ 2 ] )
 {

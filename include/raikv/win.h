@@ -189,6 +189,17 @@ int ws_global_init( void );
 int wp_get_socket( int fd,  SOCKET *s );
 int wp_register_fd( SOCKET sock );
 int wp_socketpair( int fds[ 2 ] ); /* pipe() substitute, loopback tcp */
+/* dlfcn substitutes: LoadLibrary / GetProcAddress; dlsym( RTLD_DEFAULT, .. )
+ * searches every module in the process (exported symbols only) */
+#define RTLD_LAZY    1
+#define RTLD_NOW     2
+#define RTLD_GLOBAL  0x100
+#define RTLD_LOCAL   0
+#define RTLD_DEFAULT ((void *) 0)
+void * dlopen( const char *file,  int flags );
+void * dlsym( void *handle,  const char *name );
+int    dlclose( void *handle );
+const char * dlerror( void );
 int wp_register_listen_fd( SOCKET sock );
 int wp_register_tty_fd( HANDLE h,  void *cl,  tty_reader_f rdr );
 int wp_unregister_fd( int fd );
