@@ -194,7 +194,8 @@ EvTimerQueue::repost( EvTimerEvent &ev ) noexcept
         ev.next_expire += delta;
       }
       else {
-        ev.next_expire = this->epoch;
+        /* zero interval is as fast as possible, once per poll */
+        ev.next_expire = this->epoch + 1;
       }
     }
   }
