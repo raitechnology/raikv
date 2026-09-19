@@ -138,7 +138,8 @@ $(objd)/server.fpic.o : .copr/Makefile
 libraikv_files := key_ctx ht_linear ht_cuckoo key_hash msg_ctx ht_stats \
                   ht_init scratch_mem util rela_ts radix_sort print \
 		  ev_net route_db publish timer_queue stream_buf array_out \
-		  bloom monitor ev_tcp ev_udp ev_unix ev_cares logger kv_pubsub
+		  bloom monitor ev_tcp ev_udp ev_unix ev_cares logger kv_pubsub \
+		  ev_api_queue
 ifeq (true,$(mingw))
 libraikv_files += win
 endif
