@@ -31,7 +31,7 @@ struct MainLoopVars {
                 no_default;   /* don't want discard default -X */
   uint8_t       db_num;       /* which db to attach */
 
-  const char * desc[ 16 ]; /* extra help arg descriptions */
+  const char * desc[ 24 ]; /* extra help arg descriptions */
   int n; /* cnt of desc */
 
   MainLoopVars() { ::memset( this, 0, sizeof( *this ) ); }
