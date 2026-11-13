@@ -2,8 +2,138 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdint.h>
+
+#if defined( __x86_64__ ) || defined( __i386__ )
 #include <immintrin.h>
 #include <wmmintrin.h>
+
+#elif defined( __aarch64__ ) || defined( __arm__ )
+/* ARM port of the x86 AES-NI / SSE4.2-CRC32C intrinsics this file was
+ * written against.  Only the small set of operations actually used below
+ * (set/xor/and/load/shuffle/extract, one AES round, one CRC32C step) are
+ * provided; everything built on top of them (the AES hash and the whole
+ * Meow hash family) gets ARM support transitively.
+ *
+ * This hash table is shared-memory / same-process only (confirmed by
+ * checking all callers of kv_hash_aes128()/kv_hash_meow128() and friends:
+ * only include/raikv/hash_entry.h, for in-memory HashTab key hashing); the
+ * hash *values* are never persisted to a file or sent over the network to
+ * a different-architecture host (unlike the unrelated kv_crc_c() family
+ * below, which is CRC32C and so is already bit-identical cross-arch).
+ * That means bit-for-bit parity with the x86 AES-NI output is not required
+ * here -- only a fast, legitimate, well-distributed hash -- so the AES
+ * round below favors a faithful recreation of "a strong AES-based mixing
+ * round" over exact x86 arithmetic equivalence.
+ */
+#include <arm_neon.h>
+#include <arm_acle.h>
+
+typedef uint8x16_t __m128i;
+
+static inline __m128i
+_mm_set_epi64x( int64_t hi, int64_t lo )
+{
+  uint64x2_t v = vcombine_u64( vcreate_u64( (uint64_t) lo ),
+                               vcreate_u64( (uint64_t) hi ) );
+  return vreinterpretq_u8_u64( v );
+}
+
+static inline __m128i
+_mm_xor_si128( __m128i a, __m128i b )
+{
+  return veorq_u8( a, b );
+}
+
+static inline __m128i
+_mm_and_si128( __m128i a, __m128i b )
+{
+  return vandq_u8( a, b );
+}
+
+static inline __m128i
+_mm_loadu_si128( const __m128i *p )
+{
+  return vld1q_u8( (const uint8_t *) (const void *) p );
+}
+
+/* pshufb semantics: index byte with the high bit set zeroes that output
+ * byte, otherwise index & 15 selects a source byte -- matches vqtbl1q_u8
+ * (which also zeroes for any index >= 16, and 0x80 satisfies that). */
+static inline __m128i
+_mm_shuffle_epi8( __m128i a, __m128i b )
+{
+  return vqtbl1q_u8( a, b );
+}
+
+static inline int64_t
+_mm_extract_epi64_impl( __m128i a, int idx )
+{
+  return (int64_t) vgetq_lane_u64( vreinterpretq_u64_u8( a ), idx );
+}
+#define _mm_extract_epi64( a, idx ) _mm_extract_epi64_impl( (a), (idx) )
+
+/* x86 AESENC/AESDEC each do (Shift+Sub+Mix)+AddRoundKey in one instruction.
+ * ARMv8 Crypto Extensions split that into two instructions: AESE/AESD do
+ * AddRoundKey+SubBytes+ShiftRows (key added *first*, not last), and a
+ * separate AESMC/AESIMC does (Inv)MixColumns. To land the round-key XOR
+ * in the same position as x86 (after the mix step), feed a zero key into
+ * AESE/AESD and XOR the real round key in afterward -- the same
+ * substitution used by other AES-NI ports to ARM NEON (e.g. the ahash
+ * crate). This is a non-cryptographic hash used only for in-process,
+ * same-host key hashing (see note above), so faithfulness of the mixing
+ * primitive -- not bit-exact parity with x86 -- is what matters.
+ *
+ * The AESE/AESMC/AESD/AESIMC instructions are a separate optional ARMv8
+ * Crypto Extension, not implied by the baseline armv8-a+crc this file is
+ * otherwise built with; a per-function target attribute enables codegen
+ * for just these two helpers without having to raise the -march for the
+ * whole translation unit (or the whole repo's arch_cflags). */
+__attribute__((__target__("+crypto")))
+static inline __m128i
+_mm_aesenc_si128( __m128i a, __m128i round_key )
+{
+  uint8x16_t z = vdupq_n_u8( 0 );
+  return veorq_u8( vaesmcq_u8( vaeseq_u8( a, z ) ), round_key );
+}
+
+__attribute__((__target__("+crypto")))
+static inline __m128i
+_mm_aesdec_si128( __m128i a, __m128i round_key )
+{
+  uint8x16_t z = vdupq_n_u8( 0 );
+  return veorq_u8( vaesimcq_u8( vaesdq_u8( a, z ) ), round_key );
+}
+
+/* CRC32C (Castagnoli) via the ARMv8 CRC extension: same polynomial as the
+ * x86 SSE4.2 CRC32 instructions this code targets, so results here are
+ * bit-identical cross-arch (unlike the AES-based hash above). */
+static inline uint32_t
+_mm_crc32_u8( uint32_t crc, uint8_t v )
+{
+  return __crc32cb( crc, v );
+}
+
+static inline uint32_t
+_mm_crc32_u16( uint32_t crc, uint16_t v )
+{
+  return __crc32ch( crc, v );
+}
+
+static inline uint32_t
+_mm_crc32_u32( uint32_t crc, uint32_t v )
+{
+  return __crc32cw( crc, v );
+}
+
+static inline uint64_t
+_mm_crc32_u64( uint64_t crc, uint64_t v )
+{
+  return (uint64_t) __crc32cd( (uint32_t) crc, v );
+}
+
+#else
+#error "key_hash.c: unsupported architecture (expected x86_64/i386 or aarch64/arm)"
+#endif
 
 #include <raikv/shm_ht.h>
 /* Permission is hereby granted, free of charge, to any person obtaining a copy

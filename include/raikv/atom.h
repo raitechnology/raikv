@@ -51,8 +51,19 @@ static inline void kv_sync_mfence( void ) { __sync_synchronize(); }
 /* a compiler store fence */
 static inline void kv_sync_sfence( void ) { __asm__ __volatile__( "" ::: "memory" ); }
 /* alias for pause instruction
- * https://software.intel.com/en-us/articles/benefitting-power-and-performance-sleep-loops */
+ * https://software.intel.com/en-us/articles/benefitting-power-and-performance-sleep-loops
+ * x86's PAUSE has no literal ARM equivalent instruction, but AArch64's
+ * YIELD hint serves the same spin-wait-loop purpose (hints the CPU this
+ * is a spin loop, allowing SMT/power optimization without actually
+ * blocking) -- it's a true no-op on cores that don't implement it, same
+ * as PAUSE was originally a REP-prefixed NOP on pre-SSE2 x86. */
+#if defined( __x86_64__ ) || defined( __i386__ )
 static inline void kv_sync_pause( void ) { __asm__ __volatile__( "pause":::"memory" ); }
+#elif defined( __aarch64__ ) || defined( __arm__ )
+static inline void kv_sync_pause( void ) { __asm__ __volatile__( "yield":::"memory" ); }
+#else
+static inline void kv_sync_pause( void ) { __sync_synchronize(); }
+#endif
 /* prefetch addr, for read, locality */
 static inline void kv_prefetch( const void *addr, int rdwr, int locality ) {
   (void) locality;

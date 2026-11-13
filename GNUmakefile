@@ -57,7 +57,13 @@ CC          ?= gcc
 CXX         ?= g++
 cc          := $(CC) -std=c11
 cpp         := $(CXX)
-arch_cflags := -mavx -maes -fno-omit-frame-pointer
+ifeq ($(filter $(uname_m),aarch64 arm64),$(uname_m))
+  arch_cflags := -march=armv8-a+crc -fno-omit-frame-pointer
+else ifeq ($(filter $(uname_m),x86_64 i686 i386),$(uname_m))
+  arch_cflags := -mavx -maes -fno-omit-frame-pointer
+else
+  arch_cflags := -fno-omit-frame-pointer
+endif
 gcc_wflags  := -Wall -Wextra
 # -Werror ... broken in gcc 13.2.1-3
 # if windows cross compile
@@ -89,6 +95,7 @@ CFLAGS ?= $(build_cflags) $(default_cflags)
 #CFLAGS ?= $(RPM_OPT_FLAGS)
 #endif
 cflags := $(gcc_wflags) $(CFLAGS) $(arch_cflags)
+cxxflags := $(filter-out -Werror=implicit-function-declaration,$(cflags))
 lflags := -Wno-stringop-overflow
 
 INCLUDES  ?= -Iinclude
@@ -635,19 +642,19 @@ install: dist_bins
 	install -m 644 include/raikv/*.h $(install_prefix)/include/raikv
 
 $(objd)/%.o: src/%.cpp
-	$(cpp) $(cflags) $(xtra_cflags) $(cppflags) $(includes) $(defines) $($(notdir $*)_includes) $($(notdir $*)_defines) -c $< -o $@
+	$(cpp) $(cxxflags) $(xtra_cflags) $(cppflags) $(includes) $(defines) $($(notdir $*)_includes) $($(notdir $*)_defines) -c $< -o $@
 
 $(objd)/%.o: src/%.c
 	$(cc) $(cflags) $(xtra_cflags) $(includes) $(defines) $($(notdir $*)_includes) $($(notdir $*)_defines) -c $< -o $@
 
 $(objd)/%.fpic.o: src/%.cpp
-	$(cpp) $(cflags) $(xtra_cflags) $(fpicflags) $(cppflags) $(includes) $(defines) $($(notdir $*)_includes) $($(notdir $*)_defines) -c $< -o $@
+	$(cpp) $(cxxflags) $(xtra_cflags) $(fpicflags) $(cppflags) $(includes) $(defines) $($(notdir $*)_includes) $($(notdir $*)_defines) -c $< -o $@
 
 $(objd)/%.fpic.o: src/%.c
 	$(cc) $(cflags) $(xtra_cflags) $(fpicflags) $(includes) $(defines) $($(notdir $*)_includes) $($(notdir $*)_defines) -c $< -o $@
 
 $(objd)/%.o: test/%.cpp
-	$(cpp) $(cflags) $(xtra_cflags) $(cppflags) $(includes) $(defines) $($(notdir $*)_includes) $($(notdir $*)_defines) -c $< -o $@
+	$(cpp) $(cxxflags) $(xtra_cflags) $(cppflags) $(includes) $(defines) $($(notdir $*)_includes) $($(notdir $*)_defines) -c $< -o $@
 
 $(objd)/%.o: test/%.c
 	$(cc) $(cflags) $(xtra_cflags) $(includes) $(defines) $($(notdir $*)_includes) $($(notdir $*)_defines) -c $< -o $@

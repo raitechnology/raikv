@@ -6,7 +6,9 @@
 #include <stdlib.h>
 #include <raikv/util.h>
 #include <raikv/key_hash.h>
-#include <immintrin.h>
+#if defined( __x86_64__ ) || defined( __i386__ )
+#include <immintrin.h> /* unused in this file; kept for x86 builds only */
+#endif
 #define PCRE2_CODE_UNIT_WIDTH 8
 #include <pcre2.h>
 #include <raikv/pattern_cvt.h>

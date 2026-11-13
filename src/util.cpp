@@ -275,14 +275,28 @@ rai::kv::timestamp( uint64_t ns,  int precision,  char *buf,
 uint64_t
 rai::kv::get_rdtsc( void ) noexcept
 {
-#if ! defined( _MSC_VER ) && ! defined( __MINGW32__ )
+#if defined( __x86_64__ ) || defined( __i386__ )
    uint32_t lo, hi;
   __asm__ __volatile__("rdtsc" : "=a" (lo), "=d" (hi));
   return ( (uint64_t) hi << 32 ) | (uint64_t) lo;
-#else
+#elif defined( __aarch64__ )
+  /* AArch64 generic (virtual) timer counter register: the architectural
+   * equivalent free-running cycle/tick counter used the same way rdtsc
+   * is here (benchmarking timestamps, entropy mixing) -- not required to
+   * run at the same frequency as rdtsc, just to be monotonic and cheap. */
+  uint64_t val;
+  __asm__ __volatile__( "mrs %0, cntvct_el0" : "=r" (val) );
+  return val;
+#elif defined( __arm__ )
+  /* 32-bit ARM has no universal user-space cycle counter; fall back to a
+   * portable monotonic clock read. */
+  return rai::kv::current_monotonic_time_ns();
+#elif defined( _MSC_VER ) || defined( __MINGW32__ )
   LARGE_INTEGER cnt;
   QueryPerformanceCounter( &cnt );
   return cnt.QuadPart;
+#else
+  return rai::kv::current_monotonic_time_ns();
 #endif
 }
 #if 0

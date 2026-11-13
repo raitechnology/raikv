@@ -56,7 +56,7 @@ my_yield( void )
 void
 do_spin( uint64_t cnt )
 {
-#ifndef _MSC_VER
+#if defined( __x86_64__ ) || defined( __i386__ )
   __asm__ __volatile__(
        "xorq %%rcx, %%rcx\n\t"
     "1: addq $1, %%rcx\n\t"
@@ -65,9 +65,15 @@ do_spin( uint64_t cnt )
     :
     : "r" (cnt)
     : "%rcx" );
-#else
+#elif defined( _MSC_VER )
   while ( cnt-- )
     Sleep( 0 );
+#else
+  /* portable busy-spin counter for non-x86 architectures (e.g. ARM):
+   * volatile prevents the compiler from optimizing the whole loop away */
+  volatile uint64_t i;
+  for ( i = 0; i < cnt; i++ )
+    ;
 #endif
 }
 
